@@ -374,7 +374,7 @@ export function PaletteManager({
 
   const handleEyedropper = async () => {
     try {
-      const eyeDropper = new (window as any).EyeDropper()
+      const eyeDropper = new window.EyeDropper()
       const result = await eyeDropper.open()
       const hex = result.sRGBHex.toUpperCase()
       const hsl = hexToHSL(hex)

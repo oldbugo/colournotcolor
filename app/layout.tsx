@@ -5,9 +5,8 @@ import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.app',
+  title: 'colournotcolor - Color Contrast Checker',
+  description: 'Design system color palette manager with WCAG contrast validation',
 }
 
 export default function RootLayout({

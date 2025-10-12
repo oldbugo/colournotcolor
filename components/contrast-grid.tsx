@@ -297,7 +297,6 @@ export function ContrastGrid({
       return
     }
 
-    console.log("[v0] FG Drop:", { draggedFgIndex, dragOverFgIndex, fgDragMode })
 
     if (fgDragMode === "swap") {
       onSwapForeground(draggedFgIndex, dragOverFgIndex)
@@ -373,7 +372,6 @@ export function ContrastGrid({
       return
     }
 
-    console.log("[v0] BG Drop:", { draggedBgIndex, dragOverBgIndex, bgDragMode })
 
     if (bgDragMode === "swap") {
       onSwapBackground(draggedBgIndex, dragOverBgIndex)
