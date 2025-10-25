@@ -1,10 +1,9 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef, useEffect } from "react"
+import { useMemo, useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Plus, Pencil, Trash2, Copy, FolderPlus, GripVertical, Lock } from "lucide-react"
+import { Plus, FolderPlus, Trash2 } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,21 +14,28 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-
-type ColorWithName = {
-  name: string
-  hex: string
-  originalIndex: number
-}
+import type { ColorSwatch } from "@/types/palette"
+import { ColorCard } from "@/components/color-manager/color-card"
+import { GroupHeader } from "@/components/color-manager/group-header"
+import { GroupSection } from "@/components/color-manager/group-section"
+import type { ColorWithName, DragIndicatorPosition } from "@/components/color-manager/types"
+import {
+  composeLabel,
+  createSwatch,
+  normalizeHex,
+  splitLabel,
+  swatchFromLegacy,
+  swatchToLegacy,
+  updateSwatch,
+} from "@/lib/color-utils"
 
 type ColorManagerProps = {
   label: string
-  colors: string[]
-  onAddColor: (color: string) => void
+  colors: ColorSwatch[]
+  onAddColor: (swatch: ColorSwatch) => void
   onRemoveColor: (index: number) => void
-  onUpdateColor: (index: number, color: string) => void
-  onReorderColors: (fromIndex: number, toIndex: number) => void
-  onBatchUpdateColors: (colors: string[]) => void
+  onUpdateColor: (index: number, swatch: ColorSwatch) => void
+  onBatchUpdateColors: (swatches: ColorSwatch[]) => void
   onColorEdit?: (index: number) => void
   activeEditingIndex?: number | null
   lastInteractedColor?: string
@@ -79,7 +85,7 @@ function updateColorGroup(color: string, newGroup: string): string {
   }
 
   if (newGroup === "ungrouped") {
-    return baseName ? `${baseName}${hex}` : hex
+    return hex
   }
 
   return baseName ? `${newGroup}/${baseName}${hex}` : `${newGroup}/${hex.replace("#", "")}${hex}`
@@ -87,16 +93,21 @@ function updateColorGroup(color: string, newGroup: string): string {
 
 export function ColorManager({
   label,
-  colors,
+  colors: swatches,
   onAddColor,
   onRemoveColor,
   onUpdateColor,
-  onReorderColors,
   onBatchUpdateColors,
   onColorEdit,
   activeEditingIndex,
   lastInteractedColor = "#808080",
 }: ColorManagerProps) {
+  const colors = useMemo(() => swatches.map((swatch) => swatchToLegacy(swatch)), [swatches])
+  const getSwatchAt = (index: number): ColorSwatch | undefined => swatches[index]
+  const toSwatch = (value: string, index?: number) =>
+    swatchFromLegacy(value, typeof index === "number" ? getSwatchAt(index)?.id : undefined)
+  const toSwatchArray = (values: string[]) => values.map((value, index) => toSwatch(value, index))
+
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingName, setEditingName] = useState("")
   const [originalEditingName, setOriginalEditingName] = useState("")
@@ -105,7 +116,6 @@ export function ColorManager({
   const [originalEditingHex, setOriginalEditingHex] = useState("")
   const [editingGroupName, setEditingGroupName] = useState<string | null>(null)
   const [newGroupName, setNewGroupName] = useState("")
-  const [originalGroupName, setOriginalGroupName] = useState("")
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const [nameError, setNameError] = useState<number | null>(null)
@@ -122,11 +132,12 @@ export function ColorManager({
   const [isAnyCardDragging, setIsAnyCardDragging] = useState(false)
 
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map())
-  const [indicatorPosition, setIndicatorPosition] = useState<{ left: number; top: number } | null>(null)
+  const dragImageRef = useRef<HTMLDivElement | null>(null)
+  const [indicatorPosition, setIndicatorPosition] = useState<DragIndicatorPosition | null>(null)
   const [justDropped, setJustDropped] = useState(false)
   const [droppedAtIndex, setDroppedAtIndex] = useState<number | null>(null)
 
-  const nameInputRef = useRef<HTMLInputElement>(null)
+  const nameInputRef = useRef<HTMLInputElement | null>(null)
   const [editMode, setEditMode] = useState<"button" | "doubleClick" | null>(null)
 
   const [newlyCreatedGroups, setNewlyCreatedGroups] = useState<Set<string>>(new Set())
@@ -178,21 +189,22 @@ export function ColorManager({
         const container = card.parentElement
         if (container) {
           const containerRect = container.getBoundingClientRect()
+          const computedStyles = window.getComputedStyle(container)
+          const gapValueRaw = computedStyles.columnGap || computedStyles.gap || "0"
+          const gapValue = Number.parseFloat(gapValueRaw) || 0
+          const horizontalOffset = gapValue > 0 ? gapValue / 2 : 6
+          const indicatorHeight = Math.max(rect.height - 24, rect.height * 0.7, 64)
+          const centerY = rect.top - containerRect.top + rect.height / 2
+          const left =
+            insertPosition === "before"
+              ? rect.left - containerRect.left - horizontalOffset
+              : rect.right - containerRect.left + horizontalOffset
 
-          const indicatorHeight = 144
-          const verticalOffset = (rect.height - indicatorHeight) / 2
-
-          if (insertPosition === "before") {
-            setIndicatorPosition({
-              left: rect.left - containerRect.left - 8,
-              top: rect.top - containerRect.top + verticalOffset,
-            })
-          } else {
-            setIndicatorPosition({
-              left: rect.right - containerRect.left + 8,
-              top: rect.top - containerRect.top + verticalOffset,
-            })
-          }
+          setIndicatorPosition({
+            left,
+            top: centerY,
+            height: indicatorHeight,
+          })
         }
       }
     } else {
@@ -237,12 +249,11 @@ export function ColorManager({
   const handleEditName = (index: number, currentColor: string, mode: "button" | "doubleClick" = "button") => {
     onColorEdit?.(-1)
 
-    const parts = currentColor.split("#")
-    const customName = parts.length > 1 ? parts[0] : ""
-
+    const swatch = getSwatchAt(index)
+    const label = swatch ? composeLabel(swatch.name, swatch.group, swatch.hex) : ""
     setEditingIndex(index)
-    setEditingName(customName)
-    setOriginalEditingName(customName)
+    setEditingName(label)
+    setOriginalEditingName(label)
     setEditMode(mode)
     setNameError(null)
   }
@@ -266,11 +277,15 @@ export function ColorManager({
       return
     }
     if (editingName !== originalEditingName) {
-      const currentColor = colors[index]
-      const parts = currentColor.split("#")
-      const hex = parts.length > 1 ? parts[1] : parts[0].replace("#", "")
-      const newColor = editingName.trim() ? `${editingName}#${hex}` : `#${hex}`
-      onUpdateColor(index, newColor)
+      const currentSwatch = getSwatchAt(index)
+      const hex = currentSwatch?.hex ?? "#000000"
+      const label = editingName.trim()
+      const { name, group } = splitLabel(label)
+      const updated = updateSwatch(currentSwatch ?? createSwatch({ hex }), {
+        name,
+        group,
+      })
+      onUpdateColor(index, updated)
     }
     setEditingIndex(null)
     setNameError(null)
@@ -283,9 +298,9 @@ export function ColorManager({
     setEditMode(null)
   }
 
-  const handleEditHex = (index: number, currentColor: string) => {
-    const parts = currentColor.split("#")
-    const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
+  const handleEditHex = (index: number) => {
+    const currentSwatch = getSwatchAt(index)
+    const hex = currentSwatch?.hex ?? "#000000"
     setEditingHexIndex(index)
     setEditingHex(hex)
     setOriginalEditingHex(hex)
@@ -293,11 +308,10 @@ export function ColorManager({
 
   const handleSaveHex = (index: number) => {
     if (editingHex !== originalEditingHex) {
-      const currentColor = colors[index]
-      const parts = currentColor.split("#")
-      const customName = parts.length > 1 ? parts[0] : ""
-      const newColor = customName ? `${customName}${editingHex}` : editingHex
-      onUpdateColor(index, newColor)
+      const currentSwatch = getSwatchAt(index)
+      const normalized = normalizeHex(editingHex)
+      const updated = updateSwatch(currentSwatch ?? createSwatch({ hex: normalized }), { hex: normalized })
+      onUpdateColor(index, updated)
     }
     setEditingHexIndex(null)
   }
@@ -311,7 +325,6 @@ export function ColorManager({
 
     setEditingGroupName(oldName)
     setNewGroupName(oldName)
-    setOriginalGroupName(oldName)
   }
 
   const handleSaveGroupName = (oldName: string) => {
@@ -331,7 +344,7 @@ export function ColorManager({
         return color
       })
 
-      onBatchUpdateColors(updatedColors)
+      onBatchUpdateColors(toSwatchArray(updatedColors))
     }
     setEditingGroupName(null)
   }
@@ -348,9 +361,31 @@ export function ColorManager({
   }
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
+    if (dragImageRef.current) {
+      document.body.removeChild(dragImageRef.current)
+      dragImageRef.current = null
+    }
     setDraggedIndex(index)
     setIsAnyCardDragging(true)
     e.dataTransfer.effectAllowed = "move"
+
+    const card = cardRefs.current.get(index)
+    if (card && typeof window !== "undefined") {
+      const rect = card.getBoundingClientRect()
+      const clone = card.cloneNode(true) as HTMLDivElement
+      clone.style.position = "absolute"
+      clone.style.top = "-9999px"
+      clone.style.left = "-9999px"
+      clone.style.width = `${rect.width}px`
+      clone.style.height = `${rect.height}px`
+      clone.style.pointerEvents = "none"
+      clone.style.boxShadow = window.getComputedStyle(card).boxShadow
+      document.body.appendChild(clone)
+      dragImageRef.current = clone
+      const offsetX = e.clientX - rect.left
+      const offsetY = e.clientY - rect.top
+      e.dataTransfer.setDragImage(clone, offsetX, offsetY)
+    }
 
     onColorEdit?.(-1)
   }
@@ -394,8 +429,6 @@ export function ColorManager({
 
       const draggedParts = draggedColor.split("#")
       const draggedCustomName = draggedParts.length > 1 ? draggedParts[0] : ""
-      const draggedHex = "#" + (draggedParts.length > 1 ? draggedParts[1] : draggedParts[0].replace("#", ""))
-
       const targetParts = targetColor.split("#")
       const targetCustomName = targetParts.length > 1 ? targetParts[0] : ""
 
@@ -418,7 +451,7 @@ export function ColorManager({
       newColors[draggedIndex] = updatedTargetColor
       newColors[dragOverIndex] = updatedDraggedColor
 
-      onBatchUpdateColors(newColors)
+      onBatchUpdateColors(toSwatchArray(newColors))
       setDroppedAtIndex(dragOverIndex)
       setJustDropped(true)
     } else if (draggedIndex !== null && dragOverIndex !== null && dragMode === "insert") {
@@ -451,7 +484,7 @@ export function ColorManager({
       }
 
       newColors.splice(targetIndex, 0, colorToInsert)
-      onBatchUpdateColors(newColors)
+      onBatchUpdateColors(toSwatchArray(newColors))
       setDroppedAtIndex(targetIndex)
       setJustDropped(true)
     }
@@ -481,6 +514,10 @@ export function ColorManager({
     if (trashLeaveTimeoutRef.current) {
       clearTimeout(trashLeaveTimeoutRef.current)
       trashLeaveTimeoutRef.current = null
+    }
+    if (dragImageRef.current) {
+      document.body.removeChild(dragImageRef.current)
+      dragImageRef.current = null
     }
   }
 
@@ -537,7 +574,7 @@ export function ColorManager({
 
     newColors.splice(newTargetIndex, 0, ...draggedGroupColors)
 
-    onBatchUpdateColors(newColors)
+    onBatchUpdateColors(toSwatchArray(newColors))
     setDraggedGroup(null)
     setDragOverGroupName(null)
   }
@@ -545,6 +582,43 @@ export function ColorManager({
   const handleGroupDragEnd = () => {
     setDraggedGroup(null)
     setDragOverGroupName(null)
+  }
+
+  const handleInsertZoneHover = (targetIndex: number, targetGroup: string, position: "before" | "after") => {
+    if (draggedIndex === null) {
+      setDragMode(null)
+      setInsertPosition(null)
+      setDragOverIndex(null)
+      setDragOverGroup(null)
+      return
+    }
+
+    if (draggedIndex === targetIndex) {
+      return
+    }
+
+    const isAdjacent =
+      (draggedIndex === targetIndex - 1 && position === "before") ||
+      (draggedIndex === targetIndex + 1 && position === "after")
+
+    if (isAdjacent) {
+      return
+    }
+
+    if (dragMode === "insert" && insertPosition === position && dragOverIndex === targetIndex) {
+      return
+    }
+
+    setDragMode("insert")
+    setInsertPosition(position)
+    setDragOverIndex(targetIndex)
+    setDragOverGroup(targetGroup)
+  }
+
+  const handleInsertZoneLeave = () => {
+    setDragOverIndex(null)
+    setDragMode(null)
+    setInsertPosition(null)
   }
 
   const handleAddNewGroup = () => {
@@ -556,8 +630,8 @@ export function ColorManager({
       newGroupName = `new group ${groupNumber}`
     }
 
-    const newColorName = lastInteractedColor.includes("/") ? lastInteractedColor : `Ungrouped/${lastInteractedColor}`
-    onAddColor(newColorName)
+    const label = lastInteractedColor.includes("/") ? lastInteractedColor : `Ungrouped/${lastInteractedColor}`
+    onAddColor(swatchFromLegacy(label))
   }
 
   const handleDropOnNewGroup = (e: React.DragEvent) => {
@@ -577,7 +651,7 @@ export function ColorManager({
       }
 
       const newColor = `${newGroupName}/${hex.replace("#", "")}${hex}`
-      onUpdateColor(draggedIndex, newColor)
+      onUpdateColor(draggedIndex, toSwatch(newColor, draggedIndex))
     }
 
     setIsDragOverNewGroup(false)
@@ -644,330 +718,137 @@ export function ColorManager({
         const isGroupDragOver = dragOverGroupName === groupName
         const isNewlyCreated = newlyCreatedGroups.has(groupName)
         const isRemoving = removingGroups.has(groupName)
+        const showIndicator = dragMode === "insert" && dragOverGroup === groupName && indicatorPosition !== null
+
+        const header = (
+          <GroupHeader
+            groupName={groupName}
+            groupNameTextClass={groupNameTextClass}
+            isEditing={editingGroupName === groupName}
+            editingValue={editingGroupName === groupName ? newGroupName : groupName}
+            isUngrouped={groupName === "Ungrouped"}
+            onChangeEditingValue={(value) => {
+              if (editingGroupName === groupName) {
+                setNewGroupName(value)
+              }
+            }}
+            onSaveEditingValue={() => handleSaveGroupName(groupName)}
+            onCancelEditing={handleCancelGroupEdit}
+            onStartEditing={() => handleEditGroupName(groupName)}
+            onDragStart={(event) => handleGroupDragStart(event, groupName)}
+            onDragEnd={handleGroupDragEnd}
+          />
+        )
+
+        const addButton = (
+          <div
+            className="relative flex w-full items-end pb-8"
+            onDragOver={(event) => {
+              event.preventDefault()
+              if (draggedIndex !== null && groupColors.length > 0) {
+                const lastIndex = groupColors[groupColors.length - 1].originalIndex
+                handleInsertZoneHover(lastIndex, groupName, "after")
+              }
+            }}
+            onDragLeave={(event) => {
+              const relatedTarget = event.relatedTarget as HTMLElement | null
+              if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
+                handleInsertZoneLeave()
+              }
+            }}
+          >
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-[8.75rem] w-full cursor-pointer rounded-lg border border-dashed border-slate-300 bg-transparent"
+              onClick={() => {
+                const newColorName =
+                  groupName === "Ungrouped"
+                    ? lastInteractedColor
+                    : groupName.toLowerCase() + "/new" + lastInteractedColor
+                onAddColor(swatchFromLegacy(newColorName))
+              }}
+            >
+              <Plus className="h-8 w-8 text-border" />
+            </Button>
+          </div>
+        )
 
         return (
-          <div
+          <GroupSection
             key={groupName}
-            className={`space-y-4 transition-all duration-200 ${isGroupDragging ? "opacity-50" : "opacity-100"} ${
-              isNewlyCreated ? "animate-in fade-in-0 slide-in-from-top-4 duration-300" : ""
-            } ${isRemoving ? "animate-out fade-out-0 slide-out-to-top-2 duration-200" : ""}`}
-            onDragOver={(e) => handleGroupDragOver(e, groupName)}
-            onDrop={(e) => handleGroupDrop(e, groupName)}
+            isGroupDragging={isGroupDragging}
+            isGroupDragOver={isGroupDragOver && !!draggedGroup}
+            isNewlyCreated={isNewlyCreated}
+            isRemoving={isRemoving}
+            indicatorPosition={indicatorPosition}
+            showIndicator={showIndicator}
+            onGroupReorderDragOver={(event) => handleGroupDragOver(event, groupName)}
+            onGroupReorderDrop={(event) => handleGroupDrop(event, groupName)}
+            onCardDragOver={(event) => handleDragOverGroup(event, groupName)}
+            onCardDrop={handleDrop}
+            header={header}
+            addButton={addButton}
           >
-            {isGroupDragOver && draggedGroup && <div className="h-1 bg-blue-500 rounded-full -mt-2 mb-2" />}
+            {groupColors.map((colorItem, idx) => {
+              const actualIndex = colorItem.originalIndex
+              const isDraggingCard = draggedIndex === actualIndex
+              const isDropTarget = dragOverIndex === actualIndex
 
-            <div className="flex items-center gap-2">
-              <div
-                draggable
-                onDragStart={(e) => handleGroupDragStart(e, groupName)}
-                onDragEnd={handleGroupDragEnd}
-                className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded transition-colors flex items-center"
-              >
-                <GripVertical className="h-6 w-6 text-gray-300 stroke-[2.5]" />
-              </div>
-
-              {editingGroupName === groupName ? (
-                <Input
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  onBlur={handleCancelGroupEdit}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSaveGroupName(groupName)
-                    if (e.key === "Escape") handleCancelGroupEdit()
+              return (
+                <ColorCard
+                  key={colorItem.hex + "-" + actualIndex}
+                  color={colorItem}
+                  nameInputRef={nameInputRef}
+                  registerCardRef={(element) => {
+                    if (element) {
+                      cardRefs.current.set(actualIndex, element)
+                    } else {
+                      cardRefs.current.delete(actualIndex)
+                    }
                   }}
-                  className={`${groupNameTextClass} h-auto py-1 px-2 border-2 border-input rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 w-auto`}
-                  autoFocus
+                  showBeforeInsertZone={idx > 0}
+                  showAfterInsertZone={idx < groupColors.length - 1}
+                  state={{
+                    isDragging: isDraggingCard,
+                    isDropTarget,
+                    showSwapTarget: dragMode === "swap",
+                    highlightHandle: hoveredHandleIndex === actualIndex,
+                    highlightActiveEditing: activeEditingIndex === actualIndex,
+                    showCopySuccess: copiedIndex === actualIndex,
+                    showJustDropped: justDropped && droppedAtIndex === actualIndex,
+                    insertPosition:
+                      dragMode === "insert" && dragOverIndex === actualIndex ? insertPosition : null,
+                    isEditingName: editingIndex === actualIndex,
+                    editingName,
+                    hasNameError: nameError === actualIndex,
+                    isEditingHex: editingHexIndex === actualIndex,
+                    editingHex,
+                  }}
+                  onNameChange={(value) => handleNameChange(value, actualIndex)}
+                  onNameSave={() => handleSaveName(actualIndex)}
+                  onNameCancel={handleCancelNameEdit}
+                  onNameEdit={(mode = "button") => handleEditName(actualIndex, colors[actualIndex], mode)}
+                  onNameClick={() => handleClickName(actualIndex, colors[actualIndex])}
+                  onDelete={() => setDeleteIndex(actualIndex)}
+                  onHexChange={setEditingHex}
+                  onHexSave={() => handleSaveHex(actualIndex)}
+                  onHexCancel={handleCancelHexEdit}
+                  onHexEdit={() => handleEditHex(actualIndex)}
+                  onCopyHex={() => handleCopyHex(colorItem.hex, actualIndex)}
+                  onDragStart={(event) => handleDragStart(event, actualIndex)}
+                  onDragEnd={() => handleDragEnd()}
+                  onDragOver={(event) => handleDragOver(event, actualIndex)}
+                  onDragLeave={() => handleDragLeave()}
+                  onInsertZoneHover={(position) => handleInsertZoneHover(actualIndex, groupName, position)}
+                  onInsertZoneLeave={() => handleInsertZoneLeave()}
+                  onCardClick={(event) => handleCardClick(actualIndex, event)}
+                  onHandleHover={(hovering) => setHoveredHandleIndex(hovering ? actualIndex : null)}
+                  onSwatchClick={() => onColorEdit?.(actualIndex)}
                 />
-              ) : (
-                <>
-                  <h3 className={`${groupNameTextClass} ${groupName === "Ungrouped" ? "text-gray-700" : ""}`}>
-                    {groupName}
-                  </h3>
-                  {groupName === "Ungrouped" ? (
-                    <Lock className="h-5 w-5 text-gray-700" />
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 cursor-pointer"
-                      onClick={() => handleEditGroupName(groupName)}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  )}
-                </>
-              )}
-            </div>
-
-            <div
-              className="flex flex-wrap relative mx-6 gap-0"
-              onDragOver={(e) => handleDragOverGroup(e, groupName)}
-              onDrop={handleDrop}
-            >
-              {indicatorPosition && dragMode === "insert" && dragOverGroup === groupName && (
-                <div
-                  className="absolute w-1 bg-blue-500 rounded-full pointer-events-none z-30"
-                  style={{
-                    left: `${indicatorPosition.left}px`,
-                    top: `${indicatorPosition.top}px`,
-                    height: "144px",
-                  }}
-                />
-              )}
-
-              {groupColors.map((colorItem, idx) => {
-                const actualIndex = colorItem.originalIndex
-                const isDragging = draggedIndex === actualIndex
-                const isDropTarget = dragOverIndex === actualIndex
-                const wasJustDropped = justDropped && droppedAtIndex === actualIndex
-                const hasError = nameError === actualIndex
-
-                return (
-                  <div
-                    key={`${colorItem.hex}-${actualIndex}`}
-                    ref={(el) => {
-                      if (el) {
-                        cardRefs.current.set(actualIndex, el)
-                      } else {
-                        cardRefs.current.delete(actualIndex)
-                      }
-                    }}
-                    className={`relative p-4 space-y-1 py-0 px-2 w-64 mx-2 my-2 ${
-                      wasJustDropped ? "animate-in zoom-in-95 duration-500" : "transition-all duration-300 ease-in-out"
-                    }`}
-                    style={{
-                      opacity: isDragging ? 0.5 : 1,
-                      transform: isDragging ? "scale(0.95)" : "scale(1)",
-                    }}
-                    onDragOver={(e) => handleDragOver(e, actualIndex)}
-                    onDragLeave={handleDragLeave}
-                    data-color-card
-                    onClick={(e) => handleCardClick(actualIndex, e)}
-                  >
-                    {idx > 0 && (
-                      <div
-                        className="absolute -left-4 top-0 w-4 h-full z-10"
-                        onDragOver={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          if (draggedIndex !== null && draggedIndex !== actualIndex) {
-                            setDragMode("insert")
-                            setInsertPosition("before")
-                            setDragOverIndex(actualIndex)
-                            setDragOverGroup(groupName)
-                          }
-                        }}
-                        onDragLeave={(e) => {
-                          const relatedTarget = e.relatedTarget as HTMLElement
-                          if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                            setDragOverIndex(null)
-                            setDragMode(null)
-                            setInsertPosition(null)
-                          }
-                        }}
-                      />
-                    )}
-
-                    {idx < groupColors.length - 1 && (
-                      <div
-                        className="absolute -right-4 top-0 w-4 h-full z-10"
-                        onDragOver={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          if (draggedIndex !== null && draggedIndex !== actualIndex) {
-                            setDragMode("insert")
-                            setInsertPosition("after")
-                            setDragOverIndex(actualIndex)
-                            setDragOverGroup(groupName)
-                          }
-                        }}
-                        onDragLeave={(e) => {
-                          const relatedTarget = e.relatedTarget as HTMLElement
-                          if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                            setDragOverIndex(null)
-                            setDragMode(null)
-                            setInsertPosition(null)
-                          }
-                        }}
-                      />
-                    )}
-
-                    {isDropTarget && dragMode === "swap" && (
-                      <div className="absolute -inset-1 bg-blue-500/10 rounded-lg border-2 border-blue-500 border-dashed pointer-events-none z-20" />
-                    )}
-
-                    {hoveredHandleIndex === actualIndex && (
-                      <div className="absolute -inset-1 bg-gray-400/20 rounded-lg pointer-events-none z-10" />
-                    )}
-
-                    {activeEditingIndex === actualIndex && (
-                      <div className="absolute -inset-1 border-2 border-dashed border-gray-400 rounded-lg pointer-events-none z-20" />
-                    )}
-
-                    <div className="flex items-center gap-2 px-2">
-                      {editingIndex === actualIndex ? (
-                        <div className="relative flex-1">
-                          <Input
-                            ref={nameInputRef}
-                            value={editingName}
-                            onChange={(e) => handleNameChange(e.target.value, actualIndex)}
-                            onBlur={handleCancelNameEdit}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") handleSaveName(actualIndex)
-                              if (e.key === "Escape") handleCancelNameEdit()
-                            }}
-                            className={`h-auto py-1 px-2 text-sm border-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 ${hasError ? "border-red-500 focus-visible:ring-red-500" : "border-input"}`}
-                            autoFocus
-                            placeholder="Custom name"
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          {hasError && (
-                            <div className="absolute left-0 -top-10 bg-red-500 text-white text-xs px-2 py-1 rounded shadow-lg whitespace-nowrap z-50">
-                              Only one "/" is allowed in custom names
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <>
-                          <span
-                            className="text-sm font-medium flex-1 truncate cursor-pointer hover:text-blue-600 transition-colors"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleClickName(actualIndex, colors[actualIndex])
-                            }}
-                          >
-                            {colorItem.name}
-                          </span>
-                        </>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 flex-shrink-0 cursor-pointer flex items-center justify-center"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleEditName(actualIndex, colors[actualIndex], "button")
-                        }}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 flex-shrink-0 cursor-pointer flex items-center justify-center"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setDeleteIndex(actualIndex)
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-
-                    <div className="space-y-0 overflow-hidden border-2 border-border rounded-md">
-                      <div
-                        className="w-full h-24 cursor-pointer hover:opacity-90 transition-opacity"
-                        style={{ backgroundColor: colorItem.hex }}
-                        onClick={() => onColorEdit?.(actualIndex)}
-                      />
-                      <div className="bg-white p-2 flex items-center justify-center gap-2 border-border border-t-2">
-                        {editingHexIndex === actualIndex ? (
-                          <Input
-                            value={editingHex}
-                            onChange={(e) => setEditingHex(e.target.value)}
-                            onBlur={handleCancelHexEdit}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") handleSaveHex(actualIndex)
-                              if (e.key === "Escape") handleCancelHexEdit()
-                              e.stopPropagation()
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            className="h-8 text-center font-mono text-xs"
-                            autoFocus
-                          />
-                        ) : (
-                          <>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleEditHex(actualIndex, colors[actualIndex])
-                              }}
-                              className="hover:text-blue-600 transition-colors cursor-pointer font-mono font-light text-xl tracking-wider"
-                            >
-                              {colorItem.hex}
-                            </button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 flex-shrink-0 cursor-pointer"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleCopyHex(colorItem.hex, actualIndex)
-                              }}
-                            >
-                              <Copy className="h-3 w-3" />
-                            </Button>
-                            {copiedIndex === actualIndex && (
-                              <span className="text-xs text-green-600 font-medium">Copied!</span>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    <div
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, actualIndex)}
-                      onDragEnd={handleDragEnd}
-                      onMouseEnter={() => setHoveredHandleIndex(actualIndex)}
-                      onMouseLeave={() => setHoveredHandleIndex(null)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="flex flex-col items-center justify-center gap-1 cursor-grab active:cursor-grabbing h-9 mx-8 pb-2"
-                    >
-                      <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
-                      <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
-                    </div>
-                  </div>
-                )
-              })}
-
-              <div
-                className="flex items-end relative pb-12 pl-4"
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  if (draggedIndex !== null && groupColors.length > 0) {
-                    setDragMode("insert")
-                    setInsertPosition("after")
-                    setDragOverIndex(groupColors[groupColors.length - 1].originalIndex)
-                    setDragOverGroup(groupName)
-                  }
-                }}
-                onDragLeave={(e) => {
-                  const relatedTarget = e.relatedTarget as HTMLElement
-                  if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                    setDragOverIndex(null)
-                    setDragMode(null)
-                    setInsertPosition(null)
-                  }
-                }}
-              >
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="bg-transparent cursor-pointer h-36 border-2 rounded-md w-[236px]"
-                  onClick={() => {
-                    const newColorName =
-                      groupName === "Ungrouped"
-                        ? lastInteractedColor
-                        : `${groupName.toLowerCase()}/new${lastInteractedColor}`
-                    onAddColor(newColorName)
-                  }}
-                >
-                  <Plus className="h-8 w-8 text-border" />
-                </Button>
-              </div>
-            </div>
-          </div>
+              )
+            })}
+          </GroupSection>
         )
       })}
 
