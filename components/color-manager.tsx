@@ -143,6 +143,20 @@ export function ColorManager({
   const [justDropped, setJustDropped] = useState(false)
   const [droppedAtIndex, setDroppedAtIndex] = useState<number | null>(null)
   const [poppingCardIds, setPoppingCardIds] = useState<string[]>([])
+  const cardSizeOptions = useMemo(
+    () => [
+      { id: "xs", label: "XS", width: 140 },
+      { id: "sm", label: "S", width: 180 },
+      { id: "md", label: "M", width: 220 },
+      { id: "lg", label: "L", width: 260 },
+    ],
+    [],
+  )
+  const [cardSizeIndex, setCardSizeIndex] = useState(2)
+  const selectedCardSize =
+    cardSizeOptions[Math.min(cardSizeIndex, cardSizeOptions.length - 1)] ??
+    cardSizeOptions[cardSizeOptions.length - 1]
+  const minCardWidth = cardSizeOptions[0].width
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const [editMode, setEditMode] = useState<"button" | "doubleClick" | null>(null)
@@ -786,8 +800,37 @@ export function ColorManager({
 
   return (
     <div className="space-y-8 border-border p-6 relative border-2 rounded-md bg-background mx-0">
-      <div className="pb-2 border-b-2">
-        <h2 className="font-semibold text-2xl">{label}</h2>
+      <div className="pb-4 border-b-2">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <h2 className="text-2xl font-semibold">{label}</h2>
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium text-muted-foreground">Card Size</span>
+            <div
+              role="radiogroup"
+              aria-label="Card size"
+              className="flex items-center gap-1 rounded-full border border-border bg-muted/40 p-1"
+            >
+              {cardSizeOptions.map((option, index) => {
+                const isActive = index === cardSizeIndex
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isActive}
+                    onClick={() => setCardSizeIndex(index)}
+                    className={cn(
+                      "relative flex h-8 min-w-[2.75rem] items-center justify-center rounded-full px-3 text-xs font-semibold transition",
+                      isActive ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <span>{option.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
       </div>
 
       {Array.from(groupedColors.entries()).map(([groupName, groupColors]) => {
@@ -881,6 +924,8 @@ export function ColorManager({
             isRemoving={isRemoving}
             indicatorPosition={indicatorPosition}
             showIndicator={showIndicator}
+            targetCardWidth={selectedCardSize.width}
+            minCardWidth={minCardWidth}
             onGroupReorderDragOver={(event) => handleGroupDragOver(event, groupName)}
             onGroupReorderDrop={(event) => handleGroupDrop(event, groupName)}
             onCardDragOver={(event) => handleDragOverGroup(event, groupName)}

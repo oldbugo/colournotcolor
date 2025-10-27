@@ -11,6 +11,8 @@ type GroupSectionProps = {
   isRemoving: boolean
   indicatorPosition: DragIndicatorPosition | null
   showIndicator: boolean
+  targetCardWidth: number
+  minCardWidth: number
   onGroupReorderDragOver: (event: React.DragEvent<HTMLDivElement>) => void
   onGroupReorderDrop: (event: React.DragEvent<HTMLDivElement>) => void
   onCardDragOver: (event: React.DragEvent<HTMLDivElement>) => void
@@ -27,6 +29,8 @@ export function GroupSection({
   isRemoving,
   indicatorPosition,
   showIndicator,
+  targetCardWidth,
+  minCardWidth,
   onGroupReorderDragOver,
   onGroupReorderDrop,
   onCardDragOver,
@@ -36,91 +40,60 @@ export function GroupSection({
   children,
 }: GroupSectionProps) {
   const gridRef = useRef<HTMLDivElement | null>(null)
-  const [gridDimensions, setGridDimensions] = useState<{ columns: number; cardWidth: number }>({
-    columns: 1,
-    cardWidth: 256,
-  })
-
-  const cardMinWidth = 156
-  const cardMaxWidth = 256
+  const [columnCount, setColumnCount] = useState(1)
   const gridGap = 12
+  const minColumns = 1
+  const maxColumns = 8
 
   useEffect(() => {
     const node = gridRef.current
     if (!node || typeof ResizeObserver === "undefined") return
 
-    const calculateLayout = () => {
-      const containerWidth = node.clientWidth
-      if (containerWidth <= 0) return
+    const deriveColumns = (width: number) => {
+      if (width <= 0) return
 
-      const maxColumns = Math.max(1, Math.floor((containerWidth + gridGap) / (cardMinWidth + gridGap)))
-
-      let selectedColumns = 1
-      let selectedWidth = containerWidth
-      let foundIdeal = false
-      let fallbackSmall: { columns: number; width: number } | null = null
-
-      for (let columns = 1; columns <= maxColumns; columns += 1) {
-        const width = (containerWidth - gridGap * (columns - 1)) / columns
-
-        if (width >= cardMinWidth && width <= cardMaxWidth) {
-          selectedColumns = columns
-          selectedWidth = width
-          foundIdeal = true
-          break
-        }
-
-        if (width < cardMinWidth) {
-          fallbackSmall = { columns, width }
-          break
-        }
+      const maxFitColumns = Math.max(minColumns, Math.floor((width + gridGap) / (minCardWidth + gridGap)))
+      let columns = Math.max(
+        minColumns,
+        Math.floor((width + gridGap) / (targetCardWidth + gridGap)),
+      )
+      columns = Math.min(columns, maxColumns, maxFitColumns)
+      if (columns < minColumns) {
+        columns = minColumns
       }
 
-      if (!foundIdeal) {
-        if (fallbackSmall) {
-          selectedColumns = fallbackSmall.columns
-          selectedWidth = fallbackSmall.width
-        } else {
-          selectedColumns = maxColumns
-          selectedWidth = (containerWidth - gridGap * (selectedColumns - 1)) / selectedColumns
-        }
+      let widthPerColumn = (width - gridGap * (columns - 1)) / columns
+
+      while (columns > minColumns && widthPerColumn < minCardWidth) {
+        columns -= 1
+        widthPerColumn = (width - gridGap * (columns - 1)) / columns
       }
 
-      if (selectedColumns === 1 && containerWidth < cardMinWidth) {
-        selectedWidth = containerWidth
-      }
-
-      setGridDimensions((prev) => {
-        const roundedWidth = Math.round(selectedWidth * 100) / 100
-        if (prev.columns === selectedColumns && prev.cardWidth === roundedWidth) {
-          return prev
-        }
-        return { columns: selectedColumns, cardWidth: roundedWidth }
-      })
+      setColumnCount((prev) => (prev === columns ? prev : columns))
     }
 
-    calculateLayout()
-
-    const observer = new ResizeObserver(() => {
-      calculateLayout()
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      deriveColumns(entry.contentRect.width)
     })
 
+    deriveColumns(node.clientWidth)
     observer.observe(node)
 
     return () => {
       observer.disconnect()
     }
-  }, [cardMinWidth, cardMaxWidth, gridGap])
-
+  }, [gridGap, targetCardWidth, minCardWidth, minColumns, maxColumns])
   const gridStyle = useMemo<React.CSSProperties>(
     () => ({
-      gridTemplateColumns: `repeat(${gridDimensions.columns}, minmax(${gridDimensions.cardWidth}px, ${gridDimensions.cardWidth}px))`,
+      gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
       justifyContent: "flex-start",
       justifyItems: "stretch",
       overflowAnchor: "none",
       gap: `${gridGap}px`,
     }),
-    [gridDimensions.columns, gridDimensions.cardWidth, gridGap],
+    [columnCount, gridGap],
   )
 
   return (
