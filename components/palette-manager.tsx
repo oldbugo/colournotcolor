@@ -18,6 +18,7 @@ type PaletteManagerProps = {
   onReorderPalettes: (fromIndex: number, toIndex: number) => void
   editingColor: { type: "foreground" | "background"; index: number; color: string } | null
   onColorChange: (color: string) => void
+  lastInteractedColor?: string
 }
 
 export function PaletteManager({
@@ -28,7 +29,9 @@ export function PaletteManager({
   onReorderPalettes,
   editingColor,
   onColorChange,
+  lastInteractedColor: _lastInteractedColor = "#808080",
 }: PaletteManagerProps) {
+  void _lastInteractedColor
   const [isPickerExpanded, setIsPickerExpanded] = useState(true)
   const [pickerHeight, setPickerHeight] = useState(400)
   const [isResizingPicker, setIsResizingPicker] = useState(false)

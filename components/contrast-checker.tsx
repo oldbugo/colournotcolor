@@ -3,6 +3,8 @@
 import type { ColorPalette } from "@/app/page"
 import { ContrastGrid } from "@/components/contrast-grid"
 import { ColorManager } from "@/components/color-manager"
+import type { ColorSwatch } from "@/types/palette"
+import { swatchFromLegacy, swatchToLegacy } from "@/lib/color-utils"
 
 type ContrastCheckerProps = {
   palette: ColorPalette
@@ -23,6 +25,17 @@ export function ContrastChecker({
   lastInteractedColor = "#808080",
   showOnlyGrid = false,
 }: ContrastCheckerProps) {
+  type LegacyColor = string | ColorSwatch
+
+  const foregroundSwatches = palette.foregroundColors.map((color, index) =>
+    swatchFromLegacy(color, `foreground-${palette.id}-${index}`),
+  )
+  const backgroundSwatches = palette.backgroundColors.map((color, index) =>
+    swatchFromLegacy(color, `background-${palette.id}-${index}`),
+  )
+
+  const toLegacy = (value: LegacyColor): string => (typeof value === "string" ? value : swatchToLegacy(value))
+
   const handleReorderForeground = (fromIndex: number, toIndex: number) => {
     const colors = [...palette.foregroundColors]
     const [removed] = colors.splice(fromIndex, 1)
@@ -53,13 +66,15 @@ export function ContrastChecker({
     onUpdatePalette({ backgroundColors: colors })
   }
 
-  const addColor = (type: "foreground" | "background", color: string): number => {
+  const addColor = (type: "foreground" | "background", color: LegacyColor): number => {
+    const legacyColor = toLegacy(color)
+
     if (type === "foreground") {
-      const newColors = [...palette.foregroundColors, color]
+      const newColors = [...palette.foregroundColors, legacyColor]
       onUpdatePalette({ foregroundColors: newColors })
       return newColors.length - 1
     } else {
-      const newColors = [...palette.backgroundColors, color]
+      const newColors = [...palette.backgroundColors, legacyColor]
       onUpdatePalette({ backgroundColors: newColors })
       return newColors.length - 1
     }
@@ -77,35 +92,37 @@ export function ContrastChecker({
     }
   }
 
-  const updateColor = (type: "foreground" | "background", index: number, color: string) => {
+  const updateColor = (type: "foreground" | "background", index: number, color: LegacyColor) => {
+    const legacyColor = toLegacy(color)
+
     if (type === "foreground") {
       const colors = [...palette.foregroundColors]
-      colors[index] = color
+      colors[index] = legacyColor
       onUpdatePalette({ foregroundColors: colors })
     } else {
       const colors = [...palette.backgroundColors]
-      colors[index] = color
+      colors[index] = legacyColor
       onUpdatePalette({ backgroundColors: colors })
     }
-    onColorUpdate?.(type, index, color)
+    onColorUpdate?.(type, index, legacyColor)
   }
 
-  const batchUpdateForeground = (colors: string[]) => {
-    onUpdatePalette({ foregroundColors: colors })
+  const batchUpdateForeground = (colors: LegacyColor[]) => {
+    onUpdatePalette({ foregroundColors: colors.map(toLegacy) })
   }
 
-  const batchUpdateBackground = (colors: string[]) => {
-    onUpdatePalette({ backgroundColors: colors })
+  const batchUpdateBackground = (colors: LegacyColor[]) => {
+    onUpdatePalette({ backgroundColors: colors.map(toLegacy) })
   }
 
   const handleAddForeground = () => {
-    const newColor = lastInteractedColor
+    const newColor = swatchFromLegacy(lastInteractedColor)
     const newIndex = addColor("foreground", newColor)
     onColorEdit?.("foreground", newIndex)
   }
 
   const handleAddBackground = () => {
-    const newColor = lastInteractedColor
+    const newColor = swatchFromLegacy(lastInteractedColor)
     const newIndex = addColor("background", newColor)
     onColorEdit?.("background", newIndex)
   }
@@ -135,11 +152,13 @@ export function ContrastChecker({
     <div className="p-6 space-y-6">
       <ColorManager
         label="Foreground"
-        colors={palette.foregroundColors}
-        onAddColor={(color) => addColor("foreground", color)}
+        colors={foregroundSwatches}
+        onAddColor={(swatch) => {
+          const newIndex = addColor("foreground", swatch)
+          onColorEdit?.("foreground", newIndex)
+        }}
         onRemoveColor={(index) => removeColor("foreground", index)}
-        onUpdateColor={(index, color) => updateColor("foreground", index, color)}
-        onReorderColors={handleReorderForeground}
+        onUpdateColor={(index, swatch) => updateColor("foreground", index, swatch)}
         onBatchUpdateColors={batchUpdateForeground}
         onColorEdit={(index) => onColorEdit?.("foreground", index)}
         activeEditingIndex={editingColor?.type === "foreground" ? editingColor.index : null}
@@ -147,11 +166,13 @@ export function ContrastChecker({
       />
       <ColorManager
         label="Background"
-        colors={palette.backgroundColors}
-        onAddColor={(color) => addColor("background", color)}
+        colors={backgroundSwatches}
+        onAddColor={(swatch) => {
+          const newIndex = addColor("background", swatch)
+          onColorEdit?.("background", newIndex)
+        }}
         onRemoveColor={(index) => removeColor("background", index)}
-        onUpdateColor={(index, color) => updateColor("background", index, color)}
-        onReorderColors={handleReorderBackground}
+        onUpdateColor={(index, swatch) => updateColor("background", index, swatch)}
         onBatchUpdateColors={batchUpdateBackground}
         onColorEdit={(index) => onColorEdit?.("background", index)}
         activeEditingIndex={editingColor?.type === "background" ? editingColor.index : null}
