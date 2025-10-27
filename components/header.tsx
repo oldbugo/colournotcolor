@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 type HeaderProps = {
   onClearCache?: () => void
@@ -43,6 +43,17 @@ export function Header({
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(paletteName || "")
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [hasMounted, setHasMounted] = useState(false)
+
+  useEffect(() => {
+    setHasMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!isEditingName) {
+      setEditedName(paletteName || "")
+    }
+  }, [paletteName, isEditingName])
 
   const handleClearCache = () => {
     setShowClearDialog(false)
@@ -64,6 +75,8 @@ export function Header({
     onDeletePalette?.()
   }
 
+  const shouldShowPaletteSection = hasMounted && !!paletteName
+
   return (
     <>
       <header className="border-border px-6 py-4 border-b-2 bg-secondary">
@@ -72,7 +85,7 @@ export function Header({
             <h1 className="text-xl font-bold">
               colour<span className="font-normal">not</span>color
             </h1>
-            {paletteName && (
+            {shouldShowPaletteSection && (
               <div className="flex items-center gap-2 border-l-2 border-border pl-6">
                 {isEditingName ? (
                   <Input

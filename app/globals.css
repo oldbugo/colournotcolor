@@ -128,3 +128,48 @@
     color: white;
   }
 }
+
+@keyframes wiggle {
+  0%, 100% {
+    transform: rotate(-0.8deg);
+  }
+  25% {
+    transform: rotate(0.8deg);
+  }
+  50% {
+    transform: rotate(-1deg);
+  }
+  75% {
+    transform: rotate(1deg);
+  }
+}
+
+.animate-wiggle {
+  animation: wiggle 250ms ease-in-out infinite;
+}
+
+@keyframes pop-burst {
+  0% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  35% {
+    transform: scale(0.92) rotate(-1.5deg);
+  }
+  65% {
+    transform: scale(1.08) rotate(1.5deg);
+  }
+  85% {
+    transform: scale(0.85) rotate(-1deg);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(0.6) rotate(0deg);
+    opacity: 0;
+  }
+}
+
+.animate-pop-burst {
+  animation: pop-burst 220ms cubic-bezier(0.31, 0.65, 0.48, 1) forwards;
+  transform-origin: center;
+}

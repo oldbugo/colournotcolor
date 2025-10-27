@@ -28,6 +28,7 @@ import {
   swatchToLegacy,
   updateSwatch,
 } from "@/lib/color-utils"
+import { cn } from "@/lib/utils"
 
 type ColorManagerProps = {
   label: string
@@ -129,13 +130,19 @@ export function ColorManager({
   const [dragOverGroupName, setDragOverGroupName] = useState<string | null>(null)
   const [isDragOverNewGroup, setIsDragOverNewGroup] = useState(false)
   const [isDragOverTrash, setIsDragOverTrash] = useState(false)
+  const [isBetweenZonesActive, setIsBetweenZonesActive] = useState(false)
   const [isAnyCardDragging, setIsAnyCardDragging] = useState(false)
 
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const dragImageRef = useRef<HTMLDivElement | null>(null)
+  const newGroupZoneRef = useRef<HTMLDivElement | null>(null)
+  const deleteZoneRef = useRef<HTMLDivElement | null>(null)
+  const dropZonesContainerRef = useRef<HTMLDivElement | null>(null)
+  const swatchesRef = useRef(swatches)
   const [indicatorPosition, setIndicatorPosition] = useState<DragIndicatorPosition | null>(null)
   const [justDropped, setJustDropped] = useState(false)
   const [droppedAtIndex, setDroppedAtIndex] = useState<number | null>(null)
+  const [poppingCardIds, setPoppingCardIds] = useState<string[]>([])
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const [editMode, setEditMode] = useState<"button" | "doubleClick" | null>(null)
@@ -211,6 +218,14 @@ export function ColorManager({
       setIndicatorPosition(null)
     }
   }, [dragOverIndex, dragMode, insertPosition])
+
+  useEffect(() => {
+    swatchesRef.current = swatches
+  }, [swatches])
+
+  useEffect(() => {
+    setPoppingCardIds((ids) => ids.filter((id) => swatches.some((swatch) => swatch.id === id)))
+  }, [swatches])
 
   useEffect(() => {
     if (justDropped) {
@@ -496,6 +511,7 @@ export function ColorManager({
     setIsAnyCardDragging(false)
     setIsDragOverNewGroup(false)
     setIsDragOverTrash(false)
+    setIsBetweenZonesActive(false)
   }
 
   const handleDragEnd = () => {
@@ -507,6 +523,7 @@ export function ColorManager({
     setIsAnyCardDragging(false)
     setIsDragOverNewGroup(false)
     setIsDragOverTrash(false)
+    setIsBetweenZonesActive(false)
     if (newGroupLeaveTimeoutRef.current) {
       clearTimeout(newGroupLeaveTimeoutRef.current)
       newGroupLeaveTimeoutRef.current = null
@@ -514,6 +531,10 @@ export function ColorManager({
     if (trashLeaveTimeoutRef.current) {
       clearTimeout(trashLeaveTimeoutRef.current)
       trashLeaveTimeoutRef.current = null
+    }
+    if (betweenZoneLeaveTimeoutRef.current) {
+      clearTimeout(betweenZoneLeaveTimeoutRef.current)
+      betweenZoneLeaveTimeoutRef.current = null
     }
     if (dragImageRef.current) {
       document.body.removeChild(dragImageRef.current)
@@ -634,6 +655,37 @@ export function ColorManager({
     onAddColor(swatchFromLegacy(label))
   }
 
+  const scheduleCardRemoval = (index: number) => {
+    const swatch = getSwatchAt(index)
+    if (!swatch) {
+      onColorEdit?.(-1)
+      onRemoveColor(index)
+      return
+    }
+
+    const removalSwatchId = swatch.id
+    const existingTimeout = removalTimeoutsRef.current.get(removalSwatchId)
+    if (existingTimeout) {
+      clearTimeout(existingTimeout)
+    }
+
+    setPoppingCardIds((current) =>
+      current.includes(removalSwatchId) ? current : [...current, removalSwatchId],
+    )
+
+    const timeout = setTimeout(() => {
+      const currentIndex = swatchesRef.current.findIndex((item) => item.id === removalSwatchId)
+      if (currentIndex !== -1) {
+        onColorEdit?.(-1)
+        onRemoveColor(currentIndex)
+      }
+      setPoppingCardIds((current) => current.filter((id) => id !== removalSwatchId))
+      removalTimeoutsRef.current.delete(removalSwatchId)
+    }, CARD_REMOVE_ANIMATION_MS)
+
+    removalTimeoutsRef.current.set(removalSwatchId, timeout)
+  }
+
   const handleDropOnNewGroup = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -654,9 +706,15 @@ export function ColorManager({
       onUpdateColor(draggedIndex, toSwatch(newColor, draggedIndex))
     }
 
+    if (betweenZoneLeaveTimeoutRef.current) {
+      clearTimeout(betweenZoneLeaveTimeoutRef.current)
+      betweenZoneLeaveTimeoutRef.current = null
+    }
     setIsDragOverNewGroup(false)
+    setIsDragOverTrash(false)
     setDraggedIndex(null)
     setIsAnyCardDragging(false)
+    setIsBetweenZonesActive(false)
   }
 
   const handleDropOnTrash = (e: React.DragEvent) => {
@@ -664,13 +722,18 @@ export function ColorManager({
     e.stopPropagation()
 
     if (draggedIndex !== null) {
-      onColorEdit?.(-1)
-      onRemoveColor(draggedIndex)
+      scheduleCardRemoval(draggedIndex)
     }
 
+    if (betweenZoneLeaveTimeoutRef.current) {
+      clearTimeout(betweenZoneLeaveTimeoutRef.current)
+      betweenZoneLeaveTimeoutRef.current = null
+    }
     setIsDragOverTrash(false)
+    setIsDragOverNewGroup(false)
     setDraggedIndex(null)
     setIsAnyCardDragging(false)
+    setIsBetweenZonesActive(false)
   }
 
   const groupNameTextClass = "text-3xl font-medium"
@@ -695,6 +758,8 @@ export function ColorManager({
 
   const newGroupLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const trashLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const betweenZoneLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const removalTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   useEffect(() => {
     return () => {
@@ -704,8 +769,20 @@ export function ColorManager({
       if (trashLeaveTimeoutRef.current) {
         clearTimeout(trashLeaveTimeoutRef.current)
       }
+      if (betweenZoneLeaveTimeoutRef.current) {
+        clearTimeout(betweenZoneLeaveTimeoutRef.current)
+      }
+      removalTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout))
+      removalTimeoutsRef.current.clear()
     }
   }, [])
+
+  const dropZoneBaseClass = "group rounded-lg border-2 border-transparent transition-all duration-300 ease-in-out w-72"
+  const DROP_ZONE_EXIT_DELAY = 240
+  const CARD_REMOVE_ANIMATION_MS = 220
+  const newGroupDropZoneActive = isBetweenZonesActive || isDragOverNewGroup
+  const deleteDropZoneActive = isBetweenZonesActive || isDragOverTrash
+  const isDropZoneExpanded = newGroupDropZoneActive || deleteDropZoneActive
 
   return (
     <div className="space-y-8 border-border p-6 relative border-2 rounded-md bg-background mx-0">
@@ -742,7 +819,7 @@ export function ColorManager({
 
         const addButton = (
           <div
-            className="relative flex w-full items-end pb-8"
+            className="relative w-full"
             onDragOver={(event) => {
               event.preventDefault()
               if (draggedIndex !== null && groupColors.length > 0) {
@@ -757,10 +834,10 @@ export function ColorManager({
               }
             }}
           >
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-[8.75rem] w-full cursor-pointer rounded-lg border border-dashed border-slate-300 bg-transparent"
+            <button
+              type="button"
+              aria-label="Add color card"
+              className="group relative flex w-full cursor-pointer flex-col items-stretch gap-1.5 overflow-visible rounded-xl border border-transparent bg-white p-2.5 pb-3 text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-slate-500 focus-visible:ring-offset-background"
               onClick={() => {
                 const newColorName =
                   groupName === "Ungrouped"
@@ -769,8 +846,29 @@ export function ColorManager({
                 onAddColor(swatchFromLegacy(newColorName))
               }}
             >
-              <Plus className="h-8 w-8 text-border" />
-            </Button>
+              <div className="flex w-full items-center justify-between px-0.5 text-[11px] font-semibold text-transparent" aria-hidden="true">
+                <span className="font-mono text-[11px] uppercase tracking-tight opacity-0 select-none">
+                  Add Color
+                </span>
+                <div className="flex items-center gap-1">
+                  <span className="inline-flex h-6 w-6 rounded-md border border-transparent" />
+                  <span className="inline-flex h-6 w-6 rounded-md border border-transparent" />
+                </div>
+              </div>
+
+              <div className="w-full overflow-hidden rounded-lg border border-dashed border-slate-300 bg-white shadow-sm transition group-hover:border-slate-400 group-hover:bg-slate-50">
+                <div className="flex h-24 w-full items-center justify-center border-b border-dashed border-slate-300 bg-gradient-to-b from-white to-slate-50 transition group-hover:from-slate-50 group-hover:to-white">
+                  <Plus className="h-8 w-8 text-slate-400 transition group-hover:text-slate-600" />
+                </div>
+                <div className="flex items-center justify-between px-2.5 pb-1.5 pt-2.5">
+                  <span className="inline-flex h-7 w-7 shrink-0 rounded-md border border-transparent" aria-hidden="true" />
+                  <span className="font-mono text-sm uppercase tracking-wide text-slate-500 transition group-hover:text-slate-700">
+                    Add Color
+                  </span>
+                  <span className="inline-flex h-7 w-7 shrink-0 rounded-md border border-transparent" aria-hidden="true" />
+                </div>
+              </div>
+            </button>
           </div>
         )
 
@@ -792,12 +890,13 @@ export function ColorManager({
           >
             {groupColors.map((colorItem, idx) => {
               const actualIndex = colorItem.originalIndex
+              const swatch = getSwatchAt(actualIndex)
               const isDraggingCard = draggedIndex === actualIndex
               const isDropTarget = dragOverIndex === actualIndex
 
               return (
                 <ColorCard
-                  key={colorItem.hex + "-" + actualIndex}
+                  key={swatch?.id ?? colorItem.hex + "-" + actualIndex}
                   color={colorItem}
                   nameInputRef={nameInputRef}
                   registerCardRef={(element) => {
@@ -817,6 +916,7 @@ export function ColorManager({
                     highlightActiveEditing: activeEditingIndex === actualIndex,
                     showCopySuccess: copiedIndex === actualIndex,
                     showJustDropped: justDropped && droppedAtIndex === actualIndex,
+                    showDeleting: swatch ? poppingCardIds.includes(swatch.id) : false,
                     insertPosition:
                       dragMode === "insert" && dragOverIndex === actualIndex ? insertPosition : null,
                     isEditingName: editingIndex === actualIndex,
@@ -853,99 +953,182 @@ export function ColorManager({
       })}
 
       <div
-        className={`flex justify-start relative transition-all duration-300 ease-in-out pl-10 ${
-          isDragOverNewGroup ? "pt-8 pb-8" : "pt-4"
-        }`}
-        onDragOver={(e) => {
-          e.preventDefault()
-          if (isAnyCardDragging) {
-            if (newGroupLeaveTimeoutRef.current) {
-              clearTimeout(newGroupLeaveTimeoutRef.current)
-              newGroupLeaveTimeoutRef.current = null
-            }
-            setIsDragOverNewGroup(true)
-            setDragOverIndex(null)
-            setDragMode(null)
-            setInsertPosition(null)
-          }
+        ref={dropZonesContainerRef}
+        className={cn(
+          "relative flex w-full justify-start transition-all duration-300 ease-in-out",
+          isDropZoneExpanded ? "py-6" : "pt-3 pb-5",
+        )}
+        onDragOver={(event) => {
+          if (!isAnyCardDragging) return
+          event.preventDefault()
+          setIsBetweenZonesActive(true)
+          setIsDragOverNewGroup(false)
+          setIsDragOverTrash(false)
         }}
-        onDragLeave={() => {
-          if (newGroupLeaveTimeoutRef.current) {
-            clearTimeout(newGroupLeaveTimeoutRef.current)
+        onDragLeave={(event) => {
+          const related = event.relatedTarget as Node | null
+          if (
+            related &&
+            (dropZonesContainerRef.current?.contains(related) ?? false)
+          ) {
+            return
           }
-          newGroupLeaveTimeoutRef.current = setTimeout(() => {
+          if (betweenZoneLeaveTimeoutRef.current) {
+            clearTimeout(betweenZoneLeaveTimeoutRef.current)
+          }
+          betweenZoneLeaveTimeoutRef.current = setTimeout(() => {
+            setIsBetweenZonesActive(false)
             setIsDragOverNewGroup(false)
-            newGroupLeaveTimeoutRef.current = null
-          }, 200)
+            setIsDragOverTrash(false)
+            betweenZoneLeaveTimeoutRef.current = null
+          }, DROP_ZONE_EXIT_DELAY)
         }}
-        onDrop={handleDropOnNewGroup}
+        onDrop={(event) => {
+          event.preventDefault()
+          if (betweenZoneLeaveTimeoutRef.current) {
+            clearTimeout(betweenZoneLeaveTimeoutRef.current)
+            betweenZoneLeaveTimeoutRef.current = null
+          }
+          setIsDragOverNewGroup(false)
+          setIsDragOverTrash(false)
+          setIsBetweenZonesActive(false)
+        }}
       >
-        <div
-          className={`transition-all duration-300 ease-in-out ${
-            isDragOverNewGroup
-              ? "w-72 h-44 border-2 border-dashed border-blue-500 bg-blue-50/50 rounded-lg opacity-100"
-              : "w-auto h-auto opacity-100"
-          }`}
-        >
-          {isDragOverNewGroup ? (
-            <div className="flex flex-col items-center justify-center h-full gap-2 transition-all duration-300 ease-in-out">
-              <FolderPlus className="h-8 w-8 text-blue-600 transition-all duration-300 ease-in-out" />
-              <span className="text-sm font-medium text-blue-600 transition-colors duration-300 ease-in-out">
-                Drop to Create New Group
-              </span>
-            </div>
-          ) : (
-            <Button
-              variant="outline"
-              size="lg"
-              className="gap-3 cursor-pointer bg-transparent transition-all duration-300 ease-in-out rounded-md font-semibold border text-sm"
-              onClick={handleAddNewGroup}
-            >
-              <FolderPlus className="h-6 w-6 transition-all duration-300 ease-in-out border-0" />
-              New Group
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {isAnyCardDragging && (
-        <div
-          className="fixed bottom-8 right-8 z-50"
-          onDragOver={(e) => {
-            e.preventDefault()
-            if (trashLeaveTimeoutRef.current) {
-              clearTimeout(trashLeaveTimeoutRef.current)
-              trashLeaveTimeoutRef.current = null
-            }
-            setIsDragOverTrash(true)
-          }}
-          onDragLeave={() => {
-            if (trashLeaveTimeoutRef.current) {
-              clearTimeout(trashLeaveTimeoutRef.current)
-            }
-            trashLeaveTimeoutRef.current = setTimeout(() => {
-              setIsDragOverTrash(false)
-              trashLeaveTimeoutRef.current = null
-            }, 200)
-          }}
-          onDrop={handleDropOnTrash}
-        >
+        <div className="flex w-full flex-wrap items-start gap-6">
           <div
-            className={`flex flex-col items-center justify-center gap-2 p-6 rounded-lg border-2 border-dashed transition-all duration-200 ${
-              isDragOverTrash ? "bg-red-100 border-red-500 scale-110 shadow-lg" : "bg-gray-100 border-gray-400"
-            }`}
+            ref={newGroupZoneRef}
+            className={cn(
+              dropZoneBaseClass,
+              newGroupDropZoneActive
+                ? isDragOverNewGroup
+                  ? "h-44 border-dashed border-blue-500 bg-blue-100/80 opacity-100 shadow-sm"
+                  : "h-44 border-dashed border-blue-300 bg-blue-50/60 opacity-100"
+                : "bg-transparent opacity-100 hover:border-blue-200 hover:bg-blue-50/40",
+            )}
+            onDragOver={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (isAnyCardDragging) {
+                if (newGroupLeaveTimeoutRef.current) {
+                  clearTimeout(newGroupLeaveTimeoutRef.current)
+                  newGroupLeaveTimeoutRef.current = null
+                }
+                setIsDragOverNewGroup(true)
+                setIsDragOverTrash(false)
+                setIsBetweenZonesActive(true)
+                setDragOverIndex(null)
+                setDragMode(null)
+                setInsertPosition(null)
+              }
+            }}
+            onDragLeave={(event) => {
+              if (newGroupLeaveTimeoutRef.current) {
+                clearTimeout(newGroupLeaveTimeoutRef.current)
+              }
+              const related = event.relatedTarget as Node | null
+              const stillWithinTray = !!related && (dropZonesContainerRef.current?.contains(related) ?? false)
+              newGroupLeaveTimeoutRef.current = setTimeout(() => {
+                setIsDragOverNewGroup(false)
+                if (stillWithinTray && (isAnyCardDragging || isBetweenZonesActive)) {
+                  setIsBetweenZonesActive(true)
+                } else {
+                  setIsBetweenZonesActive(false)
+                  setIsDragOverTrash(false)
+                }
+                newGroupLeaveTimeoutRef.current = null
+              }, DROP_ZONE_EXIT_DELAY)
+            }}
+            onDrop={handleDropOnNewGroup}
           >
-            <Trash2
-              className={`transition-all duration-200 ${isDragOverTrash ? "h-10 w-10 text-red-600" : "h-8 w-8 text-gray-600"}`}
-            />
-            <span
-              className={`text-sm font-medium transition-colors duration-200 ${isDragOverTrash ? "text-red-600" : "text-gray-600"}`}
+            {newGroupDropZoneActive ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 transition-all duration-300 ease-in-out">
+                <FolderPlus className="h-8 w-8 text-blue-600 transition-all duration-300 ease-in-out" />
+                <span className="text-sm font-medium text-blue-600 transition-colors duration-300 ease-in-out">
+                  Drop to Create New Group
+                </span>
+              </div>
+            ) : (
+              <Button
+                variant="cardAction"
+                size="card"
+                type="button"
+                className="w-full gap-3 uppercase tracking-wide text-sm font-semibold text-foreground/90 transition-colors duration-200 group-hover:border-blue-200 group-hover:bg-blue-50/60 group-hover:text-blue-600"
+                onClick={handleAddNewGroup}
+              >
+                <FolderPlus className="h-6 w-6 transition-all duration-300 ease-in-out border-0" />
+                New Group
+              </Button>
+            )}
+          </div>
+          <div className="ml-auto">
+            <div
+              ref={deleteZoneRef}
+              className={cn(
+                dropZoneBaseClass,
+                deleteDropZoneActive
+                  ? isDragOverTrash
+                    ? "h-44 border-dashed border-rose-500 bg-rose-100/80 opacity-100 shadow-sm"
+                    : "h-44 border-dashed border-rose-300 bg-rose-50/60 opacity-100"
+                  : "bg-transparent opacity-100 hover:border-rose-200 hover:bg-rose-50/40",
+              )}
+              onDragOver={(e) => {
+                if (!isAnyCardDragging) return
+                e.preventDefault()
+                e.stopPropagation()
+                if (trashLeaveTimeoutRef.current) {
+                  clearTimeout(trashLeaveTimeoutRef.current)
+                  trashLeaveTimeoutRef.current = null
+                }
+                setIsDragOverTrash(true)
+                setIsDragOverNewGroup(false)
+                setIsBetweenZonesActive(true)
+              }}
+              onDragLeave={(event) => {
+                if (trashLeaveTimeoutRef.current) {
+                  clearTimeout(trashLeaveTimeoutRef.current)
+                }
+                const related = event.relatedTarget as Node | null
+                const stillWithinTray = !!related && (dropZonesContainerRef.current?.contains(related) ?? false)
+                trashLeaveTimeoutRef.current = setTimeout(() => {
+                  setIsDragOverTrash(false)
+                  if (stillWithinTray && (isAnyCardDragging || isBetweenZonesActive)) {
+                    setIsBetweenZonesActive(true)
+                  } else {
+                    setIsBetweenZonesActive(false)
+                    setIsDragOverNewGroup(false)
+                  }
+                  trashLeaveTimeoutRef.current = null
+                }, DROP_ZONE_EXIT_DELAY)
+              }}
+              onDrop={(event) => {
+                if (!isAnyCardDragging) return
+                handleDropOnTrash(event)
+              }}
             >
-              {isDragOverTrash ? "Drop to Delete" : "Delete"}
-            </span>
+              {deleteDropZoneActive ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 transition-all duration-300 ease-in-out">
+                  <Trash2 className="h-8 w-8 text-rose-600 transition-all duration-300 ease-in-out" />
+                  <span className="text-sm font-medium text-rose-600 transition-colors duration-300 ease-in-out">
+                    Drop to Delete
+                  </span>
+                </div>
+              ) : (
+                <Button
+                  variant="cardAction"
+                  size="card"
+                  aria-disabled="true"
+                  tabIndex={-1}
+                  type="button"
+                  className="w-full gap-3 uppercase tracking-wide text-sm font-semibold border-rose-200 bg-rose-50 text-rose-500/90 transition-colors duration-200 cursor-default group-hover:border-rose-300 group-hover:bg-rose-100 group-hover:text-rose-600"
+                >
+                  <Trash2 className="h-6 w-6 text-rose-400" />
+                  Delete
+                </Button>
+              )}
+            </div>
           </div>
         </div>
-      )}
+      </div>
 
       <AlertDialog open={deleteIndex !== null} onOpenChange={(open) => !open && setDeleteIndex(null)}>
         <AlertDialogContent>
@@ -960,9 +1143,9 @@ export function ColorManager({
             <AlertDialogAction
               onClick={() => {
                 if (deleteIndex !== null) {
-                  onColorEdit?.(-1)
-                  onRemoveColor(deleteIndex)
+                  scheduleCardRemoval(deleteIndex)
                 }
+                setDeleteIndex(null)
               }}
             >
               Delete
