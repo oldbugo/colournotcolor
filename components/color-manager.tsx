@@ -1,9 +1,9 @@
 "use client"
 
 import type React from "react"
-import { useMemo, useState, useRef, useEffect } from "react"
+import { useMemo, useState, useRef, useEffect, useLayoutEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Plus, FolderPlus, Trash2 } from "lucide-react"
+import { Plus, FolderPlus, Trash2, ChevronDown } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +14,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import {
+  CARD_CONTROL_RADII,
+  CARD_MIN_COLUMN_WIDTH,
+  CARD_SIZE_TOKENS,
+} from "@/lib/design-tokens"
 import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
@@ -143,22 +149,21 @@ export function ColorManager({
   const [justDropped, setJustDropped] = useState(false)
   const [droppedAtIndex, setDroppedAtIndex] = useState<number | null>(null)
   const [poppingCardIds, setPoppingCardIds] = useState<string[]>([])
-  const cardSizeOptions = useMemo(
-    () => [
-      { id: "xs", label: "XS", width: 140 },
-      { id: "sm", label: "S", width: 180 },
-      { id: "md", label: "M", width: 220 },
-      { id: "lg", label: "L", width: 260 },
-    ],
-    [],
-  )
-  const [cardSizeIndex, setCardSizeIndex] = useState(2)
+  const defaultSizeIndex = useMemo(() => {
+    const index = CARD_SIZE_TOKENS.findIndex((token) => token.id === "md")
+    return index === -1 ? 0 : index
+  }, [])
+  const [cardSizeIndex, setCardSizeIndex] = useState(defaultSizeIndex)
   const selectedCardSize =
-    cardSizeOptions[Math.min(cardSizeIndex, cardSizeOptions.length - 1)] ??
-    cardSizeOptions[cardSizeOptions.length - 1]
-  const minCardWidth = cardSizeOptions[0].width
+    CARD_SIZE_TOKENS[Math.min(cardSizeIndex, CARD_SIZE_TOKENS.length - 1)] ??
+    CARD_SIZE_TOKENS[CARD_SIZE_TOKENS.length - 1]
+  const minCardWidth = CARD_MIN_COLUMN_WIDTH
+  const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
+  const managerRef = useRef<HTMLDivElement | null>(null)
+  const scrollAnchorParentRef = useRef<HTMLElement | null>(null)
+  const previousTopRef = useRef<number | null>(null)
   const [editMode, setEditMode] = useState<"button" | "doubleClick" | null>(null)
 
   const [newlyCreatedGroups, setNewlyCreatedGroups] = useState<Set<string>>(new Set())
@@ -166,6 +171,7 @@ export function ColorManager({
   const prevGroupsRef = useRef<Set<string>>(new Set())
 
   const groupedColors = groupColorsByCategory(colors)
+  const groupCount = groupedColors.size
 
   useEffect(() => {
     const currentGroups = new Set(groupedColors.keys())
@@ -240,6 +246,41 @@ export function ColorManager({
   useEffect(() => {
     setPoppingCardIds((ids) => ids.filter((id) => swatches.some((swatch) => swatch.id === id)))
   }, [swatches])
+
+  useLayoutEffect(() => {
+    const root = managerRef.current
+    if (!root) return
+
+    const findScrollParent = (node: HTMLElement | null): HTMLElement | null => {
+      let current: HTMLElement | null = node?.parentElement ?? null
+      while (current) {
+        const style = window.getComputedStyle(current)
+        const overflowY = style.overflowY || style.overflow
+        if (overflowY === "auto" || overflowY === "scroll") {
+          return current
+        }
+        current = current.parentElement
+      }
+      return document.scrollingElement as HTMLElement | null
+    }
+
+    if (!scrollAnchorParentRef.current) {
+      scrollAnchorParentRef.current = findScrollParent(root)
+    }
+
+    const scrollParent = scrollAnchorParentRef.current
+    const prevTop = previousTopRef.current
+    const currentTop = root.getBoundingClientRect().top
+
+    if (prevTop !== null && scrollParent) {
+      const delta = currentTop - prevTop
+      if (Math.abs(delta) > 1) {
+        scrollParent.scrollTop -= delta
+      }
+    }
+
+    previousTopRef.current = currentTop
+  }, [cardSizeIndex, groupCount])
 
   useEffect(() => {
     if (justDropped) {
@@ -799,36 +840,69 @@ export function ColorManager({
   const isDropZoneExpanded = newGroupDropZoneActive || deleteDropZoneActive
 
   return (
-    <div className="space-y-8 border-border p-6 relative border-2 rounded-md bg-background mx-0">
+    <div
+      ref={managerRef}
+      className="space-y-8 border-border p-6 relative border-2 rounded-md bg-background mx-0"
+      style={{ overflowAnchor: "none" }}
+    >
       <div className="pb-4 border-b-2">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <h2 className="text-2xl font-semibold">{label}</h2>
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-muted-foreground">Card Size</span>
-            <div
-              role="radiogroup"
-              aria-label="Card size"
-              className="flex items-center gap-1 rounded-full border border-border bg-muted/40 p-1"
-            >
-              {cardSizeOptions.map((option, index) => {
-                const isActive = index === cardSizeIndex
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={isActive}
-                    onClick={() => setCardSizeIndex(index)}
-                    className={cn(
-                      "relative flex h-8 min-w-[2.75rem] items-center justify-center rounded-full px-3 text-xs font-semibold transition",
-                      isActive ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <span>{option.label}</span>
-                  </button>
-                )
-              })}
-            </div>
+          <h2 className="text-2xl font-semibold leading-tight">{label}</h2>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 md:self-end">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
+            <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
+                    isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
+                  )}
+                  style={{
+                    borderRadius: isCardSizeMenuOpen
+                      ? CARD_CONTROL_RADII.elevated
+                      : CARD_CONTROL_RADII.pill,
+                  }}
+                >
+                  <span>{selectedCardSize.label}</span>
+                  <ChevronDown className="h-3 w-3 opacity-70" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                sideOffset={6}
+                className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
+                style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
+              >
+                <div className="flex items-center gap-1">
+                  {CARD_SIZE_TOKENS.map((option, index) => {
+                    const isActive = index === cardSizeIndex
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setCardSizeIndex(index)
+                          setIsCardSizeMenuOpen(false)
+                        }}
+                        className={cn(
+                          "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                          isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
+                        )}
+                        style={{
+                          borderRadius: isActive
+                            ? CARD_CONTROL_RADII.elevated
+                            : CARD_CONTROL_RADII.pill,
+                        }}
+                      >
+                        <span>{option.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
@@ -1201,3 +1275,11 @@ export function ColorManager({
     </div>
   )
 }
+
+
+
+
+
+
+
+

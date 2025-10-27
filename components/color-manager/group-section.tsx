@@ -1,8 +1,8 @@
 "use client"
-
 import { useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
 import type { DragIndicatorPosition } from "@/components/color-manager/types"
+import { CARD_GRID_GAP, CARD_MAX_GRID_COLUMNS } from "@/lib/design-tokens"
 
 type GroupSectionProps = {
   isGroupDragging: boolean
@@ -41,9 +41,9 @@ export function GroupSection({
 }: GroupSectionProps) {
   const gridRef = useRef<HTMLDivElement | null>(null)
   const [columnCount, setColumnCount] = useState(1)
-  const gridGap = 12
+  const gridGap = CARD_GRID_GAP
   const minColumns = 1
-  const maxColumns = 8
+  const maxColumns = CARD_MAX_GRID_COLUMNS
 
   useEffect(() => {
     const node = gridRef.current
@@ -139,3 +139,4 @@ export function GroupSection({
     </div>
   )
 }
+
