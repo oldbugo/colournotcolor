@@ -18,6 +18,9 @@
   --muted-foreground: oklch(0.556 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
+  --dropzone-disabled: oklch(0.92 0 0);
+  --dropzone-disabled-foreground: oklch(0.48 0 0);
+  --dropzone-disabled-border: oklch(0.84 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.577 0.245 27.325);
   --border: rgb(24, 24, 24);
@@ -57,6 +60,9 @@
   --destructive: oklch(0.396 0.141 25.723);
   --destructive-foreground: oklch(0.637 0.237 25.331);
   --border: oklch(0.269 0 0);
+  --dropzone-disabled: oklch(0.32 0 0);
+  --dropzone-disabled-foreground: oklch(0.78 0 0);
+  --dropzone-disabled-border: oklch(0.42 0 0);
   --input: oklch(0.269 0 0);
   --ring: oklch(0.439 0 0);
   --chart-1: oklch(0.488 0.243 264.376);
@@ -91,6 +97,9 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-dropzone-disabled: var(--dropzone-disabled);
+  --color-dropzone-disabled-foreground: var(--dropzone-disabled-foreground);
+  --color-dropzone-disabled-border: var(--dropzone-disabled-border);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);

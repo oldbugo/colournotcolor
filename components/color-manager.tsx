@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useMemo, useState, useRef, useEffect, useLayoutEffect } from "react"
+import { useMemo, useState, useRef, useEffect, useLayoutEffect, useId, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Plus, FolderPlus, Trash2, ChevronDown } from "lucide-react"
 import {
@@ -29,6 +29,7 @@ import {
   composeLabel,
   createSwatch,
   normalizeHex,
+  parseLegacyColor,
   splitLabel,
   swatchFromLegacy,
   swatchToLegacy,
@@ -138,12 +139,14 @@ export function ColorManager({
   const [isDragOverTrash, setIsDragOverTrash] = useState(false)
   const [isBetweenZonesActive, setIsBetweenZonesActive] = useState(false)
   const [isAnyCardDragging, setIsAnyCardDragging] = useState(false)
+  const deleteZoneTooltipId = useId()
 
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const dragImageRef = useRef<HTMLDivElement | null>(null)
   const newGroupZoneRef = useRef<HTMLDivElement | null>(null)
   const deleteZoneRef = useRef<HTMLDivElement | null>(null)
   const dropZonesContainerRef = useRef<HTMLDivElement | null>(null)
+  const dropZonesLayoutRef = useRef<HTMLDivElement | null>(null)
   const swatchesRef = useRef(swatches)
   const [indicatorPosition, setIndicatorPosition] = useState<DragIndicatorPosition | null>(null)
   const [justDropped, setJustDropped] = useState(false)
@@ -157,8 +160,12 @@ export function ColorManager({
   const selectedCardSize =
     CARD_SIZE_TOKENS[Math.min(cardSizeIndex, CARD_SIZE_TOKENS.length - 1)] ??
     CARD_SIZE_TOKENS[CARD_SIZE_TOKENS.length - 1]
+  const [dropZoneWidth, setDropZoneWidth] = useState(() => selectedCardSize.width)
+  const [dropZonesStacked, setDropZonesStacked] = useState(false)
+  const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
   const minCardWidth = CARD_MIN_COLUMN_WIDTH
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
+  const isAnyCardDraggingRef = useRef(isAnyCardDragging)
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const managerRef = useRef<HTMLDivElement | null>(null)
@@ -246,6 +253,17 @@ export function ColorManager({
   useEffect(() => {
     setPoppingCardIds((ids) => ids.filter((id) => swatches.some((swatch) => swatch.id === id)))
   }, [swatches])
+
+  useEffect(() => {
+    if (!pendingNewGroupSwatchId) return
+    const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
+    if (index === -1) return
+
+    onColorEdit?.(index)
+    setDroppedAtIndex(index)
+    setJustDropped(true)
+    setPendingNewGroupSwatchId(null)
+  }, [pendingNewGroupSwatchId, swatches, onColorEdit])
 
   useLayoutEffect(() => {
     const root = managerRef.current
@@ -697,17 +715,30 @@ export function ColorManager({
     setInsertPosition(null)
   }
 
-  const handleAddNewGroup = () => {
-    let groupNumber = 1
-    let newGroupName = "new group"
+  const getNextGroupName = useCallback(() => {
+    const existingGroupsLower = new Set(Array.from(groupedColors.keys(), (group) => group.toLowerCase()))
+    const baseName = "newGroup"
+    let candidate = baseName
+    let counter = 1
 
-    while (groupedColors.has(newGroupName.charAt(0).toUpperCase() + newGroupName.slice(1))) {
-      groupNumber++
-      newGroupName = `new group ${groupNumber}`
+    while (existingGroupsLower.has(candidate.toLowerCase())) {
+      counter += 1
+      candidate = `${baseName}${counter}`
     }
 
-    const label = lastInteractedColor.includes("/") ? lastInteractedColor : `Ungrouped/${lastInteractedColor}`
-    onAddColor(swatchFromLegacy(label))
+    return candidate
+  }, [groupedColors])
+
+  const handleAddNewGroup = () => {
+    const groupName = getNextGroupName()
+    const parsedDefault = parseLegacyColor(lastInteractedColor ?? "#808080")
+    const { name: parsedName } = splitLabel(parsedDefault.label)
+    const defaultHex = parsedDefault.hex
+    const defaultName = parsedName || defaultHex.replace("#", "")
+    const newSwatch = createSwatch({ hex: defaultHex, name: defaultName, group: groupName })
+
+    setPendingNewGroupSwatchId(newSwatch.id)
+    onAddColor(newSwatch)
   }
 
   const scheduleCardRemoval = (index: number) => {
@@ -750,14 +781,8 @@ export function ColorManager({
       const parts = draggedColor.split("#")
       const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
 
-      let groupNumber = 1
-      let newGroupName = "new group"
-      while (groupedColors.has(newGroupName.charAt(0).toUpperCase() + newGroupName.slice(1))) {
-        groupNumber++
-        newGroupName = `new group ${groupNumber}`
-      }
-
-      const newColor = `${newGroupName}/${hex.replace("#", "")}${hex}`
+      const groupName = getNextGroupName()
+      const newColor = `${groupName}/${hex.replace("#", "")}${hex}`
       onUpdateColor(draggedIndex, toSwatch(newColor, draggedIndex))
     }
 
@@ -832,7 +857,107 @@ export function ColorManager({
     }
   }, [])
 
-  const dropZoneBaseClass = "group rounded-lg border-2 border-transparent transition-all duration-300 ease-in-out w-72"
+  useEffect(() => {
+    isAnyCardDraggingRef.current = isAnyCardDragging
+  }, [isAnyCardDragging])
+
+  const dropZoneDimensionStyle = useMemo(() => {
+    if (!dropZoneWidth) return undefined
+    const roundedWidth = Math.max(0, Math.round(dropZoneWidth))
+    return { width: `${roundedWidth}px`, maxWidth: `${roundedWidth}px` }
+  }, [dropZoneWidth])
+
+  const updateDropZoneWidth = useCallback((nextWidth: number | null | undefined) => {
+    if (!nextWidth || Number.isNaN(nextWidth)) return
+    if (isAnyCardDraggingRef.current) return
+    const rounded = Math.max(0, Math.round(nextWidth))
+    setDropZoneWidth((previous) => (previous === rounded ? previous : rounded))
+  }, [])
+
+  const measureDropZoneWidth = useCallback(() => {
+    if (isAnyCardDraggingRef.current) return dropZoneWidth
+    let measured = selectedCardSize.width
+    const iterator = cardRefs.current.values().next()
+    if (!iterator.done) {
+      const cardElement = iterator.value
+      if (cardElement) {
+        const rect = cardElement.getBoundingClientRect()
+        if (rect.width > 0) {
+          measured = rect.width
+        }
+      }
+    }
+    updateDropZoneWidth(measured)
+    return measured
+  }, [dropZoneWidth, selectedCardSize.width, updateDropZoneWidth])
+
+  useLayoutEffect(() => {
+    measureDropZoneWidth()
+  }, [measureDropZoneWidth, swatches.length, cardSizeIndex])
+
+  useEffect(() => {
+    const iterator = cardRefs.current.values().next()
+    const firstCard = iterator.value as HTMLElement | undefined
+    if (!firstCard) return
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width
+        if (width) {
+          updateDropZoneWidth(width)
+        }
+      }
+    })
+
+    observer.observe(firstCard)
+    return () => observer.disconnect()
+  }, [cardSizeIndex, swatches.length, updateDropZoneWidth])
+
+  const recomputeDropZoneLayout = useCallback(() => {
+    const container = dropZonesLayoutRef.current ?? dropZonesContainerRef.current
+    if (!container) return
+    if (isAnyCardDraggingRef.current) return
+
+    const containerWidth = container.clientWidth
+    const styles = window.getComputedStyle(container)
+    const gapValueRaw = styles.columnGap || styles.gap || "0"
+    const gap = Number.parseFloat(gapValueRaw) || 0
+    const targetWidth = dropZoneWidth || selectedCardSize.width
+    if (!targetWidth) return
+    const requiredWidth = targetWidth * 2 + gap + 4
+    const shouldStack = containerWidth < requiredWidth
+    setDropZonesStacked((previous) => (previous === shouldStack ? previous : shouldStack))
+  }, [dropZoneWidth, selectedCardSize.width])
+
+  useLayoutEffect(() => {
+    recomputeDropZoneLayout()
+  }, [recomputeDropZoneLayout])
+
+  useLayoutEffect(() => {
+    const container = dropZonesLayoutRef.current ?? dropZonesContainerRef.current
+    if (!container) return
+
+    const observer = new ResizeObserver(() => {
+      if (isAnyCardDraggingRef.current) return
+      recomputeDropZoneLayout()
+    })
+    observer.observe(container)
+    window.addEventListener("resize", recomputeDropZoneLayout)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", recomputeDropZoneLayout)
+    }
+  }, [recomputeDropZoneLayout])
+
+  useEffect(() => {
+    if (!isAnyCardDragging) {
+      recomputeDropZoneLayout()
+    }
+  }, [isAnyCardDragging, recomputeDropZoneLayout])
+
+  const dropZoneBaseClass =
+    "group relative flex shrink-0 flex-col rounded-lg border-2 border-transparent bg-transparent duration-200 ease-in-out transition-[border-color,background-color,box-shadow,opacity]"
   const DROP_ZONE_EXIT_DELAY = 240
   const CARD_REMOVE_ANIMATION_MS = 220
   const newGroupDropZoneActive = isBetweenZonesActive || isDragOverNewGroup
@@ -1113,7 +1238,13 @@ export function ColorManager({
           setIsBetweenZonesActive(false)
         }}
       >
-        <div className="flex w-full flex-wrap items-start gap-6">
+        <div
+          ref={dropZonesLayoutRef}
+          className={cn(
+            "flex w-full transition-all duration-300 ease-in-out",
+            dropZonesStacked ? "flex-col items-center gap-6" : "flex-row items-start justify-between gap-6",
+          )}
+        >
           <div
             ref={newGroupZoneRef}
             className={cn(
@@ -1158,6 +1289,7 @@ export function ColorManager({
               }, DROP_ZONE_EXIT_DELAY)
             }}
             onDrop={handleDropOnNewGroup}
+            style={dropZoneDimensionStyle}
           >
             {newGroupDropZoneActive ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 transition-all duration-300 ease-in-out">
@@ -1171,7 +1303,7 @@ export function ColorManager({
                 variant="cardAction"
                 size="card"
                 type="button"
-                className="w-full gap-3 uppercase tracking-wide text-sm font-semibold text-foreground/90 transition-colors duration-200 group-hover:border-blue-200 group-hover:bg-blue-50/60 group-hover:text-blue-600"
+                className="w-full gap-3 uppercase tracking-wide text-sm font-semibold text-foreground/90 transition-colors duration-200 group-hover:border-blue-200 group-hover:bg-blue-50/60 group-hover:text-blue-600 cursor-pointer"
                 onClick={handleAddNewGroup}
               >
                 <FolderPlus className="h-6 w-6 transition-all duration-300 ease-in-out border-0" />
@@ -1179,72 +1311,85 @@ export function ColorManager({
               </Button>
             )}
           </div>
-          <div className="ml-auto">
-            <div
-              ref={deleteZoneRef}
-              className={cn(
-                dropZoneBaseClass,
-                deleteDropZoneActive
-                  ? isDragOverTrash
-                    ? "h-44 border-dashed border-rose-500 bg-rose-100/80 opacity-100 shadow-sm"
-                    : "h-44 border-dashed border-rose-300 bg-rose-50/60 opacity-100"
-                  : "bg-transparent opacity-100 hover:border-rose-200 hover:bg-rose-50/40",
-              )}
-              onDragOver={(e) => {
-                if (!isAnyCardDragging) return
-                e.preventDefault()
-                e.stopPropagation()
-                if (trashLeaveTimeoutRef.current) {
-                  clearTimeout(trashLeaveTimeoutRef.current)
-                  trashLeaveTimeoutRef.current = null
+          <div
+            ref={deleteZoneRef}
+            className={cn(
+              dropZoneBaseClass,
+              deleteDropZoneActive
+                ? isDragOverTrash
+                  ? "h-44 border-dashed border-rose-500 bg-rose-100/80 opacity-100 shadow-sm"
+                  : "h-44 border-dashed border-rose-300 bg-rose-50/60 opacity-100"
+                : "border-transparent bg-transparent opacity-100",
+            )}
+            onDragOver={(e) => {
+              if (!isAnyCardDragging) return
+              e.preventDefault()
+              e.stopPropagation()
+              if (trashLeaveTimeoutRef.current) {
+                clearTimeout(trashLeaveTimeoutRef.current)
+                trashLeaveTimeoutRef.current = null
+              }
+              setIsDragOverTrash(true)
+              setIsDragOverNewGroup(false)
+              setIsBetweenZonesActive(true)
+            }}
+            onDragLeave={(event) => {
+              if (trashLeaveTimeoutRef.current) {
+                clearTimeout(trashLeaveTimeoutRef.current)
+              }
+              const related = event.relatedTarget as Node | null
+              const stillWithinTray = !!related && (dropZonesContainerRef.current?.contains(related) ?? false)
+              trashLeaveTimeoutRef.current = setTimeout(() => {
+                setIsDragOverTrash(false)
+                if (stillWithinTray && (isAnyCardDragging || isBetweenZonesActive)) {
+                  setIsBetweenZonesActive(true)
+                } else {
+                  setIsBetweenZonesActive(false)
+                  setIsDragOverNewGroup(false)
                 }
-                setIsDragOverTrash(true)
-                setIsDragOverNewGroup(false)
-                setIsBetweenZonesActive(true)
-              }}
-              onDragLeave={(event) => {
-                if (trashLeaveTimeoutRef.current) {
-                  clearTimeout(trashLeaveTimeoutRef.current)
-                }
-                const related = event.relatedTarget as Node | null
-                const stillWithinTray = !!related && (dropZonesContainerRef.current?.contains(related) ?? false)
-                trashLeaveTimeoutRef.current = setTimeout(() => {
-                  setIsDragOverTrash(false)
-                  if (stillWithinTray && (isAnyCardDragging || isBetweenZonesActive)) {
-                    setIsBetweenZonesActive(true)
-                  } else {
-                    setIsBetweenZonesActive(false)
-                    setIsDragOverNewGroup(false)
-                  }
-                  trashLeaveTimeoutRef.current = null
-                }, DROP_ZONE_EXIT_DELAY)
-              }}
-              onDrop={(event) => {
-                if (!isAnyCardDragging) return
-                handleDropOnTrash(event)
-              }}
-            >
-              {deleteDropZoneActive ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 transition-all duration-300 ease-in-out">
-                  <Trash2 className="h-8 w-8 text-rose-600 transition-all duration-300 ease-in-out" />
-                  <span className="text-sm font-medium text-rose-600 transition-colors duration-300 ease-in-out">
-                    Drop to Delete
-                  </span>
-                </div>
-              ) : (
+                trashLeaveTimeoutRef.current = null
+              }, DROP_ZONE_EXIT_DELAY)
+            }}
+            onDrop={(event) => {
+              if (!isAnyCardDragging) return
+              handleDropOnTrash(event)
+            }}
+            style={dropZoneDimensionStyle}
+          >
+            {deleteDropZoneActive ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 transition-all duration-300 ease-in-out">
+                <Trash2 className="h-8 w-8 text-rose-600 transition-all duration-300 ease-in-out" />
+                <span className="text-sm font-medium text-rose-600 transition-colors duration-300 ease-in-out">
+                  Drop to Delete
+                </span>
+              </div>
+            ) : (
+              <div className="relative w-full group/delete">
                 <Button
                   variant="cardAction"
                   size="card"
+                  type="button"
                   aria-disabled="true"
                   tabIndex={-1}
-                  type="button"
-                  className="w-full gap-3 uppercase tracking-wide text-sm font-semibold border-rose-200 bg-rose-50 text-rose-500/90 transition-colors duration-200 cursor-default group-hover:border-rose-300 group-hover:bg-rose-100 group-hover:text-rose-600"
+                  aria-describedby={deleteZoneTooltipId}
+                  onClick={(event) => event.preventDefault()}
+                  className="relative w-full justify-center gap-3 uppercase tracking-wide text-sm font-semibold border-dropzone-disabled-border bg-dropzone-disabled text-dropzone-disabled-foreground hover:border-dropzone-disabled-border hover:bg-dropzone-disabled hover:text-dropzone-disabled-foreground focus-visible:border-dropzone-disabled-border focus-visible:ring-[0px] focus-visible:ring-0 focus-visible:ring-transparent focus-visible:ring-offset-0 focus-visible:outline-none focus-visible:shadow-none cursor-default"
                 >
-                  <Trash2 className="h-6 w-6 text-rose-400" />
-                  Delete
+                  <span className="flex items-center gap-3 text-center">
+                    <Trash2 className="h-6 w-6 text-dropzone-disabled-foreground/80" />
+                    Delete
+                  </span>
                 </Button>
-              )}
-            </div>
+                <div
+                  id={deleteZoneTooltipId}
+                  role="tooltip"
+                  className="pointer-events-none invisible absolute left-1/2 bottom-full w-full -translate-x-1/2 -translate-y-3 rounded-md border border-dropzone-disabled-border bg-background px-3 py-2 text-xs font-medium leading-4 text-foreground opacity-0 shadow-sm transition-opacity duration-150 group-hover/delete:visible group-hover/delete:opacity-100 group-focus-within/delete:visible group-focus-within/delete:opacity-100"
+                  style={dropZoneDimensionStyle}
+                >
+                  Drag a card here to delete it
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1275,6 +1420,7 @@ export function ColorManager({
     </div>
   )
 }
+
 
 
 
