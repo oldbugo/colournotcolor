@@ -35,14 +35,9 @@ export function GroupHeader({
   return (
     <div className="flex items-center gap-3">
       <div
-        className={`flex items-center justify-center rounded-md border border-border bg-background p-2 ${
-          isUngrouped ? "opacity-50" : "cursor-grab active:cursor-grabbing"
-        }`}
-        draggable={!isUngrouped}
-        onDragStart={(event) => {
-          if (isUngrouped) return
-          onDragStart(event)
-        }}
+        className="flex items-center justify-center rounded-md border border-border bg-background p-2 cursor-grab active:cursor-grabbing"
+        draggable
+        onDragStart={onDragStart}
         onDragEnd={onDragEnd}
       >
         <GripVertical className="h-4 w-4 text-muted-foreground" />

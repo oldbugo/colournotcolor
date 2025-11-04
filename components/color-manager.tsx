@@ -3,7 +3,7 @@
 import type React from "react"
 import { useMemo, useState, useRef, useEffect, useLayoutEffect, useId, useCallback } from "react"
 import { Button } from "@/components/ui/button"
-import { Plus, FolderPlus, Trash2, ChevronDown } from "lucide-react"
+import { Plus, FolderPlus, Trash2, ChevronDown, MoreHorizontal } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,7 +14,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   CARD_CONTROL_RADII,
   CARD_MIN_COLUMN_WIDTH,
@@ -23,7 +29,7 @@ import {
 import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
-import { GroupSection } from "@/components/color-manager/group-section"
+import { GroupSection, GROUP_SECTION_METRICS } from "@/components/color-manager/group-section"
 import type { ColorWithName, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
   composeLabel,
@@ -47,6 +53,18 @@ type ColorManagerProps = {
   onColorEdit?: (index: number) => void
   activeEditingIndex?: number | null
   lastInteractedColor?: string
+}
+
+type GroupDragIntentState = {
+  groupName: string
+  mode: "swap" | "insert"
+  position: "before" | "after" | null
+  distance: number
+}
+
+type GroupDeadzoneLock = {
+  groupName: string
+  position: "before" | "after"
 }
 
 function groupColorsByCategory(colors: string[]): Map<string, ColorWithName[]> {
@@ -165,7 +183,21 @@ export function ColorManager({
   const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
   const minCardWidth = CARD_MIN_COLUMN_WIDTH
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
+  const [collapseGroupsDuringGroupDrag, setCollapseGroupsDuringGroupDrag] = useState(false)
+  const [areGroupsCollapsedForDrag, setAreGroupsCollapsedForDrag] = useState(false)
   const isAnyCardDraggingRef = useRef(isAnyCardDragging)
+  const [groupDragMode, setGroupDragMode] = useState<"swap" | "insert" | null>(null)
+  const [groupInsertPosition, setGroupInsertPosition] = useState<"before" | "after" | null>(null)
+  const groupDragPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
+  const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
+
+  useEffect(() => {
+    if (!collapseGroupsDuringGroupDrag) {
+      setAreGroupsCollapsedForDrag(false)
+    }
+  }, [collapseGroupsDuringGroupDrag])
+
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const managerRef = useRef<HTMLDivElement | null>(null)
@@ -615,67 +647,381 @@ export function ColorManager({
     }
   }
 
+  const resetGroupDragState = useCallback(() => {
+    setDraggedGroup(null)
+    setDragOverGroupName(null)
+    setAreGroupsCollapsedForDrag(false)
+    setGroupDragMode(null)
+    setGroupInsertPosition(null)
+    groupDragPointerRef.current = null
+  }, [])
+
+  const evaluateGroupDragIntent = useCallback(
+    (pointer: { x: number; y: number }) => {
+      if (!draggedGroup) return
+
+      const sections = Array.from(document.querySelectorAll<HTMLElement>("[data-group-section]"))
+      if (sections.length === 0) {
+        if (groupDragMode !== null) setGroupDragMode(null)
+        if (groupInsertPosition !== null) setGroupInsertPosition(null)
+        if (dragOverGroupName !== null) setDragOverGroupName(null)
+        return
+      }
+
+      const halfGap = GROUP_SECTION_METRICS.insertGap / 2
+      const horizontalOutset = GROUP_SECTION_METRICS.horizontalDetectionOutset
+      const baseEdgeThreshold = GROUP_SECTION_METRICS.edgeInsertThreshold
+      const lastIntent = lastGroupIntentRef.current
+      const midpointDeadzone = GROUP_SECTION_METRICS.insertMidpointDeadzone
+
+      let bestIntent: GroupDragIntentState | null = null
+
+      const tolerance = 1.5
+
+      const considerCandidate = (
+        groupName: string,
+        mode: "swap" | "insert",
+        position: "before" | "after" | null,
+        distance: number,
+      ) => {
+        if (distance < 0) return
+        if (mode === "swap" && groupName === draggedGroup) return
+
+        const candidatePosition: "before" | "after" | null =
+          mode === "insert" ? position ?? "before" : null
+        const candidateMatchesCurrent =
+          dragOverGroupName === groupName &&
+          groupDragMode === mode &&
+          (mode !== "insert" || groupInsertPosition === candidatePosition)
+
+        const adoptCandidate = () => {
+          bestIntent = {
+            groupName,
+            mode,
+            position: candidatePosition,
+            distance,
+          }
+        }
+
+        if (!bestIntent || distance < bestIntent.distance - tolerance) {
+          adoptCandidate()
+          return
+        }
+
+        if (!bestIntent) return
+
+        const bestMatchesCurrent =
+          dragOverGroupName === bestIntent.groupName &&
+          groupDragMode === bestIntent.mode &&
+          (bestIntent.mode !== "insert" || groupInsertPosition === bestIntent.position)
+
+        if (Math.abs(distance - bestIntent.distance) <= tolerance) {
+          if (candidateMatchesCurrent && !bestMatchesCurrent) {
+            adoptCandidate()
+            return
+          }
+          if (!bestMatchesCurrent) {
+            if (bestIntent.mode === "swap" && mode === "insert") {
+              adoptCandidate()
+              return
+            }
+            if (mode === "insert" && groupInsertPosition === candidatePosition) {
+              adoptCandidate()
+            }
+          }
+        }
+      }
+
+      for (const section of sections) {
+        const groupName = section.getAttribute("data-group-name")
+        if (!groupName) continue
+
+        const rect = section.getBoundingClientRect()
+        const horizontalMin = rect.left - horizontalOutset
+        const horizontalMax = rect.right + horizontalOutset
+        if (pointer.x < horizontalMin || pointer.x > horizontalMax) continue
+
+        const insideVertical = pointer.y >= rect.top && pointer.y <= rect.bottom
+        const distanceAbove = rect.top - pointer.y
+        const distanceBelow = pointer.y - rect.bottom
+        const topEdgeDistance = pointer.y - rect.top
+        const bottomEdgeDistance = rect.bottom - pointer.y
+        const edgeThreshold = Math.min(baseEdgeThreshold, rect.height / 2)
+
+        if (insideVertical) {
+          const centerLine = rect.top + rect.height / 2
+          const distanceToCenter = pointer.y - centerLine
+          const absCenterDistance = Math.abs(distanceToCenter)
+          const withinDeadzone = midpointDeadzone > 0 && absCenterDistance <= midpointDeadzone
+          const currentLock = groupDeadzoneLockRef.current
+
+          if (
+            currentLock &&
+            currentLock.groupName === groupName &&
+            (midpointDeadzone <= 0 || absCenterDistance > midpointDeadzone + GROUP_SECTION_METRICS.insertThickness + 2)
+          ) {
+            groupDeadzoneLockRef.current = null
+          }
+
+          if (withinDeadzone) {
+            if (currentLock && currentLock.groupName === groupName) {
+              considerCandidate(groupName, "insert", currentLock.position, absCenterDistance)
+            } else if (
+              lastIntent &&
+              lastIntent.mode === "insert" &&
+              lastIntent.groupName === groupName &&
+              lastIntent.position !== null
+            ) {
+              groupDeadzoneLockRef.current = { groupName, position: lastIntent.position }
+              considerCandidate(groupName, "insert", lastIntent.position, absCenterDistance)
+            } else {
+              const inferredPosition: "before" | "after" = distanceToCenter <= 0 ? "before" : "after"
+              groupDeadzoneLockRef.current = { groupName, position: inferredPosition }
+              considerCandidate(groupName, "insert", inferredPosition, absCenterDistance)
+            }
+            continue
+          }
+
+          if (groupDeadzoneLockRef.current?.groupName === groupName) {
+            groupDeadzoneLockRef.current = null
+          }
+
+          if (topEdgeDistance >= 0 && topEdgeDistance <= edgeThreshold) {
+            considerCandidate(groupName, "insert", "before", topEdgeDistance)
+          }
+          if (bottomEdgeDistance >= 0 && bottomEdgeDistance <= edgeThreshold) {
+            considerCandidate(groupName, "insert", "after", bottomEdgeDistance)
+          }
+
+          const centerDistance = Math.abs(distanceToCenter)
+          considerCandidate(groupName, "swap", null, centerDistance)
+        } else {
+          if (groupDeadzoneLockRef.current?.groupName === groupName) {
+            groupDeadzoneLockRef.current = null
+          }
+          if (distanceAbove >= 0 && distanceAbove <= halfGap) {
+            considerCandidate(groupName, "insert", "before", distanceAbove)
+          }
+          if (distanceBelow >= 0 && distanceBelow <= halfGap) {
+            considerCandidate(groupName, "insert", "after", distanceBelow)
+          }
+        }
+      }
+
+      if (!bestIntent) {
+        setDragOverGroupName(null)
+        setGroupDragMode(null)
+        setGroupInsertPosition(null)
+        lastGroupIntentRef.current = null
+        return
+      }
+
+      const baseIntent = bestIntent as GroupDragIntentState
+      let resolvedIntent: GroupDragIntentState = baseIntent
+      if (
+        lastIntent &&
+        resolvedIntent.mode === "insert" &&
+        lastIntent.mode === "insert" &&
+        resolvedIntent.groupName === lastIntent.groupName &&
+        resolvedIntent.position !== null &&
+        lastIntent.position !== null
+      ) {
+        const distanceDelta = Math.abs(resolvedIntent.distance - lastIntent.distance)
+        if (distanceDelta <= GROUP_SECTION_METRICS.insertThickness + 2) {
+          resolvedIntent = {
+            ...resolvedIntent,
+            position: lastIntent.position,
+            distance: lastIntent.distance,
+          }
+        }
+      }
+
+      const intent: GroupDragIntentState = resolvedIntent
+
+      const nextGroupName = intent.groupName
+      const nextMode: typeof intent.mode = intent.mode
+      const nextInsertPosition: "before" | "after" | null =
+        intent.mode === "insert" ? intent.position : null
+
+      if (dragOverGroupName !== nextGroupName) {
+        setDragOverGroupName(nextGroupName)
+      }
+
+      if (groupDragMode !== nextMode) {
+        setGroupDragMode(nextMode)
+      }
+
+      if (groupInsertPosition !== nextInsertPosition) {
+        setGroupInsertPosition(nextInsertPosition)
+      }
+
+      lastGroupIntentRef.current = { ...intent }
+
+      if (intent.mode === "insert" && intent.position !== null) {
+        groupDeadzoneLockRef.current = { groupName: intent.groupName, position: intent.position }
+      } else if (groupDeadzoneLockRef.current?.groupName === intent.groupName) {
+        groupDeadzoneLockRef.current = null
+      }
+    },
+    [draggedGroup, dragOverGroupName, groupDragMode, groupInsertPosition],
+  )
+
+  const syncGroupHoverFromPointer = useCallback(() => {
+    const pointer = groupDragPointerRef.current
+    if (!pointer) return
+    evaluateGroupDragIntent(pointer)
+  }, [evaluateGroupDragIntent])
+
+  useEffect(() => {
+    if (!areGroupsCollapsedForDrag) return
+    if (typeof window === "undefined") return
+
+    const frame = window.requestAnimationFrame(() => {
+      syncGroupHoverFromPointer()
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+    }
+  }, [areGroupsCollapsedForDrag, syncGroupHoverFromPointer])
+
+  useEffect(() => {
+    if (!draggedGroup) return
+    if (typeof document === "undefined") return
+
+    const handleGlobalDragOver = (event: DragEvent) => {
+      groupDragPointerRef.current = { x: event.clientX, y: event.clientY }
+      syncGroupHoverFromPointer()
+    }
+
+    document.addEventListener("dragover", handleGlobalDragOver)
+    return () => {
+      document.removeEventListener("dragover", handleGlobalDragOver)
+    }
+  }, [draggedGroup, syncGroupHoverFromPointer])
+
   const handleGroupDragStart = (e: React.DragEvent, groupName: string) => {
     onColorEdit?.(-1)
 
+    groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
     setDraggedGroup(groupName)
+    setGroupDragMode(null)
+    setGroupInsertPosition(null)
+    if (collapseGroupsDuringGroupDrag) {
+      setAreGroupsCollapsedForDrag(true)
+    }
     e.dataTransfer.effectAllowed = "move"
   }
 
-  const handleGroupDragOver = (e: React.DragEvent, groupName: string) => {
+  const handleGroupDragOver = (e: React.DragEvent) => {
     e.preventDefault()
-    if (draggedGroup && draggedGroup !== groupName) {
-      setDragOverGroupName(groupName)
-    }
+    groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
+    evaluateGroupDragIntent(groupDragPointerRef.current)
   }
 
-  const handleGroupDrop = (e: React.DragEvent, targetGroupName: string) => {
+  const handleGroupInsertZoneDragOver = (
+    event: React.DragEvent<HTMLDivElement>,
+    groupName: string,
+    position: "before" | "after",
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!draggedGroup) return
+    groupDragPointerRef.current = { x: event.clientX, y: event.clientY }
+    evaluateGroupDragIntent(groupDragPointerRef.current)
+    setGroupDragMode("insert")
+    setGroupInsertPosition(position)
+    setDragOverGroupName(groupName)
+  }
+
+  const handleGroupInsertZoneDrop = (
+    event: React.DragEvent<HTMLDivElement>,
+    groupName: string,
+    position: "before" | "after",
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setGroupDragMode("insert")
+    setGroupInsertPosition(position)
+    setDragOverGroupName(groupName)
+    handleGroupDrop(event as React.DragEvent<HTMLElement>, groupName)
+  }
+
+  const handleGroupDrop = (e: React.DragEvent<HTMLElement>, targetGroupName: string) => {
     e.preventDefault()
     e.stopPropagation()
 
     if (!draggedGroup || draggedGroup === targetGroupName) {
-      setDraggedGroup(null)
-      setDragOverGroupName(null)
+      resetGroupDragState()
       return
     }
 
-    const draggedColors = groupedColors.get(draggedGroup) || []
-    const targetColors = groupedColors.get(targetGroupName) || []
+    const dropMode = groupDragMode
+    const insertPosition = groupInsertPosition
 
+    if (dropMode === "insert" && !insertPosition) {
+      resetGroupDragState()
+      return
+    }
+
+    const draggedColors = groupedColors.get(draggedGroup) ?? []
     if (draggedColors.length === 0) {
-      setDraggedGroup(null)
-      setDragOverGroupName(null)
+      resetGroupDragState()
       return
     }
 
-    const draggedFirstIndex = draggedColors[0].originalIndex
-    const targetFirstIndex = targetColors[0].originalIndex
+    const groupOrder = Array.from(groupedColors.keys())
+    const draggedOrderIndex = groupOrder.indexOf(draggedGroup)
+    const targetOrderIndex = groupOrder.indexOf(targetGroupName)
 
-    const newColors = [...colors]
-
-    const draggedGroupColors = draggedColors.map((c) => colors[c.originalIndex])
-
-    draggedColors
-      .sort((a, b) => b.originalIndex - a.originalIndex)
-      .forEach((c) => {
-        newColors.splice(c.originalIndex, 1)
-      })
-
-    let newTargetIndex = targetFirstIndex
-    if (draggedFirstIndex < targetFirstIndex) {
-      newTargetIndex -= draggedColors.length
+    if (draggedOrderIndex === -1 || targetOrderIndex === -1) {
+      resetGroupDragState()
+      return
     }
 
-    newColors.splice(newTargetIndex, 0, ...draggedGroupColors)
+    const newOrder = [...groupOrder]
+
+    if (dropMode === "insert" && insertPosition) {
+      newOrder.splice(draggedOrderIndex, 1)
+      let insertionIndex = targetOrderIndex + (insertPosition === "after" ? 1 : 0)
+      if (draggedOrderIndex < insertionIndex) {
+        insertionIndex -= 1
+      }
+      insertionIndex = Math.max(0, Math.min(newOrder.length, insertionIndex))
+      newOrder.splice(insertionIndex, 0, draggedGroup)
+    } else {
+      if (draggedOrderIndex === targetOrderIndex) {
+        resetGroupDragState()
+        return
+      }
+      ;[newOrder[draggedOrderIndex], newOrder[targetOrderIndex]] = [
+        newOrder[targetOrderIndex],
+        newOrder[draggedOrderIndex],
+      ]
+    }
+
+    const hasChanged = newOrder.some((name, index) => name !== groupOrder[index])
+    if (!hasChanged) {
+      resetGroupDragState()
+      return
+    }
+
+    const newColors: string[] = []
+    newOrder.forEach((groupName) => {
+      const items = groupedColors.get(groupName)
+      if (!items) return
+      const sortedItems = [...items].sort((a, b) => a.originalIndex - b.originalIndex)
+      sortedItems.forEach((item) => {
+        newColors.push(colors[item.originalIndex])
+      })
+    })
 
     onBatchUpdateColors(toSwatchArray(newColors))
-    setDraggedGroup(null)
-    setDragOverGroupName(null)
+    resetGroupDragState()
   }
 
   const handleGroupDragEnd = () => {
-    setDraggedGroup(null)
-    setDragOverGroupName(null)
+    resetGroupDragState()
   }
 
   const handleInsertZoneHover = (targetIndex: number, targetGroup: string, position: "before" | "after") => {
@@ -963,6 +1309,7 @@ export function ColorManager({
   const newGroupDropZoneActive = isBetweenZonesActive || isDragOverNewGroup
   const deleteDropZoneActive = isBetweenZonesActive || isDragOverTrash
   const isDropZoneExpanded = newGroupDropZoneActive || deleteDropZoneActive
+  const shouldCollapseGroups = collapseGroupsDuringGroupDrag && areGroupsCollapsedForDrag
 
   return (
     <div
@@ -973,25 +1320,72 @@ export function ColorManager({
       <div className="pb-4 border-b-2">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h2 className="text-2xl font-semibold leading-tight">{label}</h2>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 md:self-end">
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
-            <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end sm:gap-3 md:self-end">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
+              <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
+                      isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
+                    )}
+                    style={{
+                      borderRadius: isCardSizeMenuOpen
+                        ? CARD_CONTROL_RADII.elevated
+                        : CARD_CONTROL_RADII.pill,
+                    }}
+                  >
+                    <span>{selectedCardSize.label}</span>
+                    <ChevronDown className="h-3 w-3 opacity-70" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  sideOffset={6}
+                  className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
+                  style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
+                >
+                  <div className="flex items-center gap-1">
+                    {CARD_SIZE_TOKENS.map((option, index) => {
+                      const isActive = index === cardSizeIndex
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => {
+                            setCardSizeIndex(index)
+                            setIsCardSizeMenuOpen(false)
+                          }}
+                          className={cn(
+                            "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                            isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
+                          )}
+                          style={{
+                            borderRadius: isActive
+                              ? CARD_CONTROL_RADII.elevated
+                              : CARD_CONTROL_RADII.pill,
+                          }}
+                        >
+                          <span>{option.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
-                  variant="outline"
-                  size="sm"
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
-                    isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
-                  )}
-                  style={{
-                    borderRadius: isCardSizeMenuOpen
-                      ? CARD_CONTROL_RADII.elevated
-                      : CARD_CONTROL_RADII.pill,
-                  }}
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 border border-transparent text-muted-foreground hover:text-foreground"
                 >
-                  <span>{selectedCardSize.label}</span>
-                  <ChevronDown className="h-3 w-3 opacity-70" />
+                  <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                  <span className="sr-only">Open options</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -1000,32 +1394,16 @@ export function ColorManager({
                 className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
                 style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
               >
-                <div className="flex items-center gap-1">
-                  {CARD_SIZE_TOKENS.map((option, index) => {
-                    const isActive = index === cardSizeIndex
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => {
-                          setCardSizeIndex(index)
-                          setIsCardSizeMenuOpen(false)
-                        }}
-                        className={cn(
-                          "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                          isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
-                        )}
-                        style={{
-                          borderRadius: isActive
-                            ? CARD_CONTROL_RADII.elevated
-                            : CARD_CONTROL_RADII.pill,
-                        }}
-                      >
-                        <span>{option.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
+                <DropdownMenuLabel className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Options
+                </DropdownMenuLabel>
+                <DropdownMenuCheckboxItem
+                  checked={collapseGroupsDuringGroupDrag}
+                  onCheckedChange={(checked) => setCollapseGroupsDuringGroupDrag(checked === true)}
+                  className="cursor-pointer text-sm"
+                >
+                  Collapse groups while dragging
+                </DropdownMenuCheckboxItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -1034,7 +1412,9 @@ export function ColorManager({
 
       {Array.from(groupedColors.entries()).map(([groupName, groupColors]) => {
         const isGroupDragging = draggedGroup === groupName
-        const isGroupDragOver = dragOverGroupName === groupName
+        const isGroupSwapTarget = dragOverGroupName === groupName && groupDragMode === "swap"
+        const isGroupInsertTarget = dragOverGroupName === groupName && groupDragMode === "insert"
+        const insertPositionForGroup = isGroupInsertTarget ? groupInsertPosition : null
         const isNewlyCreated = newlyCreatedGroups.has(groupName)
         const isRemoving = removingGroups.has(groupName)
         const showIndicator = dragMode === "insert" && dragOverGroup === groupName && indicatorPosition !== null
@@ -1117,18 +1497,25 @@ export function ColorManager({
         return (
           <GroupSection
             key={groupName}
+            groupName={groupName}
             isGroupDragging={isGroupDragging}
-            isGroupDragOver={isGroupDragOver && !!draggedGroup}
+            isGroupDragOver={isGroupSwapTarget && !!draggedGroup}
             isNewlyCreated={isNewlyCreated}
             isRemoving={isRemoving}
             indicatorPosition={indicatorPosition}
             showIndicator={showIndicator}
             targetCardWidth={selectedCardSize.width}
             minCardWidth={minCardWidth}
-            onGroupReorderDragOver={(event) => handleGroupDragOver(event, groupName)}
+            isCollapsed={shouldCollapseGroups}
+            isInsertTarget={isGroupInsertTarget && !!draggedGroup}
+            insertPosition={insertPositionForGroup}
+            isGroupDragActive={!!draggedGroup}
+            onGroupReorderDragOver={handleGroupDragOver}
             onGroupReorderDrop={(event) => handleGroupDrop(event, groupName)}
             onCardDragOver={(event) => handleDragOverGroup(event, groupName)}
             onCardDrop={handleDrop}
+            onInsertZoneDragOver={(event, position) => handleGroupInsertZoneDragOver(event, groupName, position)}
+            onInsertZoneDrop={(event, position) => handleGroupInsertZoneDrop(event, groupName, position)}
             header={header}
             addButton={addButton}
           >
