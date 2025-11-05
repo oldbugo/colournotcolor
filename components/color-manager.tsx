@@ -3,7 +3,7 @@
 import type React from "react"
 import { useMemo, useState, useRef, useEffect, useLayoutEffect, useId, useCallback } from "react"
 import { Button } from "@/components/ui/button"
-import { Plus, FolderPlus, Trash2, ChevronDown, MoreHorizontal } from "lucide-react"
+import { Plus, FolderPlus, Trash2, ChevronDown } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,13 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import {
   CARD_CONTROL_RADII,
   CARD_MIN_COLUMN_WIDTH,
@@ -53,6 +47,7 @@ type ColorManagerProps = {
   onColorEdit?: (index: number) => void
   activeEditingIndex?: number | null
   lastInteractedColor?: string
+  collapseGroupsDuringGroupDrag: boolean
 }
 
 type GroupDragIntentState = {
@@ -127,6 +122,7 @@ export function ColorManager({
   onColorEdit,
   activeEditingIndex,
   lastInteractedColor = "#808080",
+  collapseGroupsDuringGroupDrag,
 }: ColorManagerProps) {
   const colors = useMemo(() => swatches.map((swatch) => swatchToLegacy(swatch)), [swatches])
   const getSwatchAt = (index: number): ColorSwatch | undefined => swatches[index]
@@ -183,7 +179,6 @@ export function ColorManager({
   const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
   const minCardWidth = CARD_MIN_COLUMN_WIDTH
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
-  const [collapseGroupsDuringGroupDrag, setCollapseGroupsDuringGroupDrag] = useState(false)
   const [areGroupsCollapsedForDrag, setAreGroupsCollapsedForDrag] = useState(false)
   const isAnyCardDraggingRef = useRef(isAnyCardDragging)
   const [groupDragMode, setGroupDragMode] = useState<"swap" | "insert" | null>(null)
@@ -764,8 +759,10 @@ export function ColorManager({
           }
 
           if (withinDeadzone) {
+            let handledDeadzone = false
             if (currentLock && currentLock.groupName === groupName) {
               considerCandidate(groupName, "insert", currentLock.position, absCenterDistance)
+              handledDeadzone = true
             } else if (
               lastIntent &&
               lastIntent.mode === "insert" &&
@@ -774,12 +771,12 @@ export function ColorManager({
             ) {
               groupDeadzoneLockRef.current = { groupName, position: lastIntent.position }
               considerCandidate(groupName, "insert", lastIntent.position, absCenterDistance)
-            } else {
-              const inferredPosition: "before" | "after" = distanceToCenter <= 0 ? "before" : "after"
-              groupDeadzoneLockRef.current = { groupName, position: inferredPosition }
-              considerCandidate(groupName, "insert", inferredPosition, absCenterDistance)
+              handledDeadzone = true
             }
-            continue
+
+            if (handledDeadzone) {
+              continue
+            }
           }
 
           if (groupDeadzoneLockRef.current?.groupName === groupName) {
@@ -921,17 +918,15 @@ export function ColorManager({
 
   const handleGroupInsertZoneDragOver = (
     event: React.DragEvent<HTMLDivElement>,
-    groupName: string,
-    position: "before" | "after",
+    _groupName: string,
+    _position: "before" | "after",
   ) => {
     event.preventDefault()
     event.stopPropagation()
     if (!draggedGroup) return
-    groupDragPointerRef.current = { x: event.clientX, y: event.clientY }
-    evaluateGroupDragIntent(groupDragPointerRef.current)
-    setGroupDragMode("insert")
-    setGroupInsertPosition(position)
-    setDragOverGroupName(groupName)
+    const pointer = { x: event.clientX, y: event.clientY }
+    groupDragPointerRef.current = pointer
+    evaluateGroupDragIntent(pointer)
   }
 
   const handleGroupInsertZoneDrop = (
@@ -941,13 +936,18 @@ export function ColorManager({
   ) => {
     event.preventDefault()
     event.stopPropagation()
-    setGroupDragMode("insert")
-    setGroupInsertPosition(position)
-    setDragOverGroupName(groupName)
-    handleGroupDrop(event as React.DragEvent<HTMLElement>, groupName)
+    if (!draggedGroup) return
+    const pointer = { x: event.clientX, y: event.clientY }
+    groupDragPointerRef.current = pointer
+    evaluateGroupDragIntent(pointer)
+    handleGroupDrop(event as React.DragEvent<HTMLElement>, groupName, { mode: "insert", position })
   }
 
-  const handleGroupDrop = (e: React.DragEvent<HTMLElement>, targetGroupName: string) => {
+  const handleGroupDrop = (
+    e: React.DragEvent<HTMLElement>,
+    targetGroupName: string,
+    overrideIntent?: { mode: "swap" | "insert"; position?: "before" | "after" | null },
+  ) => {
     e.preventDefault()
     e.stopPropagation()
 
@@ -956,8 +956,14 @@ export function ColorManager({
       return
     }
 
-    const dropMode = groupDragMode
-    const insertPosition = groupInsertPosition
+    const dropMode = overrideIntent?.mode ?? groupDragMode
+    const insertPosition =
+      dropMode === "insert" ? overrideIntent?.position ?? groupInsertPosition : null
+
+    if (dropMode !== "insert" && dropMode !== "swap") {
+      resetGroupDragState()
+      return
+    }
 
     if (dropMode === "insert" && !insertPosition) {
       resetGroupDragState()
@@ -1318,74 +1324,27 @@ export function ColorManager({
       style={{ overflowAnchor: "none" }}
     >
       <div className="pb-4 border-b-2">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-2xl font-semibold leading-tight">{label}</h2>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end sm:gap-3 md:self-end">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
-              <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className={cn(
-                      "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
-                      isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
-                    )}
-                    style={{
-                      borderRadius: isCardSizeMenuOpen
-                        ? CARD_CONTROL_RADII.elevated
-                        : CARD_CONTROL_RADII.pill,
-                    }}
-                  >
-                    <span>{selectedCardSize.label}</span>
-                    <ChevronDown className="h-3 w-3 opacity-70" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  sideOffset={6}
-                  className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
-                  style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
-                >
-                  <div className="flex items-center gap-1">
-                    {CARD_SIZE_TOKENS.map((option, index) => {
-                      const isActive = index === cardSizeIndex
-                      return (
-                        <button
-                          key={option.id}
-                          type="button"
-                          onClick={() => {
-                            setCardSizeIndex(index)
-                            setIsCardSizeMenuOpen(false)
-                          }}
-                          className={cn(
-                            "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                            isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
-                          )}
-                          style={{
-                            borderRadius: isActive
-                              ? CARD_CONTROL_RADII.elevated
-                              : CARD_CONTROL_RADII.pill,
-                          }}
-                        >
-                          <span>{option.label}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <DropdownMenu>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
+            <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
               <DropdownMenuTrigger asChild>
                 <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 border border-transparent text-muted-foreground hover:text-foreground"
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
+                    isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
+                  )}
+                  style={{
+                    borderRadius: isCardSizeMenuOpen
+                      ? CARD_CONTROL_RADII.elevated
+                      : CARD_CONTROL_RADII.pill,
+                  }}
                 >
-                  <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                  <span className="sr-only">Open options</span>
+                  <span>{selectedCardSize.label}</span>
+                  <ChevronDown className="h-3 w-3 opacity-70" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -1394,16 +1353,32 @@ export function ColorManager({
                 className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
                 style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
               >
-                <DropdownMenuLabel className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Options
-                </DropdownMenuLabel>
-                <DropdownMenuCheckboxItem
-                  checked={collapseGroupsDuringGroupDrag}
-                  onCheckedChange={(checked) => setCollapseGroupsDuringGroupDrag(checked === true)}
-                  className="cursor-pointer text-sm"
-                >
-                  Collapse groups while dragging
-                </DropdownMenuCheckboxItem>
+                <div className="flex items-center gap-1">
+                  {CARD_SIZE_TOKENS.map((option, index) => {
+                    const isActive = index === cardSizeIndex
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setCardSizeIndex(index)
+                          setIsCardSizeMenuOpen(false)
+                        }}
+                        className={cn(
+                          "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                          isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
+                        )}
+                        style={{
+                          borderRadius: isActive
+                            ? CARD_CONTROL_RADII.elevated
+                            : CARD_CONTROL_RADII.pill,
+                        }}
+                      >
+                        <span>{option.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>

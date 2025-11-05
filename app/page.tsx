@@ -33,6 +33,7 @@ export default function Home() {
   const [editingColor, setEditingColor] = useState<EditingColor>(null)
   const [lastInteractedColor, setLastInteractedColor] = useState<string>("#808080")
   const [isInitialized, setIsInitialized] = useState(false)
+  const [collapseGroupsDuringGroupDrag, setCollapseGroupsDuringGroupDrag] = useState(true)
 
   const prevForegroundLengthRef = useRef<number>(0)
   const prevBackgroundLengthRef = useRef<number>(0)
@@ -241,6 +242,8 @@ export default function Home() {
         onUpdatePaletteName={(name) => updatePalette(activePalette.id, { name })}
         onDuplicatePalette={duplicatePalette}
         onDeletePalette={deletePalette}
+        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
+        onCollapseGroupsDuringDragChange={setCollapseGroupsDuringGroupDrag}
       />
       <ResizablePanels
         panel1Title="Palette Manager"
@@ -266,6 +269,7 @@ export default function Home() {
             editingColor={editingColor}
             onColorUpdate={handleColorUpdate}
             lastInteractedColor={lastInteractedColor}
+            collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
           />
         }
         panel3={
@@ -276,6 +280,7 @@ export default function Home() {
             editingColor={editingColor}
             onColorUpdate={handleColorUpdate}
             lastInteractedColor={lastInteractedColor}
+            collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
             showOnlyGrid={true}
           />
         }

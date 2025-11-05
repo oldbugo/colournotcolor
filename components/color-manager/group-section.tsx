@@ -15,8 +15,9 @@ export const GROUP_SECTION_METRICS = {
   insertGap: 32,
   insertHorizontalOutset: 20,
   insertThickness: 4,
-  insertIndicatorOffsetTop: 18,
-  insertIndicatorOffsetBottom: 28,
+  insertIndicatorOffsetTop: 19,
+  insertIndicatorOffsetBottom: 19,
+  insertIndicatorExtraWidth: 6,
   insertMidpointDeadzone: 12,
   edgeInsertThreshold: 28,
   horizontalDetectionOutset: 40,
@@ -171,6 +172,12 @@ export function GroupSection({
         GROUP_SECTION_METRICS.insertIndicatorOffsetTop -
         GROUP_SECTION_METRICS.insertThickness / 2,
       height: GROUP_SECTION_METRICS.insertThickness,
+      left:
+        GROUP_SECTION_METRICS.insertHorizontalOutset -
+        GROUP_SECTION_METRICS.insertIndicatorExtraWidth,
+      right:
+        GROUP_SECTION_METRICS.insertHorizontalOutset -
+        GROUP_SECTION_METRICS.insertIndicatorExtraWidth,
     }),
     [],
   )
@@ -181,6 +188,12 @@ export function GroupSection({
         GROUP_SECTION_METRICS.insertIndicatorOffsetBottom -
         GROUP_SECTION_METRICS.insertThickness / 2,
       height: GROUP_SECTION_METRICS.insertThickness,
+      left:
+        GROUP_SECTION_METRICS.insertHorizontalOutset -
+        GROUP_SECTION_METRICS.insertIndicatorExtraWidth,
+      right:
+        GROUP_SECTION_METRICS.insertHorizontalOutset -
+        GROUP_SECTION_METRICS.insertIndicatorExtraWidth,
     }),
     [],
   )

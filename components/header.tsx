@@ -3,7 +3,13 @@
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Settings, Copy, Trash2, Pencil } from "lucide-react"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useEffect, useState } from "react"
+import { Switch } from "@/components/ui/switch"
 
 type HeaderProps = {
   onClearCache?: () => void
@@ -30,6 +37,8 @@ type HeaderProps = {
   onUpdatePaletteName?: (name: string) => void
   onDuplicatePalette?: () => void
   onDeletePalette?: () => void
+  collapseGroupsDuringGroupDrag?: boolean
+  onCollapseGroupsDuringDragChange?: (value: boolean) => void
 }
 
 export function Header({
@@ -38,6 +47,8 @@ export function Header({
   onUpdatePaletteName,
   onDuplicatePalette,
   onDeletePalette,
+  collapseGroupsDuringGroupDrag = false,
+  onCollapseGroupsDuringDragChange,
 }: HeaderProps) {
   const [showClearDialog, setShowClearDialog] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
@@ -142,8 +153,25 @@ export function Header({
                 <Settings className="h-5 w-5" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setShowClearDialog(true)} className="cursor-pointer text-red-600">
+            <DropdownMenuContent align="end" className="min-w-[220px]">
+              <DropdownMenuItem
+                onSelect={(event) => event.preventDefault()}
+                className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
+              >
+                <div className="flex w-full items-center justify-between gap-3">
+                  <span className="text-sm font-medium text-foreground">Collapse groups while dragging</span>
+                  <Switch
+                    checked={collapseGroupsDuringGroupDrag}
+                    onCheckedChange={(checked) => onCollapseGroupsDuringDragChange?.(checked)}
+                    aria-label="Collapse groups while dragging"
+                  />
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="bg-border/60" />
+              <DropdownMenuItem
+                onClick={() => setShowClearDialog(true)}
+                className="cursor-pointer text-red-600 focus:bg-accent/30 focus:text-red-600"
+              >
                 Clear Cache
               </DropdownMenuItem>
             </DropdownMenuContent>

@@ -14,6 +14,7 @@ type ContrastCheckerProps = {
   onColorUpdate?: (type: "foreground" | "background", index: number, newColor: string) => void
   lastInteractedColor?: string
   showOnlyGrid?: boolean
+  collapseGroupsDuringGroupDrag: boolean
 }
 
 export function ContrastChecker({
@@ -24,6 +25,7 @@ export function ContrastChecker({
   onColorUpdate,
   lastInteractedColor = "#808080",
   showOnlyGrid = false,
+  collapseGroupsDuringGroupDrag,
 }: ContrastCheckerProps) {
   type LegacyColor = string | ColorSwatch
 
@@ -163,6 +165,7 @@ export function ContrastChecker({
         onColorEdit={(index) => onColorEdit?.("foreground", index)}
         activeEditingIndex={editingColor?.type === "foreground" ? editingColor.index : null}
         lastInteractedColor={lastInteractedColor}
+        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
       />
       <ColorManager
         label="Background"
@@ -177,6 +180,7 @@ export function ContrastChecker({
         onColorEdit={(index) => onColorEdit?.("background", index)}
         activeEditingIndex={editingColor?.type === "background" ? editingColor.index : null}
         lastInteractedColor={lastInteractedColor}
+        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
       />
     </div>
   )
