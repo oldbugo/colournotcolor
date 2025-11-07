@@ -186,6 +186,10 @@ export function ColorManager({
   const groupDragPointerRef = useRef<{ x: number; y: number } | null>(null)
   const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
   const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
+  const draggedGroupRef = useRef<string | null>(null)
+  const groupScrollAnchorRef = useRef<{ groupName: string; viewportTop: number } | null>(null)
+  const scrollAnchorReleaseTimeoutRef = useRef<number | null>(null)
+  const [scrollAnchorVersion, setScrollAnchorVersion] = useState(0)
 
   useEffect(() => {
     if (!collapseGroupsDuringGroupDrag) {
@@ -193,6 +197,173 @@ export function ColorManager({
     }
   }, [collapseGroupsDuringGroupDrag])
 
+  useEffect(() => {
+    draggedGroupRef.current = draggedGroup
+  }, [draggedGroup])
+
+  const findGroupSectionElement = useCallback((groupName: string | null) => {
+    if (!groupName || typeof document === "undefined") {
+      return null
+    }
+    const sections = document.querySelectorAll<HTMLElement>("[data-group-section]")
+    for (const section of sections) {
+      if (section.getAttribute("data-group-name") === groupName) {
+        return section
+      }
+    }
+    return null
+  }, [])
+
+  const ensureScrollParent = useCallback((): HTMLElement | null => {
+    if (typeof document === "undefined") {
+      return null
+    }
+
+    if (scrollAnchorParentRef.current) {
+      return scrollAnchorParentRef.current
+    }
+
+    const root = managerRef.current
+    if (!root) {
+      scrollAnchorParentRef.current = document.scrollingElement as HTMLElement | null
+      return scrollAnchorParentRef.current
+    }
+
+    let current: HTMLElement | null = root.parentElement
+    while (current && typeof window !== "undefined") {
+      const style = window.getComputedStyle(current)
+      const overflowY = style.overflowY || style.overflow
+      if (overflowY === "auto" || overflowY === "scroll") {
+        scrollAnchorParentRef.current = current
+        return current
+      }
+      current = current.parentElement
+    }
+
+    scrollAnchorParentRef.current = document.scrollingElement as HTMLElement | null
+    return scrollAnchorParentRef.current
+  }, [])
+
+  const queueGroupScrollAnchor = useCallback(
+    (groupName: string | null) => {
+      if (!collapseGroupsDuringGroupDrag || !groupName) {
+        return
+      }
+
+      const section = findGroupSectionElement(groupName)
+      if (!section) {
+        return
+      }
+
+      const rect = section.getBoundingClientRect()
+      groupScrollAnchorRef.current = {
+        groupName,
+        viewportTop: rect.top,
+      }
+
+      if (scrollAnchorReleaseTimeoutRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(scrollAnchorReleaseTimeoutRef.current)
+        scrollAnchorReleaseTimeoutRef.current = null
+      }
+
+      setScrollAnchorVersion((version) => version + 1)
+    },
+    [collapseGroupsDuringGroupDrag, findGroupSectionElement],
+  )
+
+
+  const applyGroupScrollAnchor = useCallback(() => {
+    const anchor = groupScrollAnchorRef.current
+    if (!anchor) {
+      return
+    }
+
+    const section = findGroupSectionElement(anchor.groupName)
+    if (!section) {
+      return
+    }
+
+    const scrollParent = ensureScrollParent()
+    if (!scrollParent) {
+      return
+    }
+
+    const currentTop = section.getBoundingClientRect().top
+    const delta = currentTop - anchor.viewportTop
+    if (Math.abs(delta) > 0.5) {
+      scrollParent.scrollTop += delta
+    }
+  }, [ensureScrollParent, findGroupSectionElement])
+
+  const releaseGroupScrollAnchor = useCallback(
+    (delay = 0) => {
+      if (typeof window !== "undefined" && scrollAnchorReleaseTimeoutRef.current !== null) {
+        window.clearTimeout(scrollAnchorReleaseTimeoutRef.current)
+        scrollAnchorReleaseTimeoutRef.current = null
+      }
+
+      const clearAnchor = () => {
+        groupScrollAnchorRef.current = null
+        setScrollAnchorVersion((version) => version + 1)
+      }
+
+      if (delay <= 0 || typeof window === "undefined") {
+        clearAnchor()
+        return
+      }
+
+      scrollAnchorReleaseTimeoutRef.current = window.setTimeout(() => {
+        clearAnchor()
+        scrollAnchorReleaseTimeoutRef.current = null
+      }, delay)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    if (!groupScrollAnchorRef.current) {
+      return
+    }
+
+    let rafId = 0
+    const tick = () => {
+      if (!groupScrollAnchorRef.current) {
+        return
+      }
+      applyGroupScrollAnchor()
+      rafId = window.requestAnimationFrame(tick)
+    }
+
+    rafId = window.requestAnimationFrame(tick)
+    return () => {
+      window.cancelAnimationFrame(rafId)
+    }
+  }, [applyGroupScrollAnchor, scrollAnchorVersion])
+
+  useEffect(() => {
+    if (!groupScrollAnchorRef.current) {
+      return
+    }
+
+    if (areGroupsCollapsedForDrag) {
+      return
+    }
+
+    releaseGroupScrollAnchor(220)
+  }, [areGroupsCollapsedForDrag, releaseGroupScrollAnchor])
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && scrollAnchorReleaseTimeoutRef.current !== null) {
+        window.clearTimeout(scrollAnchorReleaseTimeoutRef.current)
+      }
+      groupScrollAnchorRef.current = null
+    }
+  }, [])
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const managerRef = useRef<HTMLDivElement | null>(null)
@@ -296,36 +467,19 @@ export function ColorManager({
     const root = managerRef.current
     if (!root) return
 
-    const findScrollParent = (node: HTMLElement | null): HTMLElement | null => {
-      let current: HTMLElement | null = node?.parentElement ?? null
-      while (current) {
-        const style = window.getComputedStyle(current)
-        const overflowY = style.overflowY || style.overflow
-        if (overflowY === "auto" || overflowY === "scroll") {
-          return current
-        }
-        current = current.parentElement
-      }
-      return document.scrollingElement as HTMLElement | null
-    }
-
-    if (!scrollAnchorParentRef.current) {
-      scrollAnchorParentRef.current = findScrollParent(root)
-    }
-
-    const scrollParent = scrollAnchorParentRef.current
+    const scrollParent = ensureScrollParent()
     const prevTop = previousTopRef.current
     const currentTop = root.getBoundingClientRect().top
 
     if (prevTop !== null && scrollParent) {
       const delta = currentTop - prevTop
       if (Math.abs(delta) > 1) {
-        scrollParent.scrollTop -= delta
+        scrollParent.scrollTop += delta
       }
     }
 
     previousTopRef.current = currentTop
-  }, [cardSizeIndex, groupCount])
+  }, [cardSizeIndex, groupCount, ensureScrollParent])
 
   useEffect(() => {
     if (justDropped) {
@@ -643,13 +797,16 @@ export function ColorManager({
   }
 
   const resetGroupDragState = useCallback(() => {
+    if (collapseGroupsDuringGroupDrag && areGroupsCollapsedForDrag) {
+      queueGroupScrollAnchor(draggedGroupRef.current)
+    }
     setDraggedGroup(null)
     setDragOverGroupName(null)
     setAreGroupsCollapsedForDrag(false)
     setGroupDragMode(null)
     setGroupInsertPosition(null)
     groupDragPointerRef.current = null
-  }, [])
+  }, [areGroupsCollapsedForDrag, collapseGroupsDuringGroupDrag, queueGroupScrollAnchor])
 
   const evaluateGroupDragIntent = useCallback(
     (pointer: { x: number; y: number }) => {
@@ -905,6 +1062,7 @@ export function ColorManager({
     setGroupDragMode(null)
     setGroupInsertPosition(null)
     if (collapseGroupsDuringGroupDrag) {
+      queueGroupScrollAnchor(groupName)
       setAreGroupsCollapsedForDrag(true)
     }
     e.dataTransfer.effectAllowed = "move"

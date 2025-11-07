@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
 import type { DragIndicatorPosition } from "@/components/color-manager/types"
 import { CARD_GRID_GAP, CARD_MAX_GRID_COLUMNS } from "@/lib/design-tokens"
@@ -74,6 +74,8 @@ export function GroupSection({
 }: GroupSectionProps) {
   const gridRef = useRef<HTMLDivElement | null>(null)
   const [columnCount, setColumnCount] = useState(1)
+  const [contentHeight, setContentHeight] = useState<number | null>(null)
+  const [isContentHiddenVisually, setIsContentHiddenVisually] = useState(isCollapsed)
   const gridGap = CARD_GRID_GAP
   const minColumns = 1
   const maxColumns = CARD_MAX_GRID_COLUMNS
@@ -120,6 +122,57 @@ export function GroupSection({
       observer.disconnect()
     }
   }, [gridGap, targetCardWidth, minCardWidth, minColumns, maxColumns, isCollapsed])
+
+  useLayoutEffect(() => {
+    const node = gridRef.current
+    if (!node) return
+
+    const updateHeight = () => {
+      const nextHeight = node.scrollHeight
+      setContentHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+    }
+
+    updateHeight()
+
+    if (typeof ResizeObserver === "undefined") {
+      if (typeof window !== "undefined") {
+        window.addEventListener("resize", updateHeight)
+        return () => {
+          window.removeEventListener("resize", updateHeight)
+        }
+      }
+      return
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateHeight()
+    })
+    observer.observe(node)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isCollapsed) {
+      setIsContentHiddenVisually(false)
+      return
+    }
+
+    if (typeof window === "undefined") {
+      setIsContentHiddenVisually(true)
+      return
+    }
+
+    const timeout = window.setTimeout(() => {
+      setIsContentHiddenVisually(true)
+    }, 200)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [isCollapsed])
 
   const gridStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -198,6 +251,19 @@ export function GroupSection({
     [],
   )
 
+  const collapsibleContentStyle = useMemo<React.CSSProperties>(() => {
+    const targetHeight = isCollapsed ? 0 : contentHeight
+    return {
+      maxHeight: targetHeight === null ? undefined : Math.max(0, targetHeight),
+      opacity: isCollapsed ? 0 : 1,
+      overflow: "hidden",
+      pointerEvents: isCollapsed ? "none" : "auto",
+      visibility: isContentHiddenVisually ? "hidden" : "visible",
+      transition: "max-height 160ms ease, opacity 140ms ease",
+      willChange: "max-height, opacity",
+    }
+  }, [contentHeight, isCollapsed, isContentHiddenVisually])
+
   return (
     <div
       className={`relative overflow-visible rounded-lg border border-border/50 bg-background p-3 transition ${
@@ -240,7 +306,11 @@ export function GroupSection({
 
       <div className="flex items-center justify-between">{header}</div>
 
-      {!isCollapsed ? (
+      <div
+        aria-hidden={isCollapsed}
+        className="relative overflow-hidden"
+        style={collapsibleContentStyle}
+      >
         <div
           ref={gridRef}
           className="relative grid"
@@ -265,7 +335,7 @@ export function GroupSection({
           {children}
           {addButton}
         </div>
-      ) : null}
+      </div>
     </div>
   )
 }
