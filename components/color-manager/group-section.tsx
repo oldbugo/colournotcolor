@@ -304,7 +304,9 @@ export function GroupSection({
         <div className="pointer-events-none absolute z-30 border-[3px] border-dashed border-blue-500" style={swapOutlineStyle} />
       ) : null}
 
-      <div className="flex items-center justify-between">{header}</div>
+      <div className="flex items-center justify-between" data-group-header="">
+        {header}
+      </div>
 
       <div
         aria-hidden={isCollapsed}

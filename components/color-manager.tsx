@@ -184,12 +184,14 @@ export function ColorManager({
   const [groupDragMode, setGroupDragMode] = useState<"swap" | "insert" | null>(null)
   const [groupInsertPosition, setGroupInsertPosition] = useState<"before" | "after" | null>(null)
   const groupDragPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const dragViewportPointerRef = useRef<{ x: number; y: number } | null>(null)
   const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
   const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
   const draggedGroupRef = useRef<string | null>(null)
   const groupScrollAnchorRef = useRef<{ groupName: string; viewportTop: number } | null>(null)
   const scrollAnchorReleaseTimeoutRef = useRef<number | null>(null)
   const [scrollAnchorVersion, setScrollAnchorVersion] = useState(0)
+  const GROUP_SCROLL_ANCHOR_LOCK_MS = 260
 
   useEffect(() => {
     if (!collapseGroupsDuringGroupDrag) {
@@ -244,57 +246,6 @@ export function ColorManager({
     return scrollAnchorParentRef.current
   }, [])
 
-  const queueGroupScrollAnchor = useCallback(
-    (groupName: string | null) => {
-      if (!collapseGroupsDuringGroupDrag || !groupName) {
-        return
-      }
-
-      const section = findGroupSectionElement(groupName)
-      if (!section) {
-        return
-      }
-
-      const rect = section.getBoundingClientRect()
-      groupScrollAnchorRef.current = {
-        groupName,
-        viewportTop: rect.top,
-      }
-
-      if (scrollAnchorReleaseTimeoutRef.current !== null && typeof window !== "undefined") {
-        window.clearTimeout(scrollAnchorReleaseTimeoutRef.current)
-        scrollAnchorReleaseTimeoutRef.current = null
-      }
-
-      setScrollAnchorVersion((version) => version + 1)
-    },
-    [collapseGroupsDuringGroupDrag, findGroupSectionElement],
-  )
-
-
-  const applyGroupScrollAnchor = useCallback(() => {
-    const anchor = groupScrollAnchorRef.current
-    if (!anchor) {
-      return
-    }
-
-    const section = findGroupSectionElement(anchor.groupName)
-    if (!section) {
-      return
-    }
-
-    const scrollParent = ensureScrollParent()
-    if (!scrollParent) {
-      return
-    }
-
-    const currentTop = section.getBoundingClientRect().top
-    const delta = currentTop - anchor.viewportTop
-    if (Math.abs(delta) > 0.5) {
-      scrollParent.scrollTop += delta
-    }
-  }, [ensureScrollParent, findGroupSectionElement])
-
   const releaseGroupScrollAnchor = useCallback(
     (delay = 0) => {
       if (typeof window !== "undefined" && scrollAnchorReleaseTimeoutRef.current !== null) {
@@ -319,6 +270,108 @@ export function ColorManager({
     },
     [],
   )
+
+  const queueGroupScrollAnchor = useCallback(
+    (groupName: string | null) => {
+      if (!collapseGroupsDuringGroupDrag || !groupName) {
+        return
+      }
+
+      const section = findGroupSectionElement(groupName)
+      if (!section) {
+        return
+      }
+
+      const rect = section.getBoundingClientRect()
+      groupScrollAnchorRef.current = {
+        groupName,
+        viewportTop: rect.top,
+      }
+
+      setScrollAnchorVersion((version) => version + 1)
+      releaseGroupScrollAnchor(GROUP_SCROLL_ANCHOR_LOCK_MS)
+    },
+    [GROUP_SCROLL_ANCHOR_LOCK_MS, collapseGroupsDuringGroupDrag, findGroupSectionElement, releaseGroupScrollAnchor],
+  )
+  const updateDragPointerFromEvent = useCallback((event: { clientX: number; clientY: number }) => {
+    const { clientX, clientY } = event
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return
+    }
+    dragViewportPointerRef.current = { x: clientX, y: clientY }
+  }, [])
+
+  const clearGlobalDragPointer = useCallback(() => {
+    dragViewportPointerRef.current = null
+  }, [])
+
+  const applyGroupDragImage = useCallback(
+    (event: React.DragEvent, groupName: string) => {
+      if (typeof document === "undefined") {
+        return
+      }
+
+      const section = findGroupSectionElement(groupName)
+      if (!section) {
+        return
+      }
+
+      const sectionRect = section.getBoundingClientRect()
+      if (sectionRect.width === 0 || sectionRect.height === 0) {
+        return
+      }
+
+      const headerNode = section.querySelector<HTMLElement>("[data-group-header]")
+      const headerRect = headerNode?.getBoundingClientRect()
+      const rawOffsetX = event.clientX - sectionRect.left
+      const rawOffsetY = event.clientY - sectionRect.top
+      const clampedOffsetX =
+        Number.isFinite(rawOffsetX) && sectionRect.width > 0
+          ? Math.min(Math.max(rawOffsetX, 16), Math.max(16, sectionRect.width - 16))
+          : sectionRect.width / 2
+
+      const fallbackOffset = Math.min(Math.max(sectionRect.height * 0.25, 48), sectionRect.height - 6)
+      const maxOffsetY =
+        headerRect && headerRect.height > 0
+          ? Math.min(Math.max(headerRect.height - 6, 32), sectionRect.height - 6)
+          : fallbackOffset
+
+      const clampedOffsetY =
+        Number.isFinite(rawOffsetY) && maxOffsetY > 0
+          ? Math.min(Math.max(rawOffsetY, 8), maxOffsetY)
+          : rawOffsetY
+
+      try {
+        event.dataTransfer.setDragImage(section, clampedOffsetX, clampedOffsetY)
+      } catch {
+        // Ignore browsers that disallow custom drag previews
+      }
+    },
+    [findGroupSectionElement],
+  )
+
+  const applyGroupScrollAnchor = useCallback(() => {
+    const anchor = groupScrollAnchorRef.current
+    if (!anchor) {
+      return
+    }
+
+    const section = findGroupSectionElement(anchor.groupName)
+    if (!section) {
+      return
+    }
+
+    const scrollParent = ensureScrollParent()
+    if (!scrollParent) {
+      return
+    }
+
+    const currentTop = section.getBoundingClientRect().top
+    const delta = currentTop - anchor.viewportTop
+    if (Math.abs(delta) > 0.5) {
+      scrollParent.scrollTop += delta
+    }
+  }, [ensureScrollParent, findGroupSectionElement])
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -364,6 +417,76 @@ export function ColorManager({
       groupScrollAnchorRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if ((draggedGroup === null && !isAnyCardDragging) || typeof window === "undefined" || typeof document === "undefined") {
+      return
+    }
+
+    const scrollParent = ensureScrollParent()
+    if (!scrollParent) {
+      return
+    }
+
+    const EDGE_THRESHOLD_PX = 180
+    const MIN_SCROLL_SPEED = 4
+    const MAX_SCROLL_SPEED = 28
+
+    let rafId = 0
+
+    const step = () => {
+      const pointer = dragViewportPointerRef.current
+      if (pointer) {
+        const isDocumentScroller =
+          scrollParent === document.body ||
+          scrollParent === document.documentElement ||
+          scrollParent === document.scrollingElement
+
+        let topBoundary = 0
+        let bottomBoundary = window.innerHeight ?? 0
+
+        if (!isDocumentScroller) {
+          const rect = scrollParent.getBoundingClientRect()
+          topBoundary = rect.top
+          bottomBoundary = rect.bottom
+        }
+
+        const viewportHeight = Math.max(bottomBoundary - topBoundary, 1)
+        const threshold = Math.min(EDGE_THRESHOLD_PX, viewportHeight / 2)
+
+        if (threshold > 0) {
+          let delta = 0
+
+          const distanceToTop = pointer.y - topBoundary
+          const normalizedTopDistance = Math.max(distanceToTop, 0)
+          if (normalizedTopDistance < threshold) {
+            const intensity = (threshold - normalizedTopDistance) / threshold
+            const eased = intensity * intensity
+            delta = -(MIN_SCROLL_SPEED + (MAX_SCROLL_SPEED - MIN_SCROLL_SPEED) * eased)
+          } else {
+            const distanceToBottom = bottomBoundary - pointer.y
+            const normalizedBottomDistance = Math.max(distanceToBottom, 0)
+            if (normalizedBottomDistance < threshold) {
+              const intensity = (threshold - normalizedBottomDistance) / threshold
+              const eased = intensity * intensity
+              delta = MIN_SCROLL_SPEED + (MAX_SCROLL_SPEED - MIN_SCROLL_SPEED) * eased
+            }
+          }
+
+          if (delta !== 0) {
+            scrollParent.scrollTop += delta
+          }
+        }
+      }
+
+      rafId = window.requestAnimationFrame(step)
+    }
+
+    rafId = window.requestAnimationFrame(step)
+    return () => {
+      window.cancelAnimationFrame(rafId)
+    }
+  }, [draggedGroup, isAnyCardDragging, ensureScrollParent])
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const managerRef = useRef<HTMLDivElement | null>(null)
@@ -630,6 +753,7 @@ export function ColorManager({
   }
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
+    updateDragPointerFromEvent(e)
     if (dragImageRef.current) {
       document.body.removeChild(dragImageRef.current)
       dragImageRef.current = null
@@ -660,6 +784,7 @@ export function ColorManager({
   }
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
+    updateDragPointerFromEvent(e)
     e.preventDefault()
     if (draggedIndex !== null && draggedIndex !== index) {
       const rect = e.currentTarget.getBoundingClientRect()
@@ -686,11 +811,13 @@ export function ColorManager({
   }
 
   const handleDragOverGroup = (e: React.DragEvent, groupName: string) => {
+    updateDragPointerFromEvent(e)
     e.preventDefault()
     setDragOverGroup(groupName)
   }
 
   const handleDrop = (e: React.DragEvent) => {
+    updateDragPointerFromEvent(e)
     e.preventDefault()
     if (draggedIndex !== null && dragOverIndex !== null && dragMode === "swap") {
       const draggedColor = colors[draggedIndex]
@@ -794,6 +921,7 @@ export function ColorManager({
       document.body.removeChild(dragImageRef.current)
       dragImageRef.current = null
     }
+    clearGlobalDragPointer()
   }
 
   const resetGroupDragState = useCallback(() => {
@@ -806,7 +934,8 @@ export function ColorManager({
     setGroupDragMode(null)
     setGroupInsertPosition(null)
     groupDragPointerRef.current = null
-  }, [areGroupsCollapsedForDrag, collapseGroupsDuringGroupDrag, queueGroupScrollAnchor])
+    clearGlobalDragPointer()
+  }, [areGroupsCollapsedForDrag, clearGlobalDragPointer, collapseGroupsDuringGroupDrag, queueGroupScrollAnchor])
 
   const evaluateGroupDragIntent = useCallback(
     (pointer: { x: number; y: number }) => {
@@ -1045,6 +1174,7 @@ export function ColorManager({
 
     const handleGlobalDragOver = (event: DragEvent) => {
       groupDragPointerRef.current = { x: event.clientX, y: event.clientY }
+      updateDragPointerFromEvent(event)
       syncGroupHoverFromPointer()
     }
 
@@ -1052,11 +1182,27 @@ export function ColorManager({
     return () => {
       document.removeEventListener("dragover", handleGlobalDragOver)
     }
-  }, [draggedGroup, syncGroupHoverFromPointer])
+  }, [draggedGroup, syncGroupHoverFromPointer, updateDragPointerFromEvent])
+
+  useEffect(() => {
+    if (!isAnyCardDragging) return
+    if (typeof document === "undefined") return
+
+    const handleCardDragOver = (event: DragEvent) => {
+      updateDragPointerFromEvent(event)
+    }
+
+    document.addEventListener("dragover", handleCardDragOver)
+    return () => {
+      document.removeEventListener("dragover", handleCardDragOver)
+    }
+  }, [isAnyCardDragging, updateDragPointerFromEvent])
 
   const handleGroupDragStart = (e: React.DragEvent, groupName: string) => {
     onColorEdit?.(-1)
 
+    applyGroupDragImage(e, groupName)
+    updateDragPointerFromEvent(e)
     groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
     setDraggedGroup(groupName)
     setGroupDragMode(null)
@@ -1070,6 +1216,7 @@ export function ColorManager({
 
   const handleGroupDragOver = (e: React.DragEvent) => {
     e.preventDefault()
+    updateDragPointerFromEvent(e)
     groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
     evaluateGroupDragIntent(groupDragPointerRef.current)
   }
@@ -1082,6 +1229,7 @@ export function ColorManager({
     event.preventDefault()
     event.stopPropagation()
     if (!draggedGroup) return
+    updateDragPointerFromEvent(event)
     const pointer = { x: event.clientX, y: event.clientY }
     groupDragPointerRef.current = pointer
     evaluateGroupDragIntent(pointer)
@@ -1095,6 +1243,7 @@ export function ColorManager({
     event.preventDefault()
     event.stopPropagation()
     if (!draggedGroup) return
+    updateDragPointerFromEvent(event)
     const pointer = { x: event.clientX, y: event.clientY }
     groupDragPointerRef.current = pointer
     evaluateGroupDragIntent(pointer)
@@ -1108,6 +1257,7 @@ export function ColorManager({
   ) => {
     e.preventDefault()
     e.stopPropagation()
+    updateDragPointerFromEvent(e)
 
     if (!draggedGroup || draggedGroup === targetGroupName) {
       resetGroupDragState()
@@ -1283,6 +1433,7 @@ export function ColorManager({
   }
 
   const handleDropOnNewGroup = (e: React.DragEvent) => {
+    updateDragPointerFromEvent(e)
     e.preventDefault()
     e.stopPropagation()
 
@@ -1308,6 +1459,7 @@ export function ColorManager({
   }
 
   const handleDropOnTrash = (e: React.DragEvent) => {
+    updateDragPointerFromEvent(e)
     e.preventDefault()
     e.stopPropagation()
 
@@ -1576,6 +1728,7 @@ export function ColorManager({
           <div
             className="relative w-full"
             onDragOver={(event) => {
+              updateDragPointerFromEvent(event)
               event.preventDefault()
               if (draggedIndex !== null && groupColors.length > 0) {
                 const lastIndex = groupColors[groupColors.length - 1].originalIndex
@@ -1723,6 +1876,7 @@ export function ColorManager({
           isDropZoneExpanded ? "py-6" : "pt-3 pb-5",
         )}
         onDragOver={(event) => {
+          updateDragPointerFromEvent(event)
           if (!isAnyCardDragging) return
           event.preventDefault()
           setIsBetweenZonesActive(true)
@@ -1776,6 +1930,7 @@ export function ColorManager({
                 : "bg-transparent opacity-100 hover:border-blue-200 hover:bg-blue-50/40",
             )}
             onDragOver={(e) => {
+              updateDragPointerFromEvent(e)
               e.preventDefault()
               e.stopPropagation()
               if (isAnyCardDragging) {
@@ -1842,6 +1997,7 @@ export function ColorManager({
                 : "border-transparent bg-transparent opacity-100",
             )}
             onDragOver={(e) => {
+              updateDragPointerFromEvent(e)
               if (!isAnyCardDragging) return
               e.preventDefault()
               e.stopPropagation()
