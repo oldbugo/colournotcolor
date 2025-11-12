@@ -23,7 +23,7 @@ import {
 import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
-import { GroupSection, GROUP_SECTION_METRICS } from "@/components/color-manager/group-section"
+import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
 import type { ColorWithName, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
   composeLabel,
@@ -36,6 +36,7 @@ import {
   updateSwatch,
 } from "@/lib/color-utils"
 import { cn } from "@/lib/utils"
+import { scheduleSnap, findScrollParent as detectScrollParent, type Align, type CancelHandle } from "@/lib/scroll-snap"
 
 type ColorManagerProps = {
   label: string
@@ -61,6 +62,17 @@ type GroupDeadzoneLock = {
   groupName: string
   position: "before" | "after"
 }
+
+type GroupScrollAnchorState = {
+  groupName: string
+  viewportTop: number
+}
+
+const DROP_SCROLL_OFFSET = 56
+const GROUP_VIEWPORT_MARGIN = 16
+const CARD_VIEWPORT_MARGIN = 48
+const CARD_NUDGE_BAND = 28
+const CARD_SNAP_MAX_ATTEMPTS = 8
 
 function groupColorsByCategory(colors: string[]): Map<string, ColorWithName[]> {
   const groups = new Map<string, ColorWithName[]>()
@@ -180,6 +192,7 @@ export function ColorManager({
   const minCardWidth = CARD_MIN_COLUMN_WIDTH
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
   const [areGroupsCollapsedForDrag, setAreGroupsCollapsedForDrag] = useState(false)
+  const [suppressGroupExpansionAnimation, setSuppressGroupExpansionAnimation] = useState(false)
   const isAnyCardDraggingRef = useRef(isAnyCardDragging)
   const [groupDragMode, setGroupDragMode] = useState<"swap" | "insert" | null>(null)
   const [groupInsertPosition, setGroupInsertPosition] = useState<"before" | "after" | null>(null)
@@ -188,20 +201,65 @@ export function ColorManager({
   const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
   const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
   const draggedGroupRef = useRef<string | null>(null)
-  const groupScrollAnchorRef = useRef<{ groupName: string; viewportTop: number } | null>(null)
+  const groupScrollAnchorRef = useRef<GroupScrollAnchorState | null>(null)
   const scrollAnchorReleaseTimeoutRef = useRef<number | null>(null)
+  const pendingGroupSnapTimerRef = useRef<number | null>(null)
   const [scrollAnchorVersion, setScrollAnchorVersion] = useState(0)
+  const suppressExpansionTimeoutRef = useRef<number | null>(null)
+  const pendingGroupSnapRef = useRef<{ groupName: string; options?: { force?: boolean; align?: Align } } | null>(null)
+  const prevGroupsCollapsedRef = useRef(areGroupsCollapsedForDrag)
+  const cardSnapHandleRef = useRef<CancelHandle | null>(null)
+  const cardSnapDelayTimeoutRef = useRef<number | null>(null)
+  const pendingCardSnapRef = useRef<{ index: number | null; options?: { disableSnapIllusion?: boolean; delayMs?: number } } | null>(null)
+  const groupSnapHandleRef = useRef<CancelHandle | null>(null)
   const GROUP_SCROLL_ANCHOR_LOCK_MS = 260
+  const GROUP_SNAP_HOLD_MS = 160
 
   useEffect(() => {
     if (!collapseGroupsDuringGroupDrag) {
       setAreGroupsCollapsedForDrag(false)
+      setSuppressGroupExpansionAnimation(false)
     }
   }, [collapseGroupsDuringGroupDrag])
 
   useEffect(() => {
     draggedGroupRef.current = draggedGroup
   }, [draggedGroup])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+    const prev = prevGroupsCollapsedRef.current
+    prevGroupsCollapsedRef.current = areGroupsCollapsedForDrag
+    if (prev && !areGroupsCollapsedForDrag) {
+      setSuppressGroupExpansionAnimation(true)
+      if (suppressExpansionTimeoutRef.current !== null) {
+        window.clearTimeout(suppressExpansionTimeoutRef.current)
+      }
+      suppressExpansionTimeoutRef.current = window.setTimeout(() => {
+        setSuppressGroupExpansionAnimation(false)
+        suppressExpansionTimeoutRef.current = null
+      }, GROUP_SECTION_ANIMATION_MS)
+    }
+  }, [areGroupsCollapsedForDrag])
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && suppressExpansionTimeoutRef.current !== null) {
+        window.clearTimeout(suppressExpansionTimeoutRef.current)
+        suppressExpansionTimeoutRef.current = null
+      }
+      if (typeof window !== "undefined" && pendingGroupSnapTimerRef.current !== null) {
+        window.clearTimeout(pendingGroupSnapTimerRef.current)
+        pendingGroupSnapTimerRef.current = null
+      }
+      if (typeof window !== "undefined" && cardSnapDelayTimeoutRef.current !== null) {
+        window.clearTimeout(cardSnapDelayTimeoutRef.current)
+        cardSnapDelayTimeoutRef.current = null
+      }
+    }
+  }, [])
 
   const findGroupSectionElement = useCallback((groupName: string | null) => {
     if (!groupName || typeof document === "undefined") {
@@ -221,29 +279,21 @@ export function ColorManager({
       return null
     }
 
-    if (scrollAnchorParentRef.current) {
-      return scrollAnchorParentRef.current
+    const cached = scrollAnchorParentRef.current
+    if (cached && cached.isConnected) {
+      return cached
     }
 
     const root = managerRef.current
-    if (!root) {
-      scrollAnchorParentRef.current = document.scrollingElement as HTMLElement | null
-      return scrollAnchorParentRef.current
+    const resolved = detectScrollParent(root ?? null)
+    if (resolved) {
+      scrollAnchorParentRef.current = resolved
+      return resolved
     }
 
-    let current: HTMLElement | null = root.parentElement
-    while (current && typeof window !== "undefined") {
-      const style = window.getComputedStyle(current)
-      const overflowY = style.overflowY || style.overflow
-      if (overflowY === "auto" || overflowY === "scroll") {
-        scrollAnchorParentRef.current = current
-        return current
-      }
-      current = current.parentElement
-    }
-
-    scrollAnchorParentRef.current = document.scrollingElement as HTMLElement | null
-    return scrollAnchorParentRef.current
+    const fallback = (document.scrollingElement as HTMLElement | null) ?? document.documentElement ?? null
+    scrollAnchorParentRef.current = fallback
+    return fallback
   }, [])
 
   const releaseGroupScrollAnchor = useCallback(
@@ -272,8 +322,11 @@ export function ColorManager({
   )
 
   const queueGroupScrollAnchor = useCallback(
-    (groupName: string | null) => {
-      if (!collapseGroupsDuringGroupDrag || !groupName) {
+    (groupName: string | null, force = false) => {
+      if (!groupName) {
+        return
+      }
+      if (!collapseGroupsDuringGroupDrag && !force) {
         return
       }
 
@@ -283,6 +336,7 @@ export function ColorManager({
       }
 
       const rect = section.getBoundingClientRect()
+
       groupScrollAnchorRef.current = {
         groupName,
         viewportTop: rect.top,
@@ -293,6 +347,172 @@ export function ColorManager({
     },
     [GROUP_SCROLL_ANCHOR_LOCK_MS, collapseGroupsDuringGroupDrag, findGroupSectionElement, releaseGroupScrollAnchor],
   )
+
+  const cancelCardSnap = useCallback(() => {
+    if (cardSnapHandleRef.current) {
+      cardSnapHandleRef.current.cancel()
+      cardSnapHandleRef.current = null
+    }
+  }, [])
+
+  const cancelGroupSnap = useCallback(() => {
+    if (groupSnapHandleRef.current) {
+      groupSnapHandleRef.current.cancel()
+      groupSnapHandleRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      cancelCardSnap()
+      cancelGroupSnap()
+    }
+  }, [cancelCardSnap, cancelGroupSnap])
+
+  const snapGroupIntoView = useCallback(
+    (
+      groupName: string | null,
+      options: { force?: boolean; align?: Align; skipSnapIllusion?: boolean } = {},
+    ): boolean => {
+      if (!groupName || typeof window === "undefined") {
+        return false
+      }
+
+      cancelGroupSnap()
+      groupSnapHandleRef.current = scheduleSnap({
+        kind: "group",
+        options: {
+          root: () => managerRef.current,
+          target: () => findGroupSectionElement(groupName),
+          scrollParent: () => ensureScrollParent(),
+          align: options.align ?? "auto",
+          force: options.force ?? false,
+          skipSnapIllusion: options.skipSnapIllusion ?? false,
+          margins: { group: GROUP_VIEWPORT_MARGIN },
+        },
+      })
+      return true
+    },
+    [cancelGroupSnap, ensureScrollParent, findGroupSectionElement],
+  )
+
+  const snapGroupIntoViewNextFrame = useCallback(
+    (
+      groupName: string | null,
+      options?: { force?: boolean; align?: Align; skipSnapIllusion?: boolean },
+    ) => {
+      if (!groupName || typeof window === "undefined") return
+      window.requestAnimationFrame(() => {
+        snapGroupIntoView(groupName, options)
+      })
+    },
+    [snapGroupIntoView],
+  )
+
+  const scheduleCardViewportSnap = useCallback(
+    (
+      index: number | null,
+      options?: {
+        disableSnapIllusion?: boolean
+        delayMs?: number
+      },
+    ) => {
+      if (typeof window === "undefined") {
+        return
+      }
+
+      const cardResolver = () => (typeof index === "number" ? cardRefs.current.get(index) ?? null : null)
+      const scrollParentResolver = () => ensureScrollParent()
+
+      const executeSnap = () => {
+        cancelCardSnap()
+        cardSnapHandleRef.current = scheduleSnap(
+          {
+            kind: "card",
+            options: {
+              root: () => managerRef.current,
+              card: cardResolver,
+              scrollParent: scrollParentResolver,
+              skipSnapIllusion: options?.disableSnapIllusion ?? false,
+              margins: { card: CARD_VIEWPORT_MARGIN, group: GROUP_VIEWPORT_MARGIN, nudge: CARD_NUDGE_BAND },
+            },
+          },
+          { maxAttempts: CARD_SNAP_MAX_ATTEMPTS },
+        )
+      }
+
+      if (options?.delayMs && options.delayMs > 0) {
+        if (cardSnapDelayTimeoutRef.current !== null) {
+          window.clearTimeout(cardSnapDelayTimeoutRef.current)
+        }
+        cardSnapDelayTimeoutRef.current = window.setTimeout(() => {
+          cardSnapDelayTimeoutRef.current = null
+          executeSnap()
+        }, options.delayMs)
+        return
+      }
+
+      executeSnap()
+    },
+    [cancelCardSnap, ensureScrollParent],
+  )
+
+  const runPendingCardSnap = useCallback(() => {
+    const pending = pendingCardSnapRef.current
+    if (!pending) {
+      return
+    }
+    pendingCardSnapRef.current = null
+    scheduleCardViewportSnap(pending.index, pending.options)
+  }, [scheduleCardViewportSnap])
+
+  const flushPendingGroupSnap = useCallback(() => {
+    if (typeof window !== "undefined" && pendingGroupSnapTimerRef.current !== null) {
+      window.clearTimeout(pendingGroupSnapTimerRef.current)
+      pendingGroupSnapTimerRef.current = null
+    }
+    if (!pendingGroupSnapRef.current) {
+      runPendingCardSnap()
+      return
+    }
+    const pending = pendingGroupSnapRef.current
+    pendingGroupSnapRef.current = null
+    snapGroupIntoViewNextFrame(pending.groupName, { ...pending.options, skipSnapIllusion: true })
+    releaseGroupScrollAnchor(GROUP_SNAP_HOLD_MS)
+    runPendingCardSnap()
+  }, [releaseGroupScrollAnchor, runPendingCardSnap, snapGroupIntoViewNextFrame])
+
+  const requestGroupSnapPostExpansion = useCallback(
+    (groupName: string | null, options?: { force?: boolean; align?: Align }) => {
+      if (!groupName) {
+        return
+      }
+      pendingGroupSnapRef.current = { groupName, options }
+      if (collapseGroupsDuringGroupDrag) {
+        return
+      }
+      if (typeof window === "undefined") {
+        flushPendingGroupSnap()
+        return
+      }
+      if (pendingGroupSnapTimerRef.current !== null) {
+        window.clearTimeout(pendingGroupSnapTimerRef.current)
+      }
+      pendingGroupSnapTimerRef.current = window.setTimeout(() => {
+        pendingGroupSnapTimerRef.current = null
+        flushPendingGroupSnap()
+      }, GROUP_SNAP_HOLD_MS)
+    },
+    [collapseGroupsDuringGroupDrag, flushPendingGroupSnap],
+  )
+
+  useEffect(() => {
+    if (suppressGroupExpansionAnimation) {
+      return
+    }
+    flushPendingGroupSnap()
+  }, [flushPendingGroupSnap, suppressGroupExpansionAnimation])
+
   const updateDragPointerFromEvent = useCallback((event: { clientX: number; clientY: number }) => {
     const { clientX, clientY } = event
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
@@ -307,7 +527,7 @@ export function ColorManager({
 
   const applyGroupDragImage = useCallback(
     (event: React.DragEvent, groupName: string) => {
-      if (typeof document === "undefined") {
+      if (typeof document === "undefined" || typeof window === "undefined") {
         return
       }
 
@@ -316,38 +536,69 @@ export function ColorManager({
         return
       }
 
+      if (dragImageRef.current) {
+        document.body.removeChild(dragImageRef.current)
+        dragImageRef.current = null
+      }
+
       const sectionRect = section.getBoundingClientRect()
       if (sectionRect.width === 0 || sectionRect.height === 0) {
         return
       }
 
       const headerNode = section.querySelector<HTMLElement>("[data-group-header]")
-      const headerRect = headerNode?.getBoundingClientRect()
+      const headerClone = headerNode ? (headerNode.cloneNode(true) as HTMLElement) : null
+      const preview = document.createElement("div")
+      const computed = window.getComputedStyle(section)
+      preview.className = section.className
+      preview.style.width = `${sectionRect.width}px`
+      preview.style.maxWidth = `${sectionRect.width}px`
+      preview.style.padding = computed.padding
+      preview.style.borderRadius = computed.borderRadius
+      preview.style.background = computed.backgroundColor || "var(--background)"
+      preview.style.boxShadow = computed.boxShadow || "0 12px 25px rgba(15, 23, 42, 0.18)"
+      preview.style.position = "absolute"
+      preview.style.top = "-9999px"
+      preview.style.left = "-9999px"
+      preview.style.pointerEvents = "none"
+      preview.style.overflow = "hidden"
+
+      if (headerClone) {
+        preview.appendChild(headerClone)
+      }
+
+      const stub = document.createElement("div")
+      stub.style.height = "40px"
+      stub.style.marginTop = "8px"
+      stub.style.borderRadius = "8px"
+      stub.style.background = "linear-gradient(90deg, rgba(226,232,240,0.9), rgba(203,213,225,0.6))"
+      stub.style.border = "1px solid rgba(148, 163, 184, 0.35)"
+      preview.appendChild(stub)
+
+      document.body.appendChild(preview)
+      dragImageRef.current = preview
+
       const rawOffsetX = event.clientX - sectionRect.left
       const rawOffsetY = event.clientY - sectionRect.top
+      const headerHeight = headerClone
+        ? headerClone.getBoundingClientRect().height || 48
+        : headerNode?.getBoundingClientRect().height || 48
       const clampedOffsetX =
         Number.isFinite(rawOffsetX) && sectionRect.width > 0
           ? Math.min(Math.max(rawOffsetX, 16), Math.max(16, sectionRect.width - 16))
           : sectionRect.width / 2
-
-      const fallbackOffset = Math.min(Math.max(sectionRect.height * 0.25, 48), sectionRect.height - 6)
-      const maxOffsetY =
-        headerRect && headerRect.height > 0
-          ? Math.min(Math.max(headerRect.height - 6, 32), sectionRect.height - 6)
-          : fallbackOffset
-
       const clampedOffsetY =
-        Number.isFinite(rawOffsetY) && maxOffsetY > 0
-          ? Math.min(Math.max(rawOffsetY, 8), maxOffsetY)
-          : rawOffsetY
+        Number.isFinite(rawOffsetY) && headerHeight > 0
+          ? Math.min(Math.max(rawOffsetY, 12), Math.max(12, headerHeight - 6))
+          : headerHeight / 2
 
       try {
-        event.dataTransfer.setDragImage(section, clampedOffsetX, clampedOffsetY)
+        event.dataTransfer.setDragImage(preview, clampedOffsetX, clampedOffsetY)
       } catch {
-        // Ignore browsers that disallow custom drag previews
+        // ignore browsers that disallow custom drag previews
       }
     },
-    [findGroupSectionElement],
+    [dragImageRef, findGroupSectionElement],
   )
 
   const applyGroupScrollAnchor = useCallback(() => {
@@ -406,8 +657,9 @@ export function ColorManager({
       return
     }
 
-    releaseGroupScrollAnchor(220)
-  }, [areGroupsCollapsedForDrag, releaseGroupScrollAnchor])
+    const delay = suppressGroupExpansionAnimation ? GROUP_SECTION_ANIMATION_MS + 80 : 220
+    releaseGroupScrollAnchor(delay)
+  }, [areGroupsCollapsedForDrag, releaseGroupScrollAnchor, suppressGroupExpansionAnimation])
 
   useEffect(() => {
     return () => {
@@ -574,17 +826,6 @@ export function ColorManager({
   useEffect(() => {
     setPoppingCardIds((ids) => ids.filter((id) => swatches.some((swatch) => swatch.id === id)))
   }, [swatches])
-
-  useEffect(() => {
-    if (!pendingNewGroupSwatchId) return
-    const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
-    if (index === -1) return
-
-    onColorEdit?.(index)
-    setDroppedAtIndex(index)
-    setJustDropped(true)
-    setPendingNewGroupSwatchId(null)
-  }, [pendingNewGroupSwatchId, swatches, onColorEdit])
 
   useLayoutEffect(() => {
     const root = managerRef.current
@@ -850,6 +1091,8 @@ export function ColorManager({
       onBatchUpdateColors(toSwatchArray(newColors))
       setDroppedAtIndex(dragOverIndex)
       setJustDropped(true)
+      const isCrossGroupMove = draggedGroup !== targetGroup
+      triggerCardSnapIllusion(draggedIndex, dragOverIndex, targetGroup, { isCrossGroup: isCrossGroupMove })
     } else if (draggedIndex !== null && dragOverIndex !== null && dragMode === "insert") {
       const newColors = [...colors]
       const draggedColor = colors[draggedIndex]
@@ -883,6 +1126,8 @@ export function ColorManager({
       onBatchUpdateColors(toSwatchArray(newColors))
       setDroppedAtIndex(targetIndex)
       setJustDropped(true)
+      const isCrossGroupMove = draggedGroup !== targetGroup
+      triggerCardSnapIllusion(draggedIndex, targetIndex, targetGroup, { isCrossGroup: isCrossGroupMove })
     }
     setDraggedIndex(null)
     setDragOverIndex(null)
@@ -1198,9 +1443,79 @@ export function ColorManager({
     }
   }, [isAnyCardDragging, updateDragPointerFromEvent])
 
+  const isCardComfortablyVisible = useCallback(
+    (index: number | null) => {
+      if (typeof window === "undefined" || index === null) {
+        return false
+      }
+      const card = cardRefs.current.get(index)
+      const scrollParent = ensureScrollParent()
+      if (!card || !scrollParent) {
+        return false
+      }
+      const cardRect = card.getBoundingClientRect()
+      const parentRect = scrollParent.getBoundingClientRect()
+      const visibleTop = parentRect.top + CARD_VIEWPORT_MARGIN
+      const visibleBottom = parentRect.bottom - CARD_VIEWPORT_MARGIN
+      if (cardRect.top < visibleTop || cardRect.bottom > visibleBottom) {
+        return false
+      }
+      const nearTop = cardRect.top - visibleTop < CARD_NUDGE_BAND
+      const nearBottom = visibleBottom - cardRect.bottom < CARD_NUDGE_BAND
+      return !(nearTop || nearBottom)
+    },
+    [ensureScrollParent],
+  )
+
+  const triggerCardSnapIllusion = useCallback(
+    (fromIndex: number, toIndex: number, groupName: string | null, options?: { isCrossGroup?: boolean }) => {
+      const targetIndex = Number.isFinite(toIndex) ? toIndex : null
+      const allowIllusion = options?.isCrossGroup ?? false
+
+      const queueSnap = (delayMs?: number) => {
+        scheduleCardViewportSnap(targetIndex, {
+          disableSnapIllusion: !allowIllusion,
+          delayMs,
+        })
+      }
+
+      if (allowIllusion && groupName) {
+        pendingCardSnapRef.current = { index: targetIndex, options: { disableSnapIllusion: false } }
+        requestGroupSnapPostExpansion(groupName, { force: true, align: "top" })
+        return
+      }
+
+      if (typeof window !== "undefined" && targetIndex !== null) {
+        window.requestAnimationFrame(() => {
+          if (isCardComfortablyVisible(targetIndex)) {
+            return
+          }
+          queueSnap(GROUP_SNAP_HOLD_MS)
+        })
+        return
+      }
+
+      queueSnap(GROUP_SNAP_HOLD_MS)
+    },
+    [isCardComfortablyVisible, requestGroupSnapPostExpansion, scheduleCardViewportSnap],
+  )
+
+  useEffect(() => {
+    if (!pendingNewGroupSwatchId) return
+    const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
+    if (index === -1) return
+
+    onColorEdit?.(index)
+    setDroppedAtIndex(index)
+    setJustDropped(true)
+    scheduleCardViewportSnap(index, {
+      disableSnapIllusion: false,
+    })
+    setPendingNewGroupSwatchId(null)
+  }, [onColorEdit, pendingNewGroupSwatchId, scheduleCardViewportSnap, swatches])
+
   const handleGroupDragStart = (e: React.DragEvent, groupName: string) => {
     onColorEdit?.(-1)
-
     applyGroupDragImage(e, groupName)
     updateDragPointerFromEvent(e)
     groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
@@ -1223,9 +1538,11 @@ export function ColorManager({
 
   const handleGroupInsertZoneDragOver = (
     event: React.DragEvent<HTMLDivElement>,
-    _groupName: string,
-    _position: "before" | "after",
+    groupName: string,
+    position: "before" | "after",
   ) => {
+    void groupName
+    void position
     event.preventDefault()
     event.stopPropagation()
     if (!draggedGroup) return
@@ -1331,6 +1648,8 @@ export function ColorManager({
     })
 
     onBatchUpdateColors(toSwatchArray(newColors))
+    queueGroupScrollAnchor(draggedGroup, true)
+    requestGroupSnapPostExpansion(draggedGroup, { force: true, align: "top" })
     resetGroupDragState()
   }
 
@@ -1445,6 +1764,7 @@ export function ColorManager({
       const groupName = getNextGroupName()
       const newColor = `${groupName}/${hex.replace("#", "")}${hex}`
       onUpdateColor(draggedIndex, toSwatch(newColor, draggedIndex))
+      triggerCardSnapIllusion(draggedIndex, draggedIndex, groupName, { isCrossGroup: true })
     }
 
     if (betweenZoneLeaveTimeoutRef.current) {
@@ -1504,6 +1824,7 @@ export function ColorManager({
   const removalTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   useEffect(() => {
+    const removalTimeouts = removalTimeoutsRef.current
     return () => {
       if (newGroupLeaveTimeoutRef.current) {
         clearTimeout(newGroupLeaveTimeoutRef.current)
@@ -1514,8 +1835,8 @@ export function ColorManager({
       if (betweenZoneLeaveTimeoutRef.current) {
         clearTimeout(betweenZoneLeaveTimeoutRef.current)
       }
-      removalTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout))
-      removalTimeoutsRef.current.clear()
+      removalTimeouts.forEach((timeout) => clearTimeout(timeout))
+      removalTimeouts.clear()
     }
   }, [])
 
@@ -1796,6 +2117,7 @@ export function ColorManager({
             isInsertTarget={isGroupInsertTarget && !!draggedGroup}
             insertPosition={insertPositionForGroup}
             isGroupDragActive={!!draggedGroup}
+            suppressExpansionAnimation={suppressGroupExpansionAnimation}
             onGroupReorderDragOver={handleGroupDragOver}
             onGroupReorderDrop={(event) => handleGroupDrop(event, groupName)}
             onCardDragOver={(event) => handleDragOverGroup(event, groupName)}
@@ -2096,12 +2418,3 @@ export function ColorManager({
     </div>
   )
 }
-
-
-
-
-
-
-
-
-

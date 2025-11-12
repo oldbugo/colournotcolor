@@ -23,6 +23,8 @@ export const GROUP_SECTION_METRICS = {
   horizontalDetectionOutset: 40,
 } as const
 
+export const GROUP_SECTION_ANIMATION_MS = 300
+
 type GroupSectionProps = {
   groupName: string
   isGroupDragging: boolean
@@ -37,6 +39,7 @@ type GroupSectionProps = {
   isInsertTarget: boolean
   insertPosition: "before" | "after" | null
   isGroupDragActive: boolean
+  suppressExpansionAnimation?: boolean
   onGroupReorderDragOver: (event: React.DragEvent<HTMLDivElement>) => void
   onGroupReorderDrop: (event: React.DragEvent<HTMLDivElement>) => void
   onCardDragOver: (event: React.DragEvent<HTMLDivElement>) => void
@@ -62,6 +65,7 @@ export function GroupSection({
   isInsertTarget,
   insertPosition,
   isGroupDragActive,
+  suppressExpansionAnimation = false,
   onGroupReorderDragOver,
   onGroupReorderDrop,
   onCardDragOver,
@@ -72,10 +76,14 @@ export function GroupSection({
   addButton,
   children,
 }: GroupSectionProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
   const [columnCount, setColumnCount] = useState(1)
   const [contentHeight, setContentHeight] = useState<number | null>(null)
   const [isContentHiddenVisually, setIsContentHiddenVisually] = useState(isCollapsed)
+  const [removalHeight, setRemovalHeight] = useState<number | null>(null)
+  const [isRemovalAnimating, setIsRemovalAnimating] = useState(false)
+  const removalCollapseRafRef = useRef<number | null>(null)
   const gridGap = CARD_GRID_GAP
   const minColumns = 1
   const maxColumns = CARD_MAX_GRID_COLUMNS
@@ -155,22 +163,25 @@ export function GroupSection({
   }, [])
 
   useEffect(() => {
-    if (!isCollapsed) {
-      setIsContentHiddenVisually(false)
-      return
-    }
-
     if (typeof window === "undefined") {
-      setIsContentHiddenVisually(true)
       return
     }
 
-    const timeout = window.setTimeout(() => {
+    if (!isCollapsed) {
+      const rafId = window.requestAnimationFrame(() => {
+        setIsContentHiddenVisually(false)
+      })
+      return () => {
+        window.cancelAnimationFrame(rafId)
+      }
+    }
+
+    const timeoutId = window.setTimeout(() => {
       setIsContentHiddenVisually(true)
-    }, 200)
+    }, GROUP_SECTION_ANIMATION_MS)
 
     return () => {
-      window.clearTimeout(timeout)
+      window.clearTimeout(timeoutId)
     }
   }, [isCollapsed])
 
@@ -252,25 +263,103 @@ export function GroupSection({
   )
 
   const collapsibleContentStyle = useMemo<React.CSSProperties>(() => {
-    const targetHeight = isCollapsed ? 0 : contentHeight
+    const targetHeight = contentHeight === null ? null : Math.max(0, isCollapsed ? 0 : contentHeight)
+    const disableExpansionAnimation = suppressExpansionAnimation && !isCollapsed
+    const transitionValue =
+      contentHeight === null || disableExpansionAnimation
+        ? undefined
+        : `height ${GROUP_SECTION_ANIMATION_MS}ms cubic-bezier(0.32, 0.72, 0, 1), opacity ${GROUP_SECTION_ANIMATION_MS}ms ease, transform ${GROUP_SECTION_ANIMATION_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`
     return {
-      maxHeight: targetHeight === null ? undefined : Math.max(0, targetHeight),
+      height: targetHeight === null ? undefined : `${targetHeight}px`,
       opacity: isCollapsed ? 0 : 1,
       overflow: "hidden",
       pointerEvents: isCollapsed ? "none" : "auto",
       visibility: isContentHiddenVisually ? "hidden" : "visible",
-      transition: "max-height 160ms ease, opacity 140ms ease",
-      willChange: "max-height, opacity",
+      transform: isCollapsed || disableExpansionAnimation ? (isCollapsed ? "scaleY(0.92)" : "scaleY(1)") : "scaleY(1)",
+      transformOrigin: "top center",
+      transition: transitionValue,
+      willChange: contentHeight === null || disableExpansionAnimation ? undefined : "height, opacity, transform",
     }
-  }, [contentHeight, isCollapsed, isContentHiddenVisually])
+  }, [contentHeight, isCollapsed, isContentHiddenVisually, suppressExpansionAnimation])
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    if (!isRemoving) {
+      if (removalCollapseRafRef.current !== null) {
+        window.cancelAnimationFrame(removalCollapseRafRef.current)
+        removalCollapseRafRef.current = null
+      }
+      setRemovalHeight(null)
+      setIsRemovalAnimating(false)
+      return
+    }
+
+    const node = rootRef.current
+    if (!node) {
+      return
+    }
+
+    const height = node.getBoundingClientRect().height
+    setRemovalHeight(height)
+    setIsRemovalAnimating(true)
+
+    if (removalCollapseRafRef.current !== null) {
+      window.cancelAnimationFrame(removalCollapseRafRef.current)
+    }
+
+    removalCollapseRafRef.current = window.requestAnimationFrame(() => {
+      setRemovalHeight(0)
+      removalCollapseRafRef.current = null
+    })
+
+    return () => {
+      if (removalCollapseRafRef.current !== null) {
+        window.cancelAnimationFrame(removalCollapseRafRef.current)
+        removalCollapseRafRef.current = null
+      }
+    }
+  }, [isRemoving])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && removalCollapseRafRef.current !== null) {
+        window.cancelAnimationFrame(removalCollapseRafRef.current)
+        removalCollapseRafRef.current = null
+      }
+    }
+  }, [])
+
+  const removalStyle = useMemo<React.CSSProperties | undefined>(() => {
+    if (!isRemovalAnimating) {
+      return undefined
+    }
+
+    const transitionDuration = `${GROUP_SECTION_ANIMATION_MS}ms`
+    return {
+      overflow: "hidden",
+      maxHeight: removalHeight === null ? undefined : `${removalHeight}px`,
+      opacity: removalHeight === 0 ? 0 : 1,
+      transition: `max-height ${transitionDuration} cubic-bezier(0.32, 0.72, 0, 1), opacity ${Math.max(
+        0,
+        GROUP_SECTION_ANIMATION_MS - 60,
+      )}ms ease`,
+    }
+  }, [isRemovalAnimating, removalHeight])
 
   return (
     <div
+      ref={rootRef}
       className={`relative overflow-visible rounded-lg border border-border/50 bg-background p-3 transition ${
         isCollapsed ? "space-y-1" : "space-y-3"
       } ${isGroupDragging ? "opacity-50" : "opacity-100"} ${
         isNewlyCreated ? "animate-in fade-in-0 slide-in-from-top-4 duration-300" : ""
-      } ${isRemoving ? "animate-out fade-out-0 slide-out-to-top-2 duration-200" : ""}`}
+      } ${isRemoving ? "pointer-events-none" : ""}`}
+      style={removalStyle}
       data-group-section=""
       data-group-name={groupName}
       onDragOver={onGroupReorderDragOver}
