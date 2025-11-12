@@ -27,9 +27,46 @@ export function ResizablePanels({
   const [resizingIndex, setResizingIndex] = useState<number | null>(null)
   const [isAnimatingCollapse, setIsAnimatingCollapse] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const [containerWidth, setContainerWidth] = useState<number | null>(null)
 
   const COLLAPSED_WIDTH = 80
   const MIN_WIDTH_THRESHOLD = 15
+
+  useEffect(() => {
+    const node = containerRef.current
+    if (!node) {
+      return
+    }
+
+    const updateWidth = () => {
+      const width = node.getBoundingClientRect().width
+      setContainerWidth((prev) => (Math.abs((prev ?? 0) - width) < 0.5 ? prev : width))
+    }
+
+    updateWidth()
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        const width = entry.contentRect.width
+        setContainerWidth((prev) => (Math.abs((prev ?? 0) - width) < 0.5 ? prev : width))
+      })
+      observer.observe(node)
+      return () => {
+        observer.disconnect()
+      }
+    }
+
+    if (typeof window === "undefined") {
+      return
+    }
+
+    window.addEventListener("resize", updateWidth)
+    return () => {
+      window.removeEventListener("resize", updateWidth)
+    }
+  }, [])
 
   const toggleCollapse = (index: 0 | 1 | 2) => {
     setIsAnimatingCollapse(true)
@@ -82,32 +119,6 @@ export function ResizablePanels({
     setTimeout(() => setIsAnimatingCollapse(false), 300)
   }
 
-  const getActualWidths = () => {
-    if (!containerRef.current) return widths
-
-    const containerWidth = containerRef.current.getBoundingClientRect().width
-    const collapsedWidthPercent = (COLLAPSED_WIDTH / containerWidth) * 100
-
-    const numCollapsed = collapsed.filter(Boolean).length
-    const numExpanded = 3 - numCollapsed
-
-    if (numExpanded === 0) {
-      return [collapsedWidthPercent, collapsedWidthPercent, collapsedWidthPercent] as [number, number, number]
-    }
-
-    const collapsedSpace = numCollapsed * collapsedWidthPercent
-    const availableSpace = 100 - collapsedSpace
-
-    const expandedWidthsSum = widths.reduce((sum, w, i) => (collapsed[i] ? sum : sum + w), 0)
-
-    return widths.map((w, i) => {
-      if (collapsed[i]) {
-        return collapsedWidthPercent
-      }
-      return (w / expandedWidthsSum) * availableSpace
-    }) as [number, number, number]
-  }
-
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (resizingIndex === null || !containerRef.current) return
@@ -116,7 +127,7 @@ export function ResizablePanels({
       const mouseX = e.clientX - containerRect.left
       const percentage = (mouseX / containerRect.width) * 100
 
-      const currentActualWidths = getActualWidths()
+      const currentActualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH)
 
       if (resizingIndex === 0) {
         // Dragging divider 1 (between panel 1 and panel 2)
@@ -179,7 +190,6 @@ export function ResizablePanels({
           const panel2Width = currentActualWidths[1]
           const availableForPanels13 = 100 - panel2Width
 
-          const divider2Position = currentActualWidths[0] + panel2Width
           const desiredPanel1Width = Math.max(
             MIN_WIDTH_THRESHOLD,
             Math.min(percentage - panel2Width, availableForPanels13 - MIN_WIDTH_THRESHOLD),
@@ -234,9 +244,9 @@ export function ResizablePanels({
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [resizingIndex, widths, collapsed])
+  }, [resizingIndex, widths, collapsed, containerWidth])
 
-  const actualWidths = getActualWidths()
+  const actualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH)
 
   const transitionClass =
     resizingIndex !== null
@@ -414,4 +424,34 @@ export function ResizablePanels({
       </div>
     </div>
   )
+}
+
+function computeActualWidths(
+  widths: [number, number, number],
+  collapsed: [boolean, boolean, boolean],
+  containerWidth: number | null,
+  collapsedWidthPx: number,
+): [number, number, number] {
+  if (!containerWidth || containerWidth <= 0) {
+    return widths
+  }
+
+  const collapsedWidthPercent = (collapsedWidthPx / containerWidth) * 100
+  const numCollapsed = collapsed.filter(Boolean).length
+  const numExpanded = 3 - numCollapsed
+
+  if (numExpanded === 0) {
+    return [collapsedWidthPercent, collapsedWidthPercent, collapsedWidthPercent]
+  }
+
+  const collapsedSpace = numCollapsed * collapsedWidthPercent
+  const availableSpace = 100 - collapsedSpace
+  const expandedWidthsSum = widths.reduce((sum, w, i) => (collapsed[i] ? sum : sum + w), 0)
+
+  return widths.map((w, i) => {
+    if (collapsed[i]) {
+      return collapsedWidthPercent
+    }
+    return expandedWidthsSum === 0 ? availableSpace / numExpanded : (w / expandedWidthsSum) * availableSpace
+  }) as [number, number, number]
 }

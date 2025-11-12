@@ -20,8 +20,8 @@ export const storage = {
   savePalettes: (palettes: StoredPalette[]) => {
     try {
       localStorage.setItem(STORAGE_KEYS.PALETTES, JSON.stringify(palettes))
-    } catch (error) {
-      console.error("Failed to save palettes:", error)
+    } catch {
+      // Swallow storage errors
     }
   },
 
@@ -30,8 +30,7 @@ export const storage = {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.PALETTES)
       return stored ? JSON.parse(stored) : null
-    } catch (error) {
-      console.error("Failed to load palettes:", error)
+    } catch {
       return null
     }
   },
@@ -40,8 +39,8 @@ export const storage = {
   saveActivePaletteId: (id: string) => {
     try {
       localStorage.setItem(STORAGE_KEYS.ACTIVE_PALETTE_ID, id)
-    } catch (error) {
-      console.error("Failed to save active palette ID:", error)
+    } catch {
+      // Swallow storage errors
     }
   },
 
@@ -49,8 +48,7 @@ export const storage = {
   loadActivePaletteId: (): string | null => {
     try {
       return localStorage.getItem(STORAGE_KEYS.ACTIVE_PALETTE_ID)
-    } catch (error) {
-      console.error("Failed to load active palette ID:", error)
+    } catch {
       return null
     }
   },
@@ -61,8 +59,8 @@ export const storage = {
       const preferences: LayoutPreferences = stored ? JSON.parse(stored) : {}
       preferences[paletteId] = isHorizontal
       localStorage.setItem(STORAGE_KEYS.LAYOUT_PREFERENCES, JSON.stringify(preferences))
-    } catch (error) {
-      console.error("Failed to save layout preference:", error)
+    } catch {
+      // Swallow storage errors
     }
   },
 
@@ -72,8 +70,7 @@ export const storage = {
       if (!stored) return null
       const preferences: LayoutPreferences = JSON.parse(stored)
       return preferences[paletteId] ?? null
-    } catch (error) {
-      console.error("Failed to load layout preference:", error)
+    } catch {
       return null
     }
   },
@@ -84,8 +81,8 @@ export const storage = {
       localStorage.removeItem(STORAGE_KEYS.PALETTES)
       localStorage.removeItem(STORAGE_KEYS.ACTIVE_PALETTE_ID)
       localStorage.removeItem(STORAGE_KEYS.LAYOUT_PREFERENCES)
-    } catch (error) {
-      console.error("Failed to clear storage:", error)
+    } catch {
+      // Swallow storage errors
     }
   },
 }

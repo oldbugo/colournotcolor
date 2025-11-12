@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { ContrastChecker } from "@/components/contrast-checker"
 import { PaletteManager } from "@/components/palette-manager"
 import { Header } from "@/components/header"
@@ -20,55 +20,69 @@ export type EditingColor = {
   color: string
 } | null
 
+const DEFAULT_FOREGROUND = ["#41B4C8", "#8C5887", "#BDDB59", "#F5A26E", "#15134B", "#B0B34C"]
+const DEFAULT_BACKGROUND = ["#F0EFEF", "#BFBFBF", "#E0FFF8", "#221B4C", "#FFFFFF"]
+
+function createDefaultPalette(): ColorPalette {
+  return {
+    id: "1",
+    name: "Custom name 1",
+    foregroundColors: [...DEFAULT_FOREGROUND],
+    backgroundColors: [...DEFAULT_BACKGROUND],
+  }
+}
+
+function createDefaultPalettes(): ColorPalette[] {
+  return [createDefaultPalette()]
+}
+
 export default function Home() {
-  const [palettes, setPalettes] = useState<ColorPalette[]>([
-    {
-      id: "1",
-      name: "Custom name 1",
-      foregroundColors: ["#41B4C8", "#8C5887", "#BDDB59", "#F5A26E", "#15134B", "#B0B34C"],
-      backgroundColors: ["#F0EFEF", "#BFBFBF", "#E0FFF8", "#221B4C", "#FFFFFF"],
-    },
-  ])
-  const [activePaletteId, setActivePaletteId] = useState("1")
+  const defaultPalettes = useMemo(() => createDefaultPalettes(), [])
+  const defaultActiveId = defaultPalettes[0]?.id ?? "1"
+  const [palettes, setPalettes] = useState<ColorPalette[]>(defaultPalettes)
+  const [activePaletteId, setActivePaletteId] = useState(defaultActiveId)
   const [editingColor, setEditingColor] = useState<EditingColor>(null)
   const [lastInteractedColor, setLastInteractedColor] = useState<string>("#808080")
-  const [isInitialized, setIsInitialized] = useState(false)
   const [collapseGroupsDuringGroupDrag, setCollapseGroupsDuringGroupDrag] = useState(true)
 
-  const prevForegroundLengthRef = useRef<number>(0)
-  const prevBackgroundLengthRef = useRef<number>(0)
+  const hasHydratedRef = useRef(false)
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    if (typeof window === "undefined" || hasHydratedRef.current) {
+      return
+    }
+
     const storedPalettes = storage.loadPalettes()
     const storedActivePaletteId = storage.loadActivePaletteId()
-
     if (storedPalettes && storedPalettes.length > 0) {
+      const nextActiveId =
+        storedActivePaletteId && storedPalettes.some((p) => p.id === storedActivePaletteId)
+          ? storedActivePaletteId
+          : storedPalettes[0].id
       setPalettes(storedPalettes)
-      if (storedActivePaletteId && storedPalettes.some((p) => p.id === storedActivePaletteId)) {
-        setActivePaletteId(storedActivePaletteId)
-      } else {
-        setActivePaletteId(storedPalettes[0].id)
-      }
+      setActivePaletteId(nextActiveId)
+    } else if (storedActivePaletteId) {
+      setActivePaletteId((prev) => (prev === storedActivePaletteId ? prev : storedActivePaletteId))
     }
 
-    const initialPalette = storedPalettes?.[0] || palettes[0]
-    prevForegroundLengthRef.current = initialPalette.foregroundColors.length
-    prevBackgroundLengthRef.current = initialPalette.backgroundColors.length
-
-    setIsInitialized(true)
+    hasHydratedRef.current = true
   }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    if (isInitialized) {
-      storage.savePalettes(palettes)
+    if (!hasHydratedRef.current) {
+      return
     }
-  }, [palettes, isInitialized])
+    storage.savePalettes(palettes)
+  }, [palettes])
 
   useEffect(() => {
-    if (isInitialized) {
-      storage.saveActivePaletteId(activePaletteId)
+    if (!hasHydratedRef.current) {
+      return
     }
-  }, [activePaletteId, isInitialized])
+    storage.saveActivePaletteId(activePaletteId)
+  }, [activePaletteId])
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -98,43 +112,54 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [])
 
-  useEffect(() => {
-    if (!isInitialized) return
-
-    const activePalette = palettes.find((p) => p.id === activePaletteId)
-    if (!activePalette) return
-
-    const currentFgLength = activePalette.foregroundColors.length
-    const currentBgLength = activePalette.backgroundColors.length
-
-    // If foreground colors increased, edit the new one
-    if (currentFgLength > prevForegroundLengthRef.current && prevForegroundLengthRef.current > 0) {
-      const newIndex = currentFgLength - 1
-      const newColor = activePalette.foregroundColors[newIndex]
+  const focusNewColor = useCallback(
+    (type: "foreground" | "background", colors: string[]) => {
+      if (colors.length === 0) return
+      const newIndex = colors.length - 1
+      const newColor = colors[newIndex]
+      if (!newColor) return
       const parts = newColor.split("#")
       const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-      setEditingColor({ type: "foreground", index: newIndex, color: newColor })
       setLastInteractedColor(hex)
-    }
-
-    // If background colors increased, edit the new one
-    if (currentBgLength > prevBackgroundLengthRef.current && prevBackgroundLengthRef.current > 0) {
-      const newIndex = currentBgLength - 1
-      const newColor = activePalette.backgroundColors[newIndex]
-      const parts = newColor.split("#")
-      const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-      setEditingColor({ type: "background", index: newIndex, color: newColor })
-      setLastInteractedColor(hex)
-    }
-
-    prevForegroundLengthRef.current = currentFgLength
-    prevBackgroundLengthRef.current = currentBgLength
-  }, [palettes, activePaletteId, isInitialized])
+      setEditingColor({ type, index: newIndex, color: newColor })
+    },
+    [setEditingColor, setLastInteractedColor],
+  )
 
   const activePalette = palettes.find((p) => p.id === activePaletteId) || palettes[0]
 
   const updatePalette = (id: string, updates: Partial<ColorPalette>) => {
-    setPalettes((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)))
+    setPalettes((prev) =>
+      prev.map((palette) => {
+        if (palette.id !== id) {
+          return palette
+        }
+
+        const next: ColorPalette = {
+          ...palette,
+          ...updates,
+          foregroundColors: updates.foregroundColors ?? palette.foregroundColors,
+          backgroundColors: updates.backgroundColors ?? palette.backgroundColors,
+        }
+
+        if (id === activePaletteId) {
+          if (
+            updates.foregroundColors &&
+            updates.foregroundColors.length > palette.foregroundColors.length
+          ) {
+            focusNewColor("foreground", updates.foregroundColors)
+          }
+          if (
+            updates.backgroundColors &&
+            updates.backgroundColors.length > palette.backgroundColors.length
+          ) {
+            focusNewColor("background", updates.backgroundColors)
+          }
+        }
+
+        return next
+      }),
+    )
   }
 
   const addPalette = () => {

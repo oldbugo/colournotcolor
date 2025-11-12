@@ -28,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Switch } from "@/components/ui/switch"
 
 type HeaderProps = {
@@ -54,17 +54,6 @@ export function Header({
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(paletteName || "")
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [hasMounted, setHasMounted] = useState(false)
-
-  useEffect(() => {
-    setHasMounted(true)
-  }, [])
-
-  useEffect(() => {
-    if (!isEditingName) {
-      setEditedName(paletteName || "")
-    }
-  }, [paletteName, isEditingName])
 
   const handleClearCache = () => {
     setShowClearDialog(false)
@@ -86,7 +75,7 @@ export function Header({
     onDeletePalette?.()
   }
 
-  const shouldShowPaletteSection = hasMounted && !!paletteName
+  const shouldShowPaletteSection = !!paletteName
 
   return (
     <>
@@ -201,7 +190,7 @@ export function Header({
           <DialogHeader>
             <DialogTitle>Delete Palette</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete "{paletteName}"? This action cannot be undone.
+              Are you sure you want to delete &ldquo;{paletteName}&rdquo;? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

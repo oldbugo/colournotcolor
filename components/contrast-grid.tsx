@@ -97,8 +97,6 @@ export function ContrastGrid({
       const header = fgHeaderRefs.current.get(hoveredFgIndex)
       if (header) {
         const headerRect = header.getBoundingClientRect()
-        const gridRect = gridRef.current.getBoundingClientRect()
-
         const overlayHeight = (backgroundColors.length + 1) * CARD_WITH_GAP - GAP_SIZE + 44 // +1 for the add button row
 
         setFgOverlayStyle({
@@ -143,8 +141,6 @@ export function ContrastGrid({
       const header = fgHeaderRefs.current.get(dragOverFgIndex)
       if (header) {
         const headerRect = header.getBoundingClientRect()
-        const gridRect = gridRef.current.getBoundingClientRect()
-
         const highlightHeight = (backgroundColors.length + 1) * CARD_WITH_GAP - GAP_SIZE + 44 // +1 for the add button row
 
         setFgSwapHighlightStyle({
@@ -284,11 +280,6 @@ export function ContrastGrid({
         setDragOverFgIndex(index)
       }
     }
-  }
-
-  const handleFgGapDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    // Keep the current drag state when over gaps
   }
 
   const handleFgDrop = (e: React.DragEvent) => {

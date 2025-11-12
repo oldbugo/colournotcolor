@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch"
 import type { ColorPalette } from "@/app/page"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
-import { useState, useRef, useEffect, useMemo } from "react"
+import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 
 type PaletteManagerProps = {
   palettes: ColorPalette[]
@@ -35,9 +35,10 @@ export function PaletteManager({
   const [isPickerExpanded, setIsPickerExpanded] = useState(true)
   const [pickerHeight, setPickerHeight] = useState(400)
   const [isResizingPicker, setIsResizingPicker] = useState(false)
-  const [supportsEyedropper, setSupportsEyedropper] = useState(false)
+  const supportsEyedropper = typeof window !== "undefined" && "EyeDropper" in window
   const [liveUpdate, setLiveUpdate] = useState(false)
   const sidebarRef = useRef<HTMLDivElement>(null)
+  const [sidebarWidth, setSidebarWidth] = useState<number | null>(null)
 
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
@@ -67,11 +68,136 @@ export function PaletteManager({
   const pendingColorRef = useRef<string | null>(null)
 
   useEffect(() => {
-    setSupportsEyedropper("EyeDropper" in window)
+    const node = sidebarRef.current
+    if (!node) {
+      return
+    }
+
+    const updateWidth = () => {
+      const width = node.offsetWidth
+      setSidebarWidth((prev) => (prev === width ? prev : width))
+    }
+
+    updateWidth()
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries[0]
+        if (!entry) {
+          return
+        }
+        const width = entry.contentRect.width
+        setSidebarWidth((prev) => (Math.abs((prev ?? 0) - width) < 0.5 ? prev : width))
+      })
+      observer.observe(node)
+      return () => {
+        observer.disconnect()
+      }
+    }
+
+    if (typeof window === "undefined") {
+      return
+    }
+
+    window.addEventListener("resize", updateWidth)
+    return () => {
+      window.removeEventListener("resize", updateWidth)
+    }
   }, [])
 
+  const updateGradientPosition = useCallback(
+    (e: React.MouseEvent | MouseEvent) => {
+      if (!gradientRef.current) return
+
+      const rect = gradientRef.current.getBoundingClientRect()
+      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
+      const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height))
+      if (rect.width === 0 || rect.height === 0) {
+        return
+      }
+
+      const newSaturation = (x / rect.width) * 100
+      const newLightness = 100 - (y / rect.height) * 100
+
+      setSaturation(newSaturation)
+      setLightness(newLightness)
+
+      const effectiveHue = newSaturation > 0 && saturation === 0 ? preservedHue : hue
+      if (newSaturation > 0) {
+        setHue(effectiveHue)
+      }
+
+      const newColor = hslToHex(effectiveHue, newSaturation, newLightness)
+      setHexValue(newColor.toUpperCase())
+      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
+      if (liveUpdate) {
+        onColorChange(fullColor)
+      } else {
+        pendingColorRef.current = fullColor
+      }
+    },
+    [customName, hue, liveUpdate, onColorChange, preservedHue, saturation],
+  )
+
+  const updateHuePosition = useCallback(
+    (e: React.MouseEvent | MouseEvent) => {
+      if (!hueRef.current) return
+
+      const rect = hueRef.current.getBoundingClientRect()
+      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
+      if (rect.width === 0) {
+        return
+      }
+
+      const newHue = (x / rect.width) * 360
+
+      setHue(newHue)
+      setPreservedHue(newHue)
+
+      const newColor = hslToHex(newHue, saturation, lightness)
+      setHexValue(newColor.toUpperCase())
+      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
+      if (liveUpdate) {
+        onColorChange(fullColor)
+      } else {
+        pendingColorRef.current = fullColor
+      }
+    },
+    [customName, lightness, liveUpdate, onColorChange, saturation],
+  )
+
+  const updateLightnessPosition = useCallback(
+    (e: React.MouseEvent | MouseEvent) => {
+      if (!lightnessRef.current) return
+
+      const rect = lightnessRef.current.getBoundingClientRect()
+      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
+      if (rect.width === 0) {
+        return
+      }
+
+      const newLightness = (x / rect.width) * 100
+
+      setLightness(newLightness)
+
+      const newColor = hslToHex(hue, saturation, newLightness)
+      setHexValue(newColor.toUpperCase())
+      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
+      if (liveUpdate) {
+        onColorChange(fullColor)
+      } else {
+        pendingColorRef.current = fullColor
+      }
+    },
+    [customName, hue, liveUpdate, onColorChange, saturation],
+  )
+
   useEffect(() => {
-    if (editingColor && editingColor.color) {
+    if (!editingColor?.color) {
+      return
+    }
+
+    const applyEditingColor = () => {
       const parts = editingColor.color.split("#")
       const name = parts.length > 1 ? parts[0] : ""
       const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
@@ -86,6 +212,20 @@ export function PaletteManager({
       }
       setHexValue(hex.toUpperCase())
     }
+
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(applyEditingColor)
+      return
+    }
+
+    if (typeof window !== "undefined") {
+      const rafId = window.requestAnimationFrame(applyEditingColor)
+      return () => {
+        window.cancelAnimationFrame(rafId)
+      }
+    }
+
+    applyEditingColor()
   }, [editingColor])
 
   useEffect(() => {
@@ -145,7 +285,7 @@ export function PaletteManager({
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [isDraggingGradient, hue, saturation, preservedHue, customName, onColorChange, liveUpdate])
+  }, [isDraggingGradient, liveUpdate, onColorChange, updateGradientPosition])
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -171,7 +311,7 @@ export function PaletteManager({
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [isDraggingHue, saturation, lightness, customName, onColorChange, liveUpdate])
+  }, [isDraggingHue, liveUpdate, onColorChange, updateHuePosition])
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -197,64 +337,16 @@ export function PaletteManager({
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [isDraggingLightness, hue, saturation, customName, onColorChange, liveUpdate])
+  }, [isDraggingLightness, liveUpdate, onColorChange, updateLightnessPosition])
 
   const handleGradientMouseDown = (e: React.MouseEvent) => {
     setIsDraggingGradient(true)
     updateGradientPosition(e)
   }
 
-  const updateGradientPosition = (e: React.MouseEvent | MouseEvent) => {
-    if (!gradientRef.current) return
-
-    const rect = gradientRef.current.getBoundingClientRect()
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
-    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height))
-
-    const newSaturation = (x / rect.width) * 100
-    const newLightness = 100 - (y / rect.height) * 100
-
-    setSaturation(newSaturation)
-    setLightness(newLightness)
-
-    const effectiveHue = newSaturation > 0 && saturation === 0 ? preservedHue : hue
-    if (newSaturation > 0) {
-      setHue(effectiveHue)
-    }
-
-    const newColor = hslToHex(effectiveHue, newSaturation, newLightness)
-    setHexValue(newColor.toUpperCase())
-    const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-    if (liveUpdate) {
-      onColorChange(fullColor)
-    } else {
-      pendingColorRef.current = fullColor
-    }
-  }
-
   const handleHueMouseDown = (e: React.MouseEvent) => {
     setIsDraggingHue(true)
     updateHuePosition(e)
-  }
-
-  const updateHuePosition = (e: React.MouseEvent | MouseEvent) => {
-    if (!hueRef.current) return
-
-    const rect = hueRef.current.getBoundingClientRect()
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
-    const newHue = (x / rect.width) * 360
-
-    setHue(newHue)
-    setPreservedHue(newHue)
-
-    const newColor = hslToHex(newHue, saturation, lightness)
-    setHexValue(newColor.toUpperCase())
-    const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-    if (liveUpdate) {
-      onColorChange(fullColor)
-    } else {
-      pendingColorRef.current = fullColor
-    }
   }
 
   const handleHexClick = () => {
@@ -331,25 +423,6 @@ export function PaletteManager({
     updateLightnessPosition(e)
   }
 
-  const updateLightnessPosition = (e: React.MouseEvent | MouseEvent) => {
-    if (!lightnessRef.current) return
-
-    const rect = lightnessRef.current.getBoundingClientRect()
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
-    const newLightness = (x / rect.width) * 100
-
-    setLightness(newLightness)
-
-    const newColor = hslToHex(hue, saturation, newLightness)
-    setHexValue(newColor.toUpperCase())
-    const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-    if (liveUpdate) {
-      onColorChange(fullColor)
-    } else {
-      pendingColorRef.current = fullColor
-    }
-  }
-
   const handleLightnessClick = () => {
     setIsEditingLightness(true)
     setTempLightness(Math.round(lightness).toString())
@@ -390,7 +463,7 @@ export function PaletteManager({
       setHexValue(hex)
       const fullColor = customName ? `${customName}#${hex.replace("#", "")}` : hex
       onColorChange(fullColor)
-    } catch (e) {
+    } catch {
       // User cancelled
     }
   }
@@ -400,18 +473,20 @@ export function PaletteManager({
     return "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
   }
 
-  const calculateMaxVisible = () => {
-    if (!sidebarRef.current) return 2
-    const availableWidth = sidebarRef.current.offsetWidth - 80
+  const maxVisiblePerRow = useMemo(() => {
+    if (!sidebarWidth || sidebarWidth <= 0) {
+      return 2
+    }
+    const availableWidth = sidebarWidth - 80
     const circleWidth = 28
     const overlap = 8
     const effectiveCircleWidth = circleWidth - overlap
     const maxCircles = Math.floor((availableWidth - circleWidth) / effectiveCircleWidth) + 1
     return Math.max(2, maxCircles - 1)
-  }
+  }, [sidebarWidth])
 
   const renderColorRow = (colors: string[]) => {
-    const maxVisible = calculateMaxVisible()
+    const maxVisible = maxVisiblePerRow
     const visibleColors = colors.slice(0, maxVisible)
     const remainingCount = colors.length - maxVisible
 
