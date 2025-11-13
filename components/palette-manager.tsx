@@ -9,6 +9,7 @@ import type { ColorPalette } from "@/app/page"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
+import { clampHsluv, hexToHpluv, hexToHsluv, hpluvToHex, hsluvToHex, type Hsluv } from "@/lib/hsluv"
 
 type PaletteManagerProps = {
   palettes: ColorPalette[]
@@ -20,6 +21,20 @@ type PaletteManagerProps = {
   onColorChange: (color: string) => void
   lastInteractedColor?: string
 }
+
+type ColorMode = "hsl" | "hsluv" | "hpluv"
+type PlaneAxis = "h" | "s" | "l"
+
+const COLOR_MODE_OPTIONS: Array<{ key: ColorMode; label: string }> = [
+  { key: "hsl", label: "HSL" },
+  { key: "hsluv", label: "HSLuv" },
+  { key: "hpluv", label: "HPLuv" },
+]
+const PLANE_MODE_OPTIONS: Array<{ key: PlaneAxis; label: string }> = [
+  { key: "h", label: "H" },
+  { key: "s", label: "S" },
+  { key: "l", label: "L" },
+]
 
 export function PaletteManager({
   palettes,
@@ -49,23 +64,104 @@ export function PaletteManager({
   const [preservedHue, setPreservedHue] = useState(0)
   const [hexValue, setHexValue] = useState("")
   const [customName, setCustomName] = useState("")
+  const [colorMode, setColorMode] = useState<ColorMode>("hsl")
+  const [planeMode, setPlaneMode] = useState<PlaneAxis>("h")
 
   const [isEditingHex, setIsEditingHex] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
-  const [isEditingLightness, setIsEditingLightness] = useState(false)
   const [tempHexValue, setTempHexValue] = useState("")
   const [tempCustomName, setTempCustomName] = useState("")
-  const [tempLightness, setTempLightness] = useState("")
 
-  const gradientRef = useRef<HTMLDivElement>(null)
-  const hueRef = useRef<HTMLDivElement>(null)
-  const lightnessRef = useRef<HTMLDivElement>(null)
+  const planeRef = useRef<HTMLDivElement>(null)
+  const hueSliderRef = useRef<HTMLDivElement>(null)
+  const saturationSliderRef = useRef<HTMLDivElement>(null)
+  const lightnessSliderRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
-  const [isDraggingGradient, setIsDraggingGradient] = useState(false)
-  const [isDraggingHue, setIsDraggingHue] = useState(false)
-  const [isDraggingLightness, setIsDraggingLightness] = useState(false)
+  const [isDraggingPlane, setIsDraggingPlane] = useState(false)
+  const [draggingSlider, setDraggingSlider] = useState<PlaneAxis | null>(null)
 
   const pendingColorRef = useRef<string | null>(null)
+  const previousEditingColorRef = useRef<string | null>(null)
+  const lastEmittedColorRef = useRef<string | null>(null)
+  const lastEmittedChannelsRef = useRef<Hsluv | null>(null)
+  const lastEmittedModeRef = useRef<ColorMode>(colorMode)
+  const throttledColorRef = useRef<string | null>(null)
+  const throttleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const LIVE_EMIT_THROTTLE_MS = 32
+
+  const emitColorNow = useCallback(
+    (colorString: string) => {
+      onColorChange(colorString)
+      lastEmittedColorRef.current = colorString
+      lastEmittedModeRef.current = colorMode
+    },
+    [colorMode, onColorChange],
+  )
+
+  const flushThrottledColor = useCallback(() => {
+    if (throttleTimeoutRef.current) {
+      clearTimeout(throttleTimeoutRef.current)
+      throttleTimeoutRef.current = null
+    }
+    if (throttledColorRef.current) {
+      emitColorNow(throttledColorRef.current)
+      throttledColorRef.current = null
+    }
+  }, [emitColorNow])
+
+  const queueColorEmit = useCallback(
+    (colorString: string, immediate: boolean) => {
+      if (immediate) {
+        throttledColorRef.current = null
+        if (throttleTimeoutRef.current) {
+          clearTimeout(throttleTimeoutRef.current)
+          throttleTimeoutRef.current = null
+        }
+        emitColorNow(colorString)
+        return
+      }
+      throttledColorRef.current = colorString
+      if (throttleTimeoutRef.current) {
+        return
+      }
+      throttleTimeoutRef.current = setTimeout(() => {
+        throttleTimeoutRef.current = null
+        if (throttledColorRef.current) {
+          emitColorNow(throttledColorRef.current)
+          throttledColorRef.current = null
+        }
+      }, LIVE_EMIT_THROTTLE_MS)
+    },
+    [emitColorNow],
+  )
+
+  const updateColorFromChannels = useCallback(
+    (next: Hsluv, mode: "auto" | "immediate" | "silent" = "auto") => {
+      const clamped = clampHsluv(next)
+      setHue(clamped.h)
+      setSaturation(clamped.s)
+      setLightness(clamped.l)
+      lastEmittedChannelsRef.current = clamped
+
+      const newHex = channelsToHexByMode(clamped, colorMode).toUpperCase()
+      setHexValue(newHex)
+
+      if (mode === "silent") {
+        return
+      }
+
+      const fullColor = customName ? `${customName}#${newHex.replace("#", "")}` : newHex
+      if (mode === "immediate") {
+        queueColorEmit(fullColor, true)
+        pendingColorRef.current = null
+      } else if (liveUpdate) {
+        queueColorEmit(fullColor, false)
+      } else {
+        pendingColorRef.current = fullColor
+      }
+    },
+    [colorMode, customName, liveUpdate, queueColorEmit],
+  )
 
   useEffect(() => {
     const node = sidebarRef.current
@@ -105,110 +201,98 @@ export function PaletteManager({
     }
   }, [])
 
-  const updateGradientPosition = useCallback(
-    (e: React.MouseEvent | MouseEvent) => {
-      if (!gradientRef.current) return
+  const activePlaneMode = colorMode === "hsl" ? "h" : planeMode
 
-      const rect = gradientRef.current.getBoundingClientRect()
+  const planeAxes = useMemo(
+    () =>
+      activePlaneMode === "h"
+        ? (["s", "l"] as const)
+        : activePlaneMode === "s"
+          ? (["h", "l"] as const)
+          : (["h", "s"] as const),
+    [activePlaneMode],
+  )
+
+  const updatePlanePosition = useCallback(
+    (e: React.MouseEvent | MouseEvent) => {
+      if (!planeRef.current) return
+
+      const rect = planeRef.current.getBoundingClientRect()
       const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
       const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height))
       if (rect.width === 0 || rect.height === 0) {
         return
       }
 
-      const newSaturation = (x / rect.width) * 100
-      const newLightness = 100 - (y / rect.height) * 100
+      const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
+      const [axisX, axisY] = planeAxes
+      const ratioX = x / rect.width
+      const ratioY = y / rect.height
 
-      setSaturation(newSaturation)
-      setLightness(newLightness)
+      nextChannels[axisX] = ratioToValue(axisX, ratioX)
+      nextChannels[axisY] = ratioToValue(axisY, 1 - ratioY)
 
-      const effectiveHue = newSaturation > 0 && saturation === 0 ? preservedHue : hue
-      if (newSaturation > 0) {
-        setHue(effectiveHue)
+      if ((axisX === "s" || axisY === "s") && nextChannels.s > 0) {
+        setPreservedHue(nextChannels.h)
       }
-
-      const newColor = hslToHex(effectiveHue, newSaturation, newLightness)
-      setHexValue(newColor.toUpperCase())
-      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-      if (liveUpdate) {
-        onColorChange(fullColor)
-      } else {
-        pendingColorRef.current = fullColor
-      }
+      updateColorFromChannels(nextChannels)
     },
-    [customName, hue, liveUpdate, onColorChange, preservedHue, saturation],
+    [hue, lightness, planeAxes, saturation, updateColorFromChannels],
   )
 
-  const updateHuePosition = useCallback(
-    (e: React.MouseEvent | MouseEvent) => {
-      if (!hueRef.current) return
-
-      const rect = hueRef.current.getBoundingClientRect()
+  const updateSliderFromEvent = useCallback(
+    (axis: PlaneAxis, e: React.MouseEvent | MouseEvent) => {
+      const slider =
+        axis === "h" ? hueSliderRef.current : axis === "s" ? saturationSliderRef.current : lightnessSliderRef.current
+      if (!slider) return
+      const rect = slider.getBoundingClientRect()
       const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
       if (rect.width === 0) {
         return
       }
 
-      const newHue = (x / rect.width) * 360
-
-      setHue(newHue)
-      setPreservedHue(newHue)
-
-      const newColor = hslToHex(newHue, saturation, lightness)
-      setHexValue(newColor.toUpperCase())
-      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-      if (liveUpdate) {
-        onColorChange(fullColor)
-      } else {
-        pendingColorRef.current = fullColor
+      const ratio = x / rect.width
+      const nextValue = ratioToValue(axis, ratio)
+      const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
+      nextChannels[axis] = nextValue
+      if (axis === "h") {
+        setPreservedHue(nextValue)
+      } else if (axis === "s" && nextValue > 0) {
+        setPreservedHue(nextChannels.h)
       }
+      updateColorFromChannels(nextChannels)
     },
-    [customName, lightness, liveUpdate, onColorChange, saturation],
-  )
-
-  const updateLightnessPosition = useCallback(
-    (e: React.MouseEvent | MouseEvent) => {
-      if (!lightnessRef.current) return
-
-      const rect = lightnessRef.current.getBoundingClientRect()
-      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
-      if (rect.width === 0) {
-        return
-      }
-
-      const newLightness = (x / rect.width) * 100
-
-      setLightness(newLightness)
-
-      const newColor = hslToHex(hue, saturation, newLightness)
-      setHexValue(newColor.toUpperCase())
-      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-      if (liveUpdate) {
-        onColorChange(fullColor)
-      } else {
-        pendingColorRef.current = fullColor
-      }
-    },
-    [customName, hue, liveUpdate, onColorChange, saturation],
+    [hue, saturation, lightness, updateColorFromChannels],
   )
 
   useEffect(() => {
     if (!editingColor?.color) {
+      previousEditingColorRef.current = null
       return
     }
 
+    if (previousEditingColorRef.current === editingColor.color) {
+      return
+    }
+    previousEditingColorRef.current = editingColor.color
+
     const applyEditingColor = () => {
-      const parts = editingColor.color.split("#")
+      const colorString = editingColor.color
+      const parts = colorString.split("#")
       const name = parts.length > 1 ? parts[0] : ""
       const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
 
       setCustomName(name)
-      const hsl = hexToHSL(hex)
-      setHue(hsl.h)
-      setSaturation(hsl.s)
-      setLightness(hsl.l)
-      if (hsl.s > 0) {
-        setPreservedHue(hsl.h)
+      const reuseStored =
+        lastEmittedColorRef.current === colorString &&
+        lastEmittedModeRef.current === colorMode &&
+        lastEmittedChannelsRef.current
+      const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex, colorMode)
+      setHue(channels.h)
+      setSaturation(channels.s)
+      setLightness(channels.l)
+      if (channels.s > 0) {
+        setPreservedHue(channels.h)
       }
       setHexValue(hex.toUpperCase())
     }
@@ -226,7 +310,8 @@ export function PaletteManager({
     }
 
     applyEditingColor()
-  }, [editingColor])
+  }, [colorMode, editingColor])
+
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -263,20 +348,22 @@ export function PaletteManager({
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (isDraggingGradient) {
-        updateGradientPosition(e)
+      if (isDraggingPlane) {
+        updatePlanePosition(e)
       }
     }
 
-    const handleMouseUp = () => {
-      setIsDraggingGradient(false)
+  const handleMouseUp = () => {
+      setIsDraggingPlane(false)
       if (!liveUpdate && pendingColorRef.current) {
-        onColorChange(pendingColorRef.current)
+        emitColorNow(pendingColorRef.current)
         pendingColorRef.current = null
+      } else {
+        flushThrottledColor()
       }
     }
 
-    if (isDraggingGradient) {
+    if (isDraggingPlane) {
       document.addEventListener("mousemove", handleMouseMove)
       document.addEventListener("mouseup", handleMouseUp)
     }
@@ -285,68 +372,45 @@ export function PaletteManager({
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [isDraggingGradient, liveUpdate, onColorChange, updateGradientPosition])
+  }, [emitColorNow, flushThrottledColor, isDraggingPlane, liveUpdate, updatePlanePosition])
 
   useEffect(() => {
+    if (!draggingSlider) {
+      return
+    }
+
     const handleMouseMove = (e: MouseEvent) => {
-      if (isDraggingHue) {
-        updateHuePosition(e)
-      }
+      updateSliderFromEvent(draggingSlider, e)
     }
 
     const handleMouseUp = () => {
-      setIsDraggingHue(false)
+      setDraggingSlider(null)
       if (!liveUpdate && pendingColorRef.current) {
-        onColorChange(pendingColorRef.current)
+        emitColorNow(pendingColorRef.current)
         pendingColorRef.current = null
+      } else {
+        flushThrottledColor()
       }
     }
 
-    if (isDraggingHue) {
-      document.addEventListener("mousemove", handleMouseMove)
-      document.addEventListener("mouseup", handleMouseUp)
-    }
+    document.addEventListener("mousemove", handleMouseMove)
+    document.addEventListener("mouseup", handleMouseUp)
 
     return () => {
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [isDraggingHue, liveUpdate, onColorChange, updateHuePosition])
+  }, [draggingSlider, emitColorNow, flushThrottledColor, liveUpdate, updateSliderFromEvent])
 
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (isDraggingLightness) {
-        updateLightnessPosition(e)
-      }
-    }
-
-    const handleMouseUp = () => {
-      setIsDraggingLightness(false)
-      if (!liveUpdate && pendingColorRef.current) {
-        onColorChange(pendingColorRef.current)
-        pendingColorRef.current = null
-      }
-    }
-
-    if (isDraggingLightness) {
-      document.addEventListener("mousemove", handleMouseMove)
-      document.addEventListener("mouseup", handleMouseUp)
-    }
-
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove)
-      document.removeEventListener("mouseup", handleMouseUp)
-    }
-  }, [isDraggingLightness, liveUpdate, onColorChange, updateLightnessPosition])
-
-  const handleGradientMouseDown = (e: React.MouseEvent) => {
-    setIsDraggingGradient(true)
-    updateGradientPosition(e)
+  const handlePlaneMouseDown = (e: React.MouseEvent) => {
+    setIsDraggingPlane(true)
+    updatePlanePosition(e)
   }
 
-  const handleHueMouseDown = (e: React.MouseEvent) => {
-    setIsDraggingHue(true)
-    updateHuePosition(e)
+  const handleSliderMouseDown = (axis: PlaneAxis, e: React.MouseEvent) => {
+    e.preventDefault()
+    setDraggingSlider(axis)
+    updateSliderFromEvent(axis, e)
   }
 
   const handleHexClick = () => {
@@ -361,16 +425,11 @@ export function PaletteManager({
   const handleHexSave = () => {
     const hex = tempHexValue.startsWith("#") ? tempHexValue : `#${tempHexValue}`
     if (/^#[0-9A-F]{6}$/i.test(hex)) {
-      const hsl = hexToHSL(hex)
-      setHue(hsl.h)
-      setSaturation(hsl.s)
-      setLightness(hsl.l)
-      if (hsl.s > 0) {
-        setPreservedHue(hsl.h)
+      const channels = hexToChannelsByMode(hex, colorMode)
+      if (channels.s > 0) {
+        setPreservedHue(channels.h)
       }
-      setHexValue(hex.toUpperCase())
-      const fullColor = customName ? `${customName}#${hex.replace("#", "")}` : hex
-      onColorChange(fullColor)
+      updateColorFromChannels(channels, "immediate")
     }
     setIsEditingHex(false)
   }
@@ -410,7 +469,7 @@ export function PaletteManager({
   const handleNameSave = () => {
     setCustomName(tempCustomName)
     const fullColor = tempCustomName ? `${tempCustomName}#${hexValue.replace("#", "")}` : hexValue
-    onColorChange(fullColor)
+    emitColorNow(fullColor)
     setIsEditingName(false)
   }
 
@@ -418,34 +477,52 @@ export function PaletteManager({
     setIsEditingName(false)
   }
 
-  const handleLightnessMouseDown = (e: React.MouseEvent) => {
-    setIsDraggingLightness(true)
-    updateLightnessPosition(e)
-  }
-
-  const handleLightnessClick = () => {
-    setIsEditingLightness(true)
-    setTempLightness(Math.round(lightness).toString())
-  }
-
-  const handleLightnessInputChange = (value: string) => {
-    setTempLightness(value)
-  }
-
-  const handleLightnessSave = () => {
-    const numValue = Number.parseInt(tempLightness, 10)
-    if (!isNaN(numValue) && numValue >= 0 && numValue <= 100) {
-      setLightness(numValue)
-      const newColor = hslToHex(hue, saturation, numValue)
-      setHexValue(newColor.toUpperCase())
-      const fullColor = customName ? `${customName}#${newColor.replace("#", "")}` : newColor
-      onColorChange(fullColor)
+  const handleSliderInputChange = (axis: PlaneAxis, value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return
     }
-    setIsEditingLightness(false)
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed)) {
+      return
+    }
+    const normalized =
+      axis === "h" ? ((parsed % 360) + 360) % 360 : Math.max(0, Math.min(100, parsed))
+    const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
+    nextChannels[axis] = normalized
+    if (axis === "h") {
+      setPreservedHue(normalized)
+    } else if (axis === "s" && normalized > 0) {
+      setPreservedHue(nextChannels.h)
+    }
+    updateColorFromChannels(nextChannels, "immediate")
   }
 
-  const handleLightnessCancel = () => {
-    setIsEditingLightness(false)
+  const handlePlaneModeChange = (mode: PlaneAxis) => {
+    if (colorMode === "hsl") {
+      return
+    }
+    setPlaneMode(mode)
+  }
+
+  const handleColorModeChange = (mode: ColorMode) => {
+    if (mode === colorMode) {
+      return
+    }
+    setColorMode(mode)
+    if (mode === "hsl") {
+      setPlaneMode("h")
+    }
+    if (!hexValue) {
+      return
+    }
+    const channels = hexToChannelsByMode(hexValue, mode)
+    setHue(channels.h)
+    setSaturation(channels.s)
+    setLightness(channels.l)
+    if (channels.s > 0) {
+      setPreservedHue(channels.h)
+    }
   }
 
   const handleEyedropper = async () => {
@@ -453,16 +530,11 @@ export function PaletteManager({
       const eyeDropper = new window.EyeDropper()
       const result = await eyeDropper.open()
       const hex = result.sRGBHex.toUpperCase()
-      const hsl = hexToHSL(hex)
-      setHue(hsl.h)
-      setSaturation(hsl.s)
-      setLightness(hsl.l)
-      if (hsl.s > 0) {
-        setPreservedHue(hsl.h)
+      const channels = hexToChannelsByMode(hex, colorMode)
+      if (channels.s > 0) {
+        setPreservedHue(channels.h)
       }
-      setHexValue(hex)
-      const fullColor = customName ? `${customName}#${hex.replace("#", "")}` : hex
-      onColorChange(fullColor)
+      updateColorFromChannels(channels, "immediate")
     } catch {
       // User cancelled
     }
@@ -562,23 +634,115 @@ export function PaletteManager({
     setDragOverIndex(null)
   }
 
-  const gradientX = (saturation / 100) * 100
-  const gradientY = (1 - lightness / 100) * 100
   const displayHue = saturation === 0 ? preservedHue : hue
-  const hueX = (displayHue / 360) * 100
-  const lightnessX = (lightness / 100) * 100
 
-  const gradientBackground = useMemo(
-    () =>
-      `linear-gradient(to bottom, transparent, black), linear-gradient(to right, white, hsl(${displayHue}, 100%, 50%))`,
-    [displayHue],
+  const currentColorHex = useMemo(
+    () => channelsToHexByMode({ h: hue, s: saturation, l: lightness }, colorMode),
+    [colorMode, hue, saturation, lightness],
   )
 
-  const lightnessBackground = useMemo(
-    () =>
-      `linear-gradient(to right, hsl(${displayHue}, ${saturation}%, 0%), hsl(${displayHue}, ${saturation}%, 50%), hsl(${displayHue}, ${saturation}%, 100%))`,
-    [displayHue, saturation],
-  )
+  const getChannelValue = (axis: PlaneAxis) => (axis === "h" ? hue : axis === "s" ? saturation : lightness)
+
+  const planeCursorX = valueToRatio(planeAxes[0], getChannelValue(planeAxes[0])) * 100
+  const planeCursorY = (1 - valueToRatio(planeAxes[1], getChannelValue(planeAxes[1]))) * 100
+
+  const [planeTextureUrl, setPlaneTextureUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (typeof document === "undefined") {
+      return undefined
+    }
+
+    const computeTexture = () => {
+      const texture = generatePlaneTexture(colorMode, activePlaneMode, { h: hue, s: saturation, l: lightness })
+      if (!cancelled) {
+        setPlaneTextureUrl(texture)
+      }
+    }
+
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(computeTexture)
+    } else {
+      computeTexture()
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [activePlaneMode, colorMode, hue, saturation, lightness])
+
+  useEffect(() => {
+    return () => {
+      flushThrottledColor()
+    }
+  }, [flushThrottledColor])
+
+  useEffect(() => {
+    if (!liveUpdate) {
+      flushThrottledColor()
+    }
+  }, [flushThrottledColor, liveUpdate])
+
+  const fallbackPlaneGradient =
+    activePlaneMode === "h"
+      ? `linear-gradient(to bottom, transparent, black), linear-gradient(to right, white, hsl(${displayHue}, 100%, 50%))`
+      : activePlaneMode === "s"
+        ? `linear-gradient(to bottom, black, white), linear-gradient(to right, #ff0000, #00ffff)`
+        : `linear-gradient(to bottom, rgba(0,0,0,0.6), transparent), linear-gradient(to right, white, hsl(${displayHue}, 100%, 50%))`
+
+  const planeBackgroundStyle = planeTextureUrl
+    ? {
+        backgroundImage: `url(${planeTextureUrl}), ${fallbackPlaneGradient}`,
+        backgroundSize: "100% 100%, 100% 100%",
+        backgroundRepeat: "no-repeat, no-repeat",
+      }
+    : {
+        backgroundImage: fallbackPlaneGradient,
+        backgroundSize: "100% 100%",
+        backgroundRepeat: "no-repeat",
+      }
+
+  const sliderValues: Record<PlaneAxis, number> = { h: hue, s: saturation, l: lightness }
+
+  const sliderBackgrounds = useMemo(() => {
+    const hueStopsNumbers = [0, 60, 120, 180, 240, 300, 360]
+    const hueSegments = hueStopsNumbers
+      .map((stop, index) => {
+        const color = channelsToHexByMode({ h: stop, s: 100, l: 50 }, colorMode)
+        const percentage = (index / (hueStopsNumbers.length - 1)) * 100
+        return `${color} ${percentage}%`
+      })
+      .join(", ")
+
+    const saturationStart = channelsToHexByMode({ h: hue, s: 0, l: lightness }, colorMode)
+    const saturationEnd = channelsToHexByMode({ h: hue, s: 100, l: lightness }, colorMode)
+    const lightnessStart = channelsToHexByMode({ h: hue, s: saturation, l: 0 }, colorMode)
+    const lightnessEnd = channelsToHexByMode({ h: hue, s: saturation, l: 100 }, colorMode)
+
+    return {
+      h: `linear-gradient(to right, ${hueSegments})`,
+      s: `linear-gradient(to right, ${saturationStart}, ${saturationEnd})`,
+      l: `linear-gradient(to right, ${lightnessStart}, ${lightnessEnd})`,
+    }
+  }, [colorMode, hue, lightness, saturation])
+
+  const sliderHandleColors: Record<PlaneAxis, string> = {
+    h: channelsToHexByMode({ h: displayHue, s: 100, l: 50 }, colorMode),
+    s: currentColorHex,
+    l: `hsl(0 0% ${Math.max(0, Math.min(100, lightness))}%)`,
+  }
+
+  const sliderPercents: Record<PlaneAxis, number> = {
+    h: valueToRatio("h", sliderValues.h) * 100,
+    s: valueToRatio("s", sliderValues.s) * 100,
+    l: valueToRatio("l", sliderValues.l) * 100,
+  }
+
+  const sliderLabels: Record<PlaneAxis, string> = { h: "Hue", s: "Saturation", l: "Lightness" }
+
+  const formatChannelValue = (axis: PlaneAxis, value: number) => value.toFixed(axis === "h" ? 1 : 2)
+
 
   return (
     <div ref={sidebarRef} className="flex flex-col h-full bg-secondary">
@@ -720,62 +884,109 @@ export function PaletteManager({
         >
           {editingColor ? (
             <div className="space-y-3 pb-2">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase text-muted-foreground">
+                <span>Color Mode</span>
+                <div className="flex gap-1">
+                  {COLOR_MODE_OPTIONS.map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => handleColorModeChange(key)}
+                      className={cn(
+                        "rounded px-2 py-0.5 text-[10px] tracking-wide transition",
+                        colorMode === key
+                          ? "bg-foreground text-background"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {colorMode !== "hsl" && (
+                <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold uppercase text-muted-foreground">
+                  <span>Plane</span>
+                  <div className="flex gap-1">
+                    {PLANE_MODE_OPTIONS.map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => handlePlaneModeChange(key)}
+                        className={cn(
+                          "rounded px-2 py-0.5 text-[10px] tracking-wide transition",
+                          planeMode === key
+                            ? "bg-foreground text-background"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div
-                ref={gradientRef}
-                className="relative w-full h-40 rounded-lg cursor-crosshair overflow-hidden"
-                style={{
-                  background: gradientBackground,
-                }}
-                onMouseDown={handleGradientMouseDown}
+                ref={planeRef}
+                className="relative w-full h-40 rounded-lg cursor-crosshair overflow-hidden border border-border"
+                style={planeBackgroundStyle}
+                onMouseDown={handlePlaneMouseDown}
               >
                 <div
                   className="absolute w-4 h-4 border-2 border-white rounded-full shadow-lg pointer-events-none"
                   style={{
-                    left: `calc(${gradientX}% - 8px)`,
-                    top: `calc(${gradientY}% - 8px)`,
+                    left: `calc(${planeCursorX}% - 8px)`,
+                    top: `calc(${planeCursorY}% - 8px)`,
+                    backgroundColor: currentColorHex,
                     boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
                     willChange: "transform",
                   }}
                 />
               </div>
 
-              <div
-                ref={hueRef}
-                className="relative w-full h-3 rounded-full cursor-pointer"
-                style={{
-                  background:
-                    "linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
-                }}
-                onMouseDown={handleHueMouseDown}
-              >
-                <div
-                  className="absolute w-4 h-4 border-2 border-white rounded-full shadow-lg pointer-events-none -top-0.5"
-                  style={{
-                    left: `calc(${hueX}% - 8px)`,
-                    backgroundColor: `hsl(${displayHue}, 100%, 50%)`,
-                    boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
-                    willChange: "transform",
-                  }}
-                />
-              </div>
-
-              <div
-                ref={lightnessRef}
-                className="relative w-full h-3 rounded-full cursor-pointer"
-                style={{
-                  background: lightnessBackground,
-                }}
-                onMouseDown={handleLightnessMouseDown}
-              >
-                <div
-                  className="absolute w-4 h-4 border-2 border-white rounded-full shadow-lg pointer-events-none -top-0.5"
-                  style={{
-                    left: `calc(${lightnessX}% - 8px)`,
-                    backgroundColor: `hsl(${displayHue}, ${saturation}%, ${lightness}%)`,
-                    boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
-                    willChange: "transform",
-                  }}
-                />
+              <div className="space-y-3">
+                {(["h", "s", "l"] as const).map((axis) => (
+                  <div className="space-y-1" key={axis}>
+                    <div className="flex items-center justify-between text-xs font-medium text-foreground">
+                      <span>{sliderLabels[axis]}</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {axis === "h"
+                          ? `${formatChannelValue(axis, sliderValues[axis])}°`
+                          : `${formatChannelValue(axis, sliderValues[axis])}%`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div
+                        ref={axis === "h" ? hueSliderRef : axis === "s" ? saturationSliderRef : lightnessSliderRef}
+                        className="relative w-full h-3 rounded-full cursor-pointer"
+                        style={{ background: sliderBackgrounds[axis] }}
+                        onMouseDown={(event) => handleSliderMouseDown(axis, event)}
+                      >
+                        <div
+                          className="absolute w-4 h-4 border-2 border-white rounded-full shadow-lg pointer-events-none -top-0.5"
+                          style={{
+                            left: `calc(${sliderPercents[axis]}% - 8px)`,
+                            backgroundColor: sliderHandleColors[axis],
+                            boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
+                            willChange: "transform",
+                          }}
+                        />
+                      </div>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        step={axis === "h" ? 0.1 : 0.01}
+                        min={0}
+                        max={axis === "h" ? 359.99 : 100}
+                        value={formatChannelValue(axis, sliderValues[axis])}
+                        onChange={(event) => handleSliderInputChange(axis, event.target.value)}
+                        className="h-8 w-20 text-center font-mono text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
 
               <div className="flex items-center gap-2">
@@ -841,30 +1052,6 @@ export function PaletteManager({
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium w-12">Lightness</span>
-                {isEditingLightness ? (
-                  <Input
-                    value={tempLightness}
-                    onChange={(e) => handleLightnessInputChange(e.target.value)}
-                    onBlur={handleLightnessCancel}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleLightnessSave()
-                      if (e.key === "Escape") handleLightnessCancel()
-                    }}
-                    className="flex-1 font-mono text-xs h-8 border-2 border-input"
-                    placeholder="0-100"
-                    autoFocus
-                  />
-                ) : (
-                  <button
-                    onClick={handleLightnessClick}
-                    className="flex-1 text-left font-mono text-xs h-8 px-3 rounded-md border border-input hover:text-blue-600 hover:border-blue-600 transition-colors cursor-pointer bg-background"
-                  >
-                    {Math.round(lightness)}%
-                  </button>
-                )}
-              </div>
             </div>
           ) : (
             <div className="flex items-center justify-center text-center text-xs text-muted-foreground p-4">
@@ -875,6 +1062,72 @@ export function PaletteManager({
       </div>
     </div>
   )
+}
+
+function hexToChannelsByMode(hex: string, mode: ColorMode): Hsluv {
+  if (mode === "hsl") {
+    const { h, s, l } = hexToHSL(hex)
+    return clampHsluv({ h, s, l })
+  }
+  const [h, s, l] = mode === "hsluv" ? hexToHsluv(hex) : hexToHpluv(hex)
+  return clampHsluv({ h, s, l })
+}
+
+function channelsToHexByMode(channels: Hsluv, mode: ColorMode): string {
+  const clamped = clampHsluv(channels)
+  if (mode === "hsl") {
+    return hslToHex(clamped.h, clamped.s, clamped.l).toUpperCase()
+  }
+  return (mode === "hsluv"
+    ? hsluvToHex(clamped.h, clamped.s, clamped.l)
+    : hpluvToHex(clamped.h, clamped.s, clamped.l)
+  ).toUpperCase()
+}
+
+const ratioToValue = (axis: PlaneAxis, ratio: number) => (axis === "h" ? ratio * 360 : ratio * 100)
+const valueToRatio = (axis: PlaneAxis, value: number) => (axis === "h" ? value / 360 : value / 100)
+
+function generatePlaneTexture(mode: ColorMode, plane: PlaneAxis, base: Hsluv): string | null {
+  if (typeof document === "undefined") {
+    return null
+  }
+
+  const canvas = document.createElement("canvas")
+  const size = 64
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext("2d")
+  if (!ctx) {
+    return null
+  }
+
+  const axes = plane === "h" ? (["s", "l"] as const) : plane === "s" ? (["h", "l"] as const) : (["h", "s"] as const)
+  const imageData = ctx.createImageData(size, size)
+  const data = imageData.data
+
+  for (let y = 0; y < size; y += 1) {
+    const ratioY = 1 - y / (size - 1)
+    const axisYValue = ratioToValue(axes[1], ratioY)
+    for (let x = 0; x < size; x += 1) {
+      const ratioX = x / (size - 1)
+      const axisXValue = ratioToValue(axes[0], ratioX)
+      const next: Hsluv = { ...base }
+      next[axes[0]] = axisXValue
+      next[axes[1]] = axisYValue
+      const hex = channelsToHexByMode(next, mode)
+      const r = Number.parseInt(hex.slice(1, 3), 16)
+      const g = Number.parseInt(hex.slice(3, 5), 16)
+      const b = Number.parseInt(hex.slice(5, 7), 16)
+      const idx = (y * size + x) * 4
+      data[idx] = r
+      data[idx + 1] = g
+      data[idx + 2] = b
+      data[idx + 3] = 255
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+  return canvas.toDataURL()
 }
 
 function hexToHSL(hex: string): { h: number; s: number; l: number } {

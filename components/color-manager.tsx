@@ -68,11 +68,35 @@ type GroupScrollAnchorState = {
   viewportTop: number
 }
 
-const DROP_SCROLL_OFFSET = 56
 const GROUP_VIEWPORT_MARGIN = 16
 const CARD_VIEWPORT_MARGIN = 48
 const CARD_NUDGE_BAND = 28
 const CARD_SNAP_MAX_ATTEMPTS = 8
+
+type TimeoutRef = React.MutableRefObject<ReturnType<typeof setTimeout> | null>
+
+function clearTimeoutRef(ref: TimeoutRef) {
+  if (ref.current) {
+    clearTimeout(ref.current)
+    ref.current = null
+  }
+}
+
+function scheduleTimeoutRef(ref: TimeoutRef, callback: () => void, delay: number) {
+  clearTimeoutRef(ref)
+  ref.current = setTimeout(() => {
+    callback()
+    ref.current = null
+  }, delay)
+}
+
+function schedulePostEffect(callback: () => void) {
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(callback)
+  } else {
+    setTimeout(callback, 0)
+  }
+}
 
 function groupColorsByCategory(colors: string[]): Map<string, ColorWithName[]> {
   const groups = new Map<string, ColorWithName[]>()
@@ -217,8 +241,10 @@ export function ColorManager({
 
   useEffect(() => {
     if (!collapseGroupsDuringGroupDrag) {
-      setAreGroupsCollapsedForDrag(false)
-      setSuppressGroupExpansionAnimation(false)
+      schedulePostEffect(() => {
+        setAreGroupsCollapsedForDrag(false)
+        setSuppressGroupExpansionAnimation(false)
+      })
     }
   }, [collapseGroupsDuringGroupDrag])
 
@@ -233,14 +259,16 @@ export function ColorManager({
     const prev = prevGroupsCollapsedRef.current
     prevGroupsCollapsedRef.current = areGroupsCollapsedForDrag
     if (prev && !areGroupsCollapsedForDrag) {
-      setSuppressGroupExpansionAnimation(true)
-      if (suppressExpansionTimeoutRef.current !== null) {
-        window.clearTimeout(suppressExpansionTimeoutRef.current)
-      }
-      suppressExpansionTimeoutRef.current = window.setTimeout(() => {
-        setSuppressGroupExpansionAnimation(false)
-        suppressExpansionTimeoutRef.current = null
-      }, GROUP_SECTION_ANIMATION_MS)
+      schedulePostEffect(() => {
+        setSuppressGroupExpansionAnimation(true)
+        if (suppressExpansionTimeoutRef.current !== null) {
+          window.clearTimeout(suppressExpansionTimeoutRef.current)
+        }
+        suppressExpansionTimeoutRef.current = window.setTimeout(() => {
+          setSuppressGroupExpansionAnimation(false)
+          suppressExpansionTimeoutRef.current = null
+        }, GROUP_SECTION_ANIMATION_MS)
+      })
     }
   }, [areGroupsCollapsedForDrag])
 
@@ -772,17 +800,21 @@ export function ColorManager({
     })
 
     if (newGroups.size > 0) {
-      setNewlyCreatedGroups(newGroups)
-      setTimeout(() => {
-        setNewlyCreatedGroups(new Set())
-      }, 300)
+      schedulePostEffect(() => {
+        setNewlyCreatedGroups(newGroups)
+        setTimeout(() => {
+          setNewlyCreatedGroups(new Set())
+        }, 300)
+      })
     }
 
     if (removedGroups.size > 0) {
-      setRemovingGroups(removedGroups)
-      setTimeout(() => {
-        setRemovingGroups(new Set())
-      }, 200)
+      schedulePostEffect(() => {
+        setRemovingGroups(removedGroups)
+        setTimeout(() => {
+          setRemovingGroups(new Set())
+        }, 200)
+      })
     }
 
     prevGroupsRef.current = currentGroups
@@ -824,7 +856,9 @@ export function ColorManager({
   }, [swatches])
 
   useEffect(() => {
-    setPoppingCardIds((ids) => ids.filter((id) => swatches.some((swatch) => swatch.id === id)))
+    schedulePostEffect(() => {
+      setPoppingCardIds((ids) => ids.filter((id) => swatches.some((swatch) => swatch.id === id)))
+    })
   }, [swatches])
 
   useLayoutEffect(() => {
@@ -986,9 +1020,8 @@ export function ColorManager({
     setEditingGroupName(null)
   }
 
-  const handleCopyHex = (hex: string, index: number) => {
-    const hexWithoutHash = hex.replace("#", "")
-    navigator.clipboard.writeText(hexWithoutHash)
+  const handleCopyValue = (value: string, index: number) => {
+    navigator.clipboard.writeText(value)
     setCopiedIndex(index)
     setTimeout(() => setCopiedIndex(null), 2000)
   }
@@ -1150,18 +1183,9 @@ export function ColorManager({
     setIsDragOverNewGroup(false)
     setIsDragOverTrash(false)
     setIsBetweenZonesActive(false)
-    if (newGroupLeaveTimeoutRef.current) {
-      clearTimeout(newGroupLeaveTimeoutRef.current)
-      newGroupLeaveTimeoutRef.current = null
-    }
-    if (trashLeaveTimeoutRef.current) {
-      clearTimeout(trashLeaveTimeoutRef.current)
-      trashLeaveTimeoutRef.current = null
-    }
-    if (betweenZoneLeaveTimeoutRef.current) {
-      clearTimeout(betweenZoneLeaveTimeoutRef.current)
-      betweenZoneLeaveTimeoutRef.current = null
-    }
+    clearTimeoutRef(newGroupLeaveTimeoutRef)
+    clearTimeoutRef(trashLeaveTimeoutRef)
+    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
     if (dragImageRef.current) {
       document.body.removeChild(dragImageRef.current)
       dragImageRef.current = null
@@ -1505,13 +1529,15 @@ export function ColorManager({
     const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
     if (index === -1) return
 
-    onColorEdit?.(index)
-    setDroppedAtIndex(index)
-    setJustDropped(true)
-    scheduleCardViewportSnap(index, {
-      disableSnapIllusion: false,
+    schedulePostEffect(() => {
+      onColorEdit?.(index)
+      setDroppedAtIndex(index)
+      setJustDropped(true)
+      scheduleCardViewportSnap(index, {
+        disableSnapIllusion: false,
+      })
+      setPendingNewGroupSwatchId(null)
     })
-    setPendingNewGroupSwatchId(null)
   }, [onColorEdit, pendingNewGroupSwatchId, scheduleCardViewportSnap, swatches])
 
   const handleGroupDragStart = (e: React.DragEvent, groupName: string) => {
@@ -1767,10 +1793,7 @@ export function ColorManager({
       triggerCardSnapIllusion(draggedIndex, draggedIndex, groupName, { isCrossGroup: true })
     }
 
-    if (betweenZoneLeaveTimeoutRef.current) {
-      clearTimeout(betweenZoneLeaveTimeoutRef.current)
-      betweenZoneLeaveTimeoutRef.current = null
-    }
+    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
     setIsDragOverNewGroup(false)
     setIsDragOverTrash(false)
     setDraggedIndex(null)
@@ -1787,10 +1810,7 @@ export function ColorManager({
       scheduleCardRemoval(draggedIndex)
     }
 
-    if (betweenZoneLeaveTimeoutRef.current) {
-      clearTimeout(betweenZoneLeaveTimeoutRef.current)
-      betweenZoneLeaveTimeoutRef.current = null
-    }
+    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
     setIsDragOverTrash(false)
     setIsDragOverNewGroup(false)
     setDraggedIndex(null)
@@ -1826,15 +1846,9 @@ export function ColorManager({
   useEffect(() => {
     const removalTimeouts = removalTimeoutsRef.current
     return () => {
-      if (newGroupLeaveTimeoutRef.current) {
-        clearTimeout(newGroupLeaveTimeoutRef.current)
-      }
-      if (trashLeaveTimeoutRef.current) {
-        clearTimeout(trashLeaveTimeoutRef.current)
-      }
-      if (betweenZoneLeaveTimeoutRef.current) {
-        clearTimeout(betweenZoneLeaveTimeoutRef.current)
-      }
+    clearTimeoutRef(newGroupLeaveTimeoutRef)
+    clearTimeoutRef(trashLeaveTimeoutRef)
+      clearTimeoutRef(betweenZoneLeaveTimeoutRef)
       removalTimeouts.forEach((timeout) => clearTimeout(timeout))
       removalTimeouts.clear()
     }
@@ -1875,7 +1889,9 @@ export function ColorManager({
   }, [dropZoneWidth, selectedCardSize.width, updateDropZoneWidth])
 
   useLayoutEffect(() => {
-    measureDropZoneWidth()
+    schedulePostEffect(() => {
+      measureDropZoneWidth()
+    })
   }, [measureDropZoneWidth, swatches.length, cardSizeIndex])
 
   useEffect(() => {
@@ -2174,7 +2190,7 @@ export function ColorManager({
                   onHexSave={() => handleSaveHex(actualIndex)}
                   onHexCancel={handleCancelHexEdit}
                   onHexEdit={() => handleEditHex(actualIndex)}
-                  onCopyHex={() => handleCopyHex(colorItem.hex, actualIndex)}
+                  onCopyValue={(value) => handleCopyValue(value, actualIndex)}
                   onDragStart={(event) => handleDragStart(event, actualIndex)}
                   onDragEnd={() => handleDragEnd()}
                   onDragOver={(event) => handleDragOver(event, actualIndex)}
@@ -2213,22 +2229,15 @@ export function ColorManager({
           ) {
             return
           }
-          if (betweenZoneLeaveTimeoutRef.current) {
-            clearTimeout(betweenZoneLeaveTimeoutRef.current)
-          }
-          betweenZoneLeaveTimeoutRef.current = setTimeout(() => {
+          scheduleTimeoutRef(betweenZoneLeaveTimeoutRef, () => {
             setIsBetweenZonesActive(false)
             setIsDragOverNewGroup(false)
             setIsDragOverTrash(false)
-            betweenZoneLeaveTimeoutRef.current = null
           }, DROP_ZONE_EXIT_DELAY)
         }}
         onDrop={(event) => {
           event.preventDefault()
-          if (betweenZoneLeaveTimeoutRef.current) {
-            clearTimeout(betweenZoneLeaveTimeoutRef.current)
-            betweenZoneLeaveTimeoutRef.current = null
-          }
+          clearTimeoutRef(betweenZoneLeaveTimeoutRef)
           setIsDragOverNewGroup(false)
           setIsDragOverTrash(false)
           setIsBetweenZonesActive(false)
@@ -2256,10 +2265,7 @@ export function ColorManager({
               e.preventDefault()
               e.stopPropagation()
               if (isAnyCardDragging) {
-                if (newGroupLeaveTimeoutRef.current) {
-                  clearTimeout(newGroupLeaveTimeoutRef.current)
-                  newGroupLeaveTimeoutRef.current = null
-                }
+                clearTimeoutRef(newGroupLeaveTimeoutRef)
                 setIsDragOverNewGroup(true)
                 setIsDragOverTrash(false)
                 setIsBetweenZonesActive(true)
@@ -2269,12 +2275,10 @@ export function ColorManager({
               }
             }}
             onDragLeave={(event) => {
-              if (newGroupLeaveTimeoutRef.current) {
-                clearTimeout(newGroupLeaveTimeoutRef.current)
-              }
+              clearTimeoutRef(newGroupLeaveTimeoutRef)
               const related = event.relatedTarget as Node | null
               const stillWithinTray = !!related && (dropZonesContainerRef.current?.contains(related) ?? false)
-              newGroupLeaveTimeoutRef.current = setTimeout(() => {
+              scheduleTimeoutRef(newGroupLeaveTimeoutRef, () => {
                 setIsDragOverNewGroup(false)
                 if (stillWithinTray && (isAnyCardDragging || isBetweenZonesActive)) {
                   setIsBetweenZonesActive(true)
@@ -2282,7 +2286,6 @@ export function ColorManager({
                   setIsBetweenZonesActive(false)
                   setIsDragOverTrash(false)
                 }
-                newGroupLeaveTimeoutRef.current = null
               }, DROP_ZONE_EXIT_DELAY)
             }}
             onDrop={handleDropOnNewGroup}
@@ -2323,21 +2326,16 @@ export function ColorManager({
               if (!isAnyCardDragging) return
               e.preventDefault()
               e.stopPropagation()
-              if (trashLeaveTimeoutRef.current) {
-                clearTimeout(trashLeaveTimeoutRef.current)
-                trashLeaveTimeoutRef.current = null
-              }
+              clearTimeoutRef(trashLeaveTimeoutRef)
               setIsDragOverTrash(true)
               setIsDragOverNewGroup(false)
               setIsBetweenZonesActive(true)
             }}
             onDragLeave={(event) => {
-              if (trashLeaveTimeoutRef.current) {
-                clearTimeout(trashLeaveTimeoutRef.current)
-              }
+              clearTimeoutRef(trashLeaveTimeoutRef)
               const related = event.relatedTarget as Node | null
               const stillWithinTray = !!related && (dropZonesContainerRef.current?.contains(related) ?? false)
-              trashLeaveTimeoutRef.current = setTimeout(() => {
+              scheduleTimeoutRef(trashLeaveTimeoutRef, () => {
                 setIsDragOverTrash(false)
                 if (stillWithinTray && (isAnyCardDragging || isBetweenZonesActive)) {
                   setIsBetweenZonesActive(true)
@@ -2345,7 +2343,6 @@ export function ColorManager({
                   setIsBetweenZonesActive(false)
                   setIsDragOverNewGroup(false)
                 }
-                trashLeaveTimeoutRef.current = null
               }, DROP_ZONE_EXIT_DELAY)
             }}
             onDrop={(event) => {
