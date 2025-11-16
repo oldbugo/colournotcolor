@@ -1,9 +1,9 @@
 "use client"
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react"
 import type React from "react"
 import type { DragIndicatorPosition } from "@/components/color-manager/types"
-import { CARD_GRID_GAP, CARD_MAX_GRID_COLUMNS } from "@/lib/design-tokens"
+import { CARD_GRID_GAP } from "@/lib/design-tokens"
 
 export const GROUP_SECTION_METRICS = {
   swapOutset: {
@@ -24,6 +24,7 @@ export const GROUP_SECTION_METRICS = {
 } as const
 
 export const GROUP_SECTION_ANIMATION_MS = 300
+const HEIGHT_MEASURE_DEBOUNCE_MS = 70
 
 type GroupSectionProps = {
   groupName: string
@@ -33,13 +34,14 @@ type GroupSectionProps = {
   isRemoving: boolean
   indicatorPosition: DragIndicatorPosition | null
   showIndicator: boolean
-  targetCardWidth: number
-  minCardWidth: number
+  cardColumnCount: number
   isCollapsed: boolean
   isInsertTarget: boolean
   insertPosition: "before" | "after" | null
   isGroupDragActive: boolean
   suppressExpansionAnimation?: boolean
+  shouldMeasureGrid: boolean
+  onGridWidthChange?: (width: number | null) => void
   onGroupReorderDragOver: (event: React.DragEvent<HTMLDivElement>) => void
   onGroupReorderDrop: (event: React.DragEvent<HTMLDivElement>) => void
   onCardDragOver: (event: React.DragEvent<HTMLDivElement>) => void
@@ -59,13 +61,14 @@ export function GroupSection({
   isRemoving,
   indicatorPosition,
   showIndicator,
-  targetCardWidth,
-  minCardWidth,
+  cardColumnCount,
   isCollapsed,
   isInsertTarget,
   insertPosition,
   isGroupDragActive,
   suppressExpansionAnimation = false,
+  shouldMeasureGrid,
+  onGridWidthChange,
   onGroupReorderDragOver,
   onGroupReorderDrop,
   onCardDragOver,
@@ -78,89 +81,107 @@ export function GroupSection({
 }: GroupSectionProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
-  const [columnCount, setColumnCount] = useState(1)
   const [contentHeight, setContentHeight] = useState<number | null>(null)
   const [isContentHiddenVisually, setIsContentHiddenVisually] = useState(isCollapsed)
   const [removalHeight, setRemovalHeight] = useState<number | null>(null)
   const [isRemovalAnimating, setIsRemovalAnimating] = useState(false)
   const removalCollapseRafRef = useRef<number | null>(null)
+  const heightMeasureTimeoutRef = useRef<number | null>(null)
   const gridGap = CARD_GRID_GAP
-  const minColumns = 1
-  const maxColumns = CARD_MAX_GRID_COLUMNS
 
   useEffect(() => {
-    if (isCollapsed) return
+    if (!shouldMeasureGrid || typeof ResizeObserver === "undefined") {
+      return
+    }
 
     const node = gridRef.current
-    if (!node || typeof ResizeObserver === "undefined") return
-
-    const deriveColumns = (width: number) => {
-      if (width <= 0) return
-
-      const maxFitColumns = Math.max(minColumns, Math.floor((width + gridGap) / (minCardWidth + gridGap)))
-      let columns = Math.max(
-        minColumns,
-        Math.floor((width + gridGap) / (targetCardWidth + gridGap)),
-      )
-      columns = Math.min(columns, maxColumns, maxFitColumns)
-      if (columns < minColumns) {
-        columns = minColumns
-      }
-
-      let widthPerColumn = (width - gridGap * (columns - 1)) / columns
-
-      while (columns > minColumns && widthPerColumn < minCardWidth) {
-        columns -= 1
-        widthPerColumn = (width - gridGap * (columns - 1)) / columns
-      }
-
-      setColumnCount((prev) => (prev === columns ? prev : columns))
+    if (!node) {
+      return
     }
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0]
       if (!entry) return
-      deriveColumns(entry.contentRect.width)
+      const width = entry.contentRect.width
+      if (width > 0) {
+        onGridWidthChange?.(width)
+      }
     })
 
-    deriveColumns(node.clientWidth)
-    observer.observe(node)
-
-    return () => {
-      observer.disconnect()
+    if (node.clientWidth > 0) {
+      onGridWidthChange?.(node.clientWidth)
     }
-  }, [gridGap, targetCardWidth, minCardWidth, minColumns, maxColumns, isCollapsed])
+
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [onGridWidthChange, shouldMeasureGrid])
+
+  const applyContentHeight = useCallback((node: HTMLElement | null) => {
+    if (!node) return
+    const nextHeight = node.scrollHeight
+    setContentHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+  }, [])
+
+  const scheduleContentHeightMeasurement = useCallback(
+    (node: HTMLElement | null, immediate = false) => {
+      if (!node) return
+      if (typeof window === "undefined") {
+        applyContentHeight(node)
+        return
+      }
+      if (immediate) {
+        applyContentHeight(node)
+        return
+      }
+      if (heightMeasureTimeoutRef.current !== null) {
+        window.clearTimeout(heightMeasureTimeoutRef.current)
+      }
+      heightMeasureTimeoutRef.current = window.setTimeout(() => {
+        heightMeasureTimeoutRef.current = null
+        applyContentHeight(node)
+      }, HEIGHT_MEASURE_DEBOUNCE_MS)
+    },
+    [applyContentHeight],
+  )
 
   useLayoutEffect(() => {
     const node = gridRef.current
     if (!node) return
 
-    const updateHeight = () => {
-      const nextHeight = node.scrollHeight
-      setContentHeight((previous) => (previous === nextHeight ? previous : nextHeight))
-    }
-
-    updateHeight()
+    scheduleContentHeightMeasurement(node, true)
 
     if (typeof ResizeObserver === "undefined") {
-      if (typeof window !== "undefined") {
-        window.addEventListener("resize", updateHeight)
-        return () => {
-          window.removeEventListener("resize", updateHeight)
+      if (typeof window === "undefined") {
+        return
+      }
+      const handleResize = () => {
+        scheduleContentHeightMeasurement(gridRef.current)
+      }
+      window.addEventListener("resize", handleResize)
+      return () => {
+        window.removeEventListener("resize", handleResize)
+        if (heightMeasureTimeoutRef.current !== null) {
+          window.clearTimeout(heightMeasureTimeoutRef.current)
+          heightMeasureTimeoutRef.current = null
         }
       }
-      return
     }
 
-    const observer = new ResizeObserver(() => {
-      updateHeight()
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      scheduleContentHeightMeasurement(entry.target as HTMLElement)
     })
     observer.observe(node)
 
     return () => {
       observer.disconnect()
+      if (heightMeasureTimeoutRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(heightMeasureTimeoutRef.current)
+        heightMeasureTimeoutRef.current = null
+      }
     }
-  }, [])
+  }, [scheduleContentHeightMeasurement])
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -185,16 +206,16 @@ export function GroupSection({
     }
   }, [isCollapsed])
 
-  const gridStyle = useMemo<React.CSSProperties>(
-    () => ({
-      gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+  const gridStyle = useMemo<React.CSSProperties>(() => {
+    const columns = Math.max(1, cardColumnCount)
+    return {
+      gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
       justifyContent: "flex-start",
       justifyItems: "stretch",
       overflowAnchor: "none",
       gap: `${gridGap}px`,
-    }),
-    [columnCount, gridGap],
-  )
+    }
+  }, [cardColumnCount, gridGap])
 
   const swapOutlineStyle = useMemo<React.CSSProperties>(
     () => ({

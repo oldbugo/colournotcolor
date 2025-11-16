@@ -28,9 +28,29 @@ export function ResizablePanels({
   const [isAnimatingCollapse, setIsAnimatingCollapse] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState<number | null>(null)
+  const widthsRef = useRef(widths)
+  const collapsedRef = useRef(collapsed)
+  const containerWidthRef = useRef<number | null>(null)
+  const resizeRafRef = useRef<number | null>(null)
+  const pendingMouseEventRef = useRef<MouseEvent | null>(null)
 
   const COLLAPSED_WIDTH = 80
   const MIN_WIDTH_THRESHOLD = 15
+  const WIDTH_EPSILON = 0.1
+
+  const cancelScheduledResize = () => {
+    if (resizeRafRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(resizeRafRef.current)
+      resizeRafRef.current = null
+    }
+  }
+
+  const pushWidthsIfChanged = (next: [number, number, number]) => {
+    setWidths((previous) => {
+      const isSame = previous.every((value, index) => Math.abs(value - next[index]) < WIDTH_EPSILON)
+      return isSame ? previous : next
+    })
+  }
 
   useEffect(() => {
     const node = containerRef.current
@@ -67,6 +87,18 @@ export function ResizablePanels({
       window.removeEventListener("resize", updateWidth)
     }
   }, [])
+
+  useEffect(() => {
+    widthsRef.current = widths
+  }, [widths])
+
+  useEffect(() => {
+    collapsedRef.current = collapsed
+  }, [collapsed])
+
+  useEffect(() => {
+    containerWidthRef.current = containerWidth
+  }, [containerWidth])
 
   const toggleCollapse = (index: 0 | 1 | 2) => {
     setIsAnimatingCollapse(true)
@@ -120,23 +152,45 @@ export function ResizablePanels({
   }
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (resizingIndex === null || !containerRef.current) return
+    if (resizingIndex === null) {
+      cancelScheduledResize()
+      pendingMouseEventRef.current = null
+      return
+    }
 
-      const containerRect = containerRef.current.getBoundingClientRect()
-      const mouseX = e.clientX - containerRect.left
+    const processResize = () => {
+      resizeRafRef.current = null
+      const event = pendingMouseEventRef.current
+      const container = containerRef.current
+      if (!event || !container) {
+        return
+      }
+
+      const containerRect = container.getBoundingClientRect()
+      if (containerRect.width === 0) {
+        return
+      }
+
+      const mouseX = event.clientX - containerRect.left
       const percentage = (mouseX / containerRect.width) * 100
 
-      const currentActualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH)
+      const currentActualWidths = computeActualWidths(
+        widthsRef.current,
+        collapsedRef.current,
+        containerWidthRef.current,
+        COLLAPSED_WIDTH,
+      )
+
+      const nextWidths = [...widthsRef.current] as [number, number, number]
 
       if (resizingIndex === 0) {
         // Dragging divider 1 (between panel 1 and panel 2)
 
-        if (collapsed[0]) {
+        if (collapsedRef.current[0]) {
           return
         }
 
-        if (collapsed[1]) {
+        if (collapsedRef.current[1]) {
           // Panel 2 collapsed: resize panels 1 and 3
           const panel2Width = currentActualWidths[1]
           const availableForPanels13 = 100 - panel2Width
@@ -147,7 +201,8 @@ export function ResizablePanels({
           )
           const desiredPanel3Width = availableForPanels13 - desiredPanel1Width
 
-          setWidths([desiredPanel1Width, widths[1], desiredPanel3Width])
+          nextWidths[0] = desiredPanel1Width
+          nextWidths[2] = desiredPanel3Width
         } else {
           // Normal case: both panels 1 and 2 expanded
           let newWidth1 = percentage
@@ -176,16 +231,18 @@ export function ResizablePanels({
             newWidth2 = desiredWidth2
           }
 
-          setWidths([newWidth1, newWidth2, newWidth3])
+          nextWidths[0] = newWidth1
+          nextWidths[1] = newWidth2
+          nextWidths[2] = newWidth3
         }
       } else if (resizingIndex === 1) {
         // Dragging divider 2 (between panel 2 and panel 3)
 
-        if (collapsed[2]) {
+        if (collapsedRef.current[2]) {
           return
         }
 
-        if (collapsed[1]) {
+        if (collapsedRef.current[1]) {
           // Panel 2 collapsed: resize panels 1 and 3
           const panel2Width = currentActualWidths[1]
           const availableForPanels13 = 100 - panel2Width
@@ -196,7 +253,8 @@ export function ResizablePanels({
           )
           const desiredPanel3Width = availableForPanels13 - desiredPanel1Width
 
-          setWidths([desiredPanel1Width, widths[1], desiredPanel3Width])
+          nextWidths[0] = desiredPanel1Width
+          nextWidths[2] = desiredPanel3Width
         } else {
           // Normal case: both panels 2 and 3 expanded
           let newWidth1 = currentActualWidths[0]
@@ -222,8 +280,24 @@ export function ResizablePanels({
             }
           }
 
-          setWidths([newWidth1, newWidth2, newWidth3])
+          nextWidths[0] = newWidth1
+          nextWidths[1] = newWidth2
+          nextWidths[2] = newWidth3
         }
+      }
+
+      pushWidthsIfChanged(nextWidths as [number, number, number])
+
+      if (pendingMouseEventRef.current !== event) {
+        resizeRafRef.current = window.requestAnimationFrame(processResize)
+      }
+    }
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!containerRef.current) return
+      pendingMouseEventRef.current = e
+      if (resizeRafRef.current === null) {
+        resizeRafRef.current = window.requestAnimationFrame(processResize)
       }
     }
 
@@ -233,18 +307,20 @@ export function ResizablePanels({
       document.body.style.cursor = ""
     }
 
-    if (resizingIndex !== null) {
-      document.body.style.userSelect = "none"
-      document.body.style.cursor = "col-resize"
-      document.addEventListener("mousemove", handleMouseMove)
-      document.addEventListener("mouseup", handleMouseUp)
-    }
+    document.body.style.userSelect = "none"
+    document.body.style.cursor = "col-resize"
+    document.addEventListener("mousemove", handleMouseMove)
+    document.addEventListener("mouseup", handleMouseUp)
 
     return () => {
+      cancelScheduledResize()
+      pendingMouseEventRef.current = null
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
     }
-  }, [resizingIndex, widths, collapsed, containerWidth])
+  }, [resizingIndex])
 
   const actualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH)
 

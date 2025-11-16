@@ -19,6 +19,8 @@ import {
   CARD_CONTROL_RADII,
   CARD_MIN_COLUMN_WIDTH,
   CARD_SIZE_TOKENS,
+  CARD_GRID_GAP,
+  CARD_MAX_GRID_COLUMNS,
 } from "@/lib/design-tokens"
 import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
@@ -210,10 +212,56 @@ export function ColorManager({
   const selectedCardSize =
     CARD_SIZE_TOKENS[Math.min(cardSizeIndex, CARD_SIZE_TOKENS.length - 1)] ??
     CARD_SIZE_TOKENS[CARD_SIZE_TOKENS.length - 1]
+  const minCardWidth = CARD_MIN_COLUMN_WIDTH
+  const [cardColumnCount, setCardColumnCount] = useState(1)
+  const lastMeasuredGridWidthRef = useRef<number | null>(null)
+
+  const computeColumnCount = useCallback(
+    (availableWidth: number | null) => {
+      if (!availableWidth || availableWidth <= 0) {
+        return 1
+      }
+      const gap = CARD_GRID_GAP
+      const targetWidth = selectedCardSize.width
+      const minWidth = minCardWidth
+      const maxColumns = CARD_MAX_GRID_COLUMNS
+      const maxFitColumns = Math.max(1, Math.floor((availableWidth + gap) / (minWidth + gap)))
+      let columns = Math.max(1, Math.floor((availableWidth + gap) / (targetWidth + gap)))
+      columns = Math.min(columns, maxFitColumns, maxColumns)
+      let widthPerColumn =
+        columns > 0 ? (availableWidth - gap * (columns - 1)) / Math.max(columns, 1) : availableWidth
+
+      while (columns > 1 && widthPerColumn < minWidth) {
+        columns -= 1
+        widthPerColumn = (availableWidth - gap * (columns - 1)) / Math.max(columns, 1)
+      }
+
+      return Math.max(1, Math.min(columns, maxColumns))
+    },
+    [minCardWidth, selectedCardSize.width],
+  )
+
+  const handleGridWidthChange = useCallback(
+    (width: number | null) => {
+      if (width && width > 0) {
+        lastMeasuredGridWidthRef.current = width
+      }
+      const derived = computeColumnCount(width)
+      setCardColumnCount((previous) => (previous === derived ? previous : derived))
+    },
+    [computeColumnCount],
+  )
+
+  useEffect(() => {
+    if (lastMeasuredGridWidthRef.current !== null) {
+      const derived = computeColumnCount(lastMeasuredGridWidthRef.current)
+      setCardColumnCount((previous) => (previous === derived ? previous : derived))
+    }
+  }, [computeColumnCount])
+
   const [dropZoneWidth, setDropZoneWidth] = useState(() => selectedCardSize.width)
   const [dropZonesStacked, setDropZonesStacked] = useState(false)
   const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
-  const minCardWidth = CARD_MIN_COLUMN_WIDTH
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
   const [areGroupsCollapsedForDrag, setAreGroupsCollapsedForDrag] = useState(false)
   const [suppressGroupExpansionAnimation, setSuppressGroupExpansionAnimation] = useState(false)
@@ -234,10 +282,12 @@ export function ColorManager({
   const prevGroupsCollapsedRef = useRef(areGroupsCollapsedForDrag)
   const cardSnapHandleRef = useRef<CancelHandle | null>(null)
   const cardSnapDelayTimeoutRef = useRef<number | null>(null)
-  const pendingCardSnapRef = useRef<{ index: number | null; options?: { disableSnapIllusion?: boolean; delayMs?: number } } | null>(null)
-  const groupSnapHandleRef = useRef<CancelHandle | null>(null)
-  const GROUP_SCROLL_ANCHOR_LOCK_MS = 260
-  const GROUP_SNAP_HOLD_MS = 160
+const pendingCardSnapRef = useRef<{ index: number | null; options?: { disableSnapIllusion?: boolean; delayMs?: number } } | null>(null)
+const groupSnapHandleRef = useRef<CancelHandle | null>(null)
+const groupSectionRectsRef = useRef<Array<{ name: string; rect: DOMRect }>>([])
+const groupSectionRectsDirtyRef = useRef(false)
+const GROUP_SCROLL_ANCHOR_LOCK_MS = 260
+const GROUP_SNAP_HOLD_MS = 160
 
   useEffect(() => {
     if (!collapseGroupsDuringGroupDrag) {
@@ -301,6 +351,30 @@ export function ColorManager({
     }
     return null
   }, [])
+
+  const measureGroupSectionRects = useCallback(
+    (force = false) => {
+      if (!force && !groupSectionRectsDirtyRef.current && groupSectionRectsRef.current.length > 0) {
+        return groupSectionRectsRef.current
+      }
+      if (typeof document === "undefined") {
+        return []
+      }
+      const sections = document.querySelectorAll<HTMLElement>("[data-group-section]")
+      const nextRects: Array<{ name: string; rect: DOMRect }> = []
+      sections.forEach((section) => {
+        const name = section.getAttribute("data-group-name")
+        if (!name) {
+          return
+        }
+        nextRects.push({ name, rect: section.getBoundingClientRect() })
+      })
+      groupSectionRectsRef.current = nextRects
+      groupSectionRectsDirtyRef.current = false
+      return nextRects
+    },
+    [],
+  )
 
   const ensureScrollParent = useCallback((): HTMLElement | null => {
     if (typeof document === "undefined") {
@@ -782,6 +856,13 @@ export function ColorManager({
   const groupCount = groupedColors.size
 
   useEffect(() => {
+    if (!draggedGroup) {
+      return
+    }
+    groupSectionRectsDirtyRef.current = true
+  }, [draggedGroup, groupedColors, cardColumnCount, areGroupsCollapsedForDrag])
+
+  useEffect(() => {
     const currentGroups = new Set(groupedColors.keys())
     const prevGroups = prevGroupsRef.current
 
@@ -834,10 +915,18 @@ export function ColorManager({
           const horizontalOffset = gapValue > 0 ? gapValue / 2 : 6
           const indicatorHeight = Math.max(rect.height - 24, rect.height * 0.7, 64)
           const centerY = rect.top - containerRect.top + rect.height / 2
-          const left =
-            insertPosition === "before"
-              ? rect.left - containerRect.left - horizontalOffset
-              : rect.right - containerRect.left + horizontalOffset
+          const rawLeft =
+            insertPosition === "before" ? rect.left - containerRect.left : rect.right - containerRect.left
+          let left = rawLeft + (insertPosition === "before" ? -horizontalOffset : horizontalOffset)
+          const maxWidth = containerRect.width
+          if (maxWidth > 0) {
+            const indicatorHalfWidth = 2 // indicator is Tailwind w-1 (4px), so keep 2px margin inside container
+            const edgeInset = 1.5
+            const minBound = indicatorHalfWidth + edgeInset
+            const maxBound = Math.max(minBound, maxWidth - indicatorHalfWidth - edgeInset)
+            const withPadding = Math.min(Math.max(left, minBound), maxBound)
+            left = withPadding
+          }
 
           setIndicatorPosition({
             left,
@@ -1203,6 +1292,8 @@ export function ColorManager({
     setGroupDragMode(null)
     setGroupInsertPosition(null)
     groupDragPointerRef.current = null
+    groupSectionRectsRef.current = []
+    groupSectionRectsDirtyRef.current = false
     clearGlobalDragPointer()
   }, [areGroupsCollapsedForDrag, clearGlobalDragPointer, collapseGroupsDuringGroupDrag, queueGroupScrollAnchor])
 
@@ -1210,7 +1301,11 @@ export function ColorManager({
     (pointer: { x: number; y: number }) => {
       if (!draggedGroup) return
 
-      const sections = Array.from(document.querySelectorAll<HTMLElement>("[data-group-section]"))
+      const cachedRects =
+        groupSectionRectsRef.current.length > 0 && !groupSectionRectsDirtyRef.current
+          ? groupSectionRectsRef.current
+          : measureGroupSectionRects()
+      const sections = cachedRects
       if (sections.length === 0) {
         if (groupDragMode !== null) setGroupDragMode(null)
         if (groupInsertPosition !== null) setGroupInsertPosition(null)
@@ -1283,10 +1378,8 @@ export function ColorManager({
       }
 
       for (const section of sections) {
-        const groupName = section.getAttribute("data-group-name")
-        if (!groupName) continue
-
-        const rect = section.getBoundingClientRect()
+        const groupName = section.name
+        const rect = section.rect
         const horizontalMin = rect.left - horizontalOutset
         const horizontalMax = rect.right + horizontalOutset
         if (pointer.x < horizontalMin || pointer.x > horizontalMax) continue
@@ -1415,7 +1508,7 @@ export function ColorManager({
         groupDeadzoneLockRef.current = null
       }
     },
-    [draggedGroup, dragOverGroupName, groupDragMode, groupInsertPosition],
+    [draggedGroup, dragOverGroupName, groupDragMode, groupInsertPosition, measureGroupSectionRects],
   )
 
   const syncGroupHoverFromPointer = useCallback(() => {
@@ -1545,6 +1638,7 @@ export function ColorManager({
     applyGroupDragImage(e, groupName)
     updateDragPointerFromEvent(e)
     groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
+    measureGroupSectionRects(true)
     setDraggedGroup(groupName)
     setGroupDragMode(null)
     setGroupInsertPosition(null)
@@ -2032,7 +2126,7 @@ export function ColorManager({
         </div>
       </div>
 
-      {Array.from(groupedColors.entries()).map(([groupName, groupColors]) => {
+      {Array.from(groupedColors.entries()).map(([groupName, groupColors], groupIndex) => {
         const isGroupDragging = draggedGroup === groupName
         const isGroupSwapTarget = dragOverGroupName === groupName && groupDragMode === "swap"
         const isGroupInsertTarget = dragOverGroupName === groupName && groupDragMode === "insert"
@@ -2127,12 +2221,13 @@ export function ColorManager({
             isRemoving={isRemoving}
             indicatorPosition={indicatorPosition}
             showIndicator={showIndicator}
-            targetCardWidth={selectedCardSize.width}
-            minCardWidth={minCardWidth}
+            cardColumnCount={cardColumnCount}
             isCollapsed={shouldCollapseGroups}
             isInsertTarget={isGroupInsertTarget && !!draggedGroup}
             insertPosition={insertPositionForGroup}
             isGroupDragActive={!!draggedGroup}
+            shouldMeasureGrid={groupIndex === 0}
+            onGridWidthChange={handleGridWidthChange}
             suppressExpansionAnimation={suppressGroupExpansionAnimation}
             onGroupReorderDragOver={handleGroupDragOver}
             onGroupReorderDrop={(event) => handleGroupDrop(event, groupName)}

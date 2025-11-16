@@ -24,10 +24,10 @@ export type CardSizeToken = {
  * like minimum width or container size are applied.
  */
 export const CARD_SIZE_TOKENS: CardSizeToken[] = [
-  { id: "xs", label: "XS", width: 140 },
-  { id: "sm", label: "S", width: 180 },
-  { id: "md", label: "M", width: 220 },
-  { id: "lg", label: "L", width: 260 },
+  { id: "xs", label: "XS", width: 180 },
+  { id: "sm", label: "S", width: 230 },
+  { id: "md", label: "M", width: 280 },
+  { id: "lg", label: "L", width: 330 },
 ]
 
 /**
