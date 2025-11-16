@@ -105,6 +105,10 @@ export default function Home() {
         return
       }
 
+      if (target.closest("[data-panel-divider]")) {
+        return
+      }
+
       setEditingColor(null)
     }
 

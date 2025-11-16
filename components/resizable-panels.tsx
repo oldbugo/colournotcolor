@@ -2,6 +2,46 @@
 
 import { useState, useRef, useEffect, type ReactNode } from "react"
 import { Maximize2, Minimize2 } from "lucide-react"
+import { cn } from "@/lib/utils"
+
+type PanelHeaderProps = {
+  title: string
+  collapsed: boolean
+  onToggle: () => void
+}
+
+function PanelHeader({ title, collapsed, onToggle }: PanelHeaderProps) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "group relative flex w-full items-center justify-between bg-background/90 px-4 py-2.5 text-left text-sm font-semibold shadow-sm ring-1 ring-border/40",
+        "transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2",
+      )}
+      onClick={onToggle}
+      title={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+      aria-expanded={!collapsed}
+    >
+      {collapsed ? (
+        <span className="mx-auto inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted/70 text-muted-foreground transition-all duration-300 group-hover:bg-muted group-hover:text-foreground/90">
+          <Maximize2 className="h-3.5 w-3.5" />
+        </span>
+      ) : (
+        <>
+          <span className="flex items-center gap-3">
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted/70 text-muted-foreground transition-all duration-300 group-hover:bg-foreground/10 group-hover:text-foreground">
+              <Minimize2 className="h-3.5 w-3.5" />
+            </span>
+            <span className="text-sm font-semibold leading-tight text-foreground">{title}</span>
+          </span>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground transition-colors group-hover:text-foreground/80">
+            Collapse
+          </span>
+        </>
+      )}
+    </button>
+  )
+}
 
 type ResizablePanelsProps = {
   panel1: ReactNode
@@ -180,7 +220,13 @@ export function ResizablePanels({
         containerWidthRef.current,
         COLLAPSED_WIDTH,
       )
-
+      const collapsedWidthPercent =
+        containerWidthRef.current && containerWidthRef.current > 0
+          ? (COLLAPSED_WIDTH / containerWidthRef.current) * 100
+          : MIN_WIDTH_THRESHOLD
+      const panelMinimums = collapsedRef.current.map((isCollapsed) =>
+        isCollapsed ? collapsedWidthPercent : MIN_WIDTH_THRESHOLD,
+      ) as [number, number, number]
       const nextWidths = [...widthsRef.current] as [number, number, number]
 
       if (resizingIndex === 0) {
@@ -205,35 +251,23 @@ export function ResizablePanels({
           nextWidths[2] = desiredPanel3Width
         } else {
           // Normal case: both panels 1 and 2 expanded
-          let newWidth1 = percentage
-          let newWidth2 = currentActualWidths[1]
-          let newWidth3 = currentActualWidths[2]
-
-          // Clamp panel 1 to min width
-          if (newWidth1 < MIN_WIDTH_THRESHOLD) {
-            newWidth1 = MIN_WIDTH_THRESHOLD
+          const minPanel1 = panelMinimums[0]
+          const minPanel2 = panelMinimums[1]
+          const minPanel3 = panelMinimums[2]
+          const maxPanel1 = 100 - (minPanel2 + minPanel3)
+          const clampedTarget = Math.max(minPanel1, Math.min(percentage, maxPanel1))
+          const remaining = 100 - clampedTarget
+          const currentPanel3 = currentActualWidths[2]
+          let nextPanel3 = Math.min(currentPanel3, remaining - minPanel2)
+          nextPanel3 = Math.max(nextPanel3, minPanel3)
+          let nextPanel2 = remaining - nextPanel3
+          if (nextPanel2 < minPanel2) {
+            nextPanel2 = minPanel2
+            nextPanel3 = Math.max(minPanel3, remaining - nextPanel2)
           }
-
-          // Calculate what panel 2 would be
-          const desiredWidth2 = 100 - newWidth1 - newWidth3
-
-          if (desiredWidth2 < MIN_WIDTH_THRESHOLD) {
-            // Panel 2 would be too small, try to take from panel 3
-            newWidth2 = MIN_WIDTH_THRESHOLD
-            newWidth3 = 100 - newWidth1 - newWidth2
-
-            if (newWidth3 < MIN_WIDTH_THRESHOLD) {
-              // Can't shrink panel 3 further, stop panel 1 from expanding
-              newWidth3 = MIN_WIDTH_THRESHOLD
-              newWidth1 = 100 - newWidth2 - newWidth3
-            }
-          } else {
-            newWidth2 = desiredWidth2
-          }
-
-          nextWidths[0] = newWidth1
-          nextWidths[1] = newWidth2
-          nextWidths[2] = newWidth3
+          nextWidths[0] = clampedTarget
+          nextWidths[1] = nextPanel2
+          nextWidths[2] = nextPanel3
         }
       } else if (resizingIndex === 1) {
         // Dragging divider 2 (between panel 2 and panel 3)
@@ -257,32 +291,26 @@ export function ResizablePanels({
           nextWidths[2] = desiredPanel3Width
         } else {
           // Normal case: both panels 2 and 3 expanded
-          let newWidth1 = currentActualWidths[0]
-          let newWidth2 = percentage - newWidth1
-          let newWidth3 = 100 - percentage
-
-          // Clamp panel 3 to min width
-          if (newWidth3 < MIN_WIDTH_THRESHOLD) {
-            newWidth3 = MIN_WIDTH_THRESHOLD
-            newWidth2 = 100 - newWidth1 - newWidth3
+          const minPanel1 = panelMinimums[0]
+          const minPanel2 = panelMinimums[1]
+          const minPanel3 = panelMinimums[2]
+          const minLeftCombined = minPanel1 + minPanel2
+          const maxLeftCombined = 100 - minPanel3
+          const clampedLeft = Math.max(minLeftCombined, Math.min(percentage, maxLeftCombined))
+          const nextPanel3 = 100 - clampedLeft
+          let nextPanel1 = currentActualWidths[0]
+          let nextPanel2 = clampedLeft - nextPanel1
+          if (nextPanel2 < minPanel2) {
+            nextPanel2 = minPanel2
+            nextPanel1 = clampedLeft - nextPanel2
           }
-
-          // Clamp panel 2 to min width
-          if (newWidth2 < MIN_WIDTH_THRESHOLD) {
-            newWidth2 = MIN_WIDTH_THRESHOLD
-            // Try to take from panel 1
-            newWidth1 = 100 - newWidth2 - newWidth3
-
-            if (newWidth1 < MIN_WIDTH_THRESHOLD) {
-              // Can't shrink panel 1 further, stop panel 3 from expanding
-              newWidth1 = MIN_WIDTH_THRESHOLD
-              newWidth3 = 100 - newWidth1 - newWidth2
-            }
+          if (nextPanel1 < minPanel1) {
+            nextPanel1 = minPanel1
+            nextPanel2 = Math.max(minPanel2, clampedLeft - nextPanel1)
           }
-
-          nextWidths[0] = newWidth1
-          nextWidths[1] = newWidth2
-          nextWidths[2] = newWidth3
+          nextWidths[0] = nextPanel1
+          nextWidths[1] = nextPanel2
+          nextWidths[2] = nextPanel3
         }
       }
 
@@ -340,24 +368,7 @@ export function ResizablePanels({
           width: `${actualWidths[0]}%`,
         }}
       >
-        <div
-          className="flex items-center justify-center p-2 border-b bg-background flex-shrink-0 cursor-pointer hover:bg-accent transition-colors h-10 px-6"
-          onClick={() => toggleCollapse(0)}
-          title={collapsed[0] ? `Expand ${panel1Title}` : `Collapse ${panel1Title}`}
-        >
-          {collapsed[0] ? (
-            <div className="transition-all duration-300 w-full flex justify-center">
-              <Maximize2 className="h-4 w-4" />
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 w-full">
-              <div className="transition-all duration-300">
-                <Minimize2 className="h-4 w-4" />
-              </div>
-              <span className="text-sm font-semibold">{panel1Title}</span>
-            </div>
-          )}
-        </div>
+      <PanelHeader title={panel1Title} collapsed={collapsed[0]} onToggle={() => toggleCollapse(0)} />
         {collapsed[0] ? (
           <div className="flex-1 flex justify-start items-start px-0 py-4 mx-auto">
             <span
@@ -377,21 +388,43 @@ export function ResizablePanels({
 
       {/* Divider 1 */}
       <div
-        className="w-6 flex-shrink-0 cursor-col-resize group relative flex items-center justify-center -mx-3 z-10"
+        className={cn(
+          "w-5 flex-shrink-0 cursor-col-resize group relative flex items-center justify-center -mx-2 z-10 transition-colors",
+          resizingIndex === 0 ? "bg-blue-50/60" : "bg-transparent",
+        )}
+        data-panel-divider="true"
         onMouseDown={(e) => {
           e.preventDefault()
           setResizingIndex(0)
         }}
       >
-        <div className="absolute top-0 left-0 right-0 h-10 border-b bg-background" />
-
         {/* Thin visual line */}
-        <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border group-hover:bg-blue-500 transition-colors" />
+        <div
+          className={cn(
+            "absolute inset-y-0 left-1/2 -translate-x-1/2 w-px transition-colors",
+            resizingIndex === 0 ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+          )}
+        />
 
         {/* Double bar indicator in the middle */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="w-0.5 h-8 bg-border group-hover:bg-blue-500 rounded-full transition-colors" />
-          <div className="w-0.5 h-8 bg-border group-hover:bg-blue-500 rounded-full transition-colors" />
+        <div
+          className={cn(
+            "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-0.5 transition-opacity",
+            resizingIndex === 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          )}
+        >
+          <div
+            className={cn(
+              "w-0.5 h-8 rounded-full transition-colors",
+              resizingIndex === 0 ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+            )}
+          />
+          <div
+            className={cn(
+              "w-0.5 h-8 rounded-full transition-colors",
+              resizingIndex === 0 ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+            )}
+          />
         </div>
       </div>
 
@@ -402,24 +435,7 @@ export function ResizablePanels({
           width: `${actualWidths[1]}%`,
         }}
       >
-        <div
-          className="flex items-center justify-center p-2 border-b bg-background flex-shrink-0 cursor-pointer hover:bg-accent transition-colors h-10 px-6"
-          onClick={() => toggleCollapse(1)}
-          title={collapsed[1] ? `Expand ${panel2Title}` : `Collapse ${panel2Title}`}
-        >
-          {collapsed[1] ? (
-            <div className="transition-all duration-300 w-full flex justify-center">
-              <Maximize2 className="h-4 w-4" />
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 w-full">
-              <div className="transition-all duration-300">
-                <Minimize2 className="h-4 w-4" />
-              </div>
-              <span className="text-sm font-semibold">{panel2Title}</span>
-            </div>
-          )}
-        </div>
+        <PanelHeader title={panel2Title} collapsed={collapsed[1]} onToggle={() => toggleCollapse(1)} />
         {collapsed[1] ? (
           <div className="flex-1 flex justify-start bg-muted mx-auto px-0 py-4 font-mono items-start">
             <span
@@ -439,21 +455,43 @@ export function ResizablePanels({
 
       {/* Divider 2 */}
       <div
-        className="w-6 flex-shrink-0 cursor-col-resize group relative flex items-center justify-center -mx-3 z-10"
+        className={cn(
+          "w-5 flex-shrink-0 cursor-col-resize group relative flex items-center justify-center -mx-2 z-10 transition-colors",
+          resizingIndex === 1 ? "bg-blue-50/60" : "bg-transparent",
+        )}
+        data-panel-divider="true"
         onMouseDown={(e) => {
           e.preventDefault()
           setResizingIndex(1)
         }}
       >
-        <div className="absolute top-0 left-0 right-0 h-10 border-b bg-background" />
-
         {/* Thin visual line */}
-        <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border group-hover:bg-blue-500 transition-colors" />
+        <div
+          className={cn(
+            "absolute inset-y-0 left-1/2 -translate-x-1/2 w-px transition-colors",
+            resizingIndex === 1 ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+          )}
+        />
 
         {/* Double bar indicator in the middle */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="w-0.5 h-8 bg-border group-hover:bg-blue-500 rounded-full transition-colors" />
-          <div className="w-0.5 h-8 bg-border group-hover:bg-blue-500 rounded-full transition-colors" />
+        <div
+          className={cn(
+            "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-0.5 transition-opacity",
+            resizingIndex === 1 ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          )}
+        >
+          <div
+            className={cn(
+              "w-0.5 h-8 rounded-full transition-colors",
+              resizingIndex === 1 ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+            )}
+          />
+          <div
+            className={cn(
+              "w-0.5 h-8 rounded-full transition-colors",
+              resizingIndex === 1 ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+            )}
+          />
         </div>
       </div>
 
@@ -464,24 +502,7 @@ export function ResizablePanels({
           width: `${actualWidths[2]}%`,
         }}
       >
-        <div
-          className="flex items-center justify-center p-2 border-b bg-background flex-shrink-0 cursor-pointer hover:bg-accent transition-colors h-10 px-6"
-          onClick={() => toggleCollapse(2)}
-          title={collapsed[2] ? `Expand ${panel3Title}` : `Collapse ${panel3Title}`}
-        >
-          {collapsed[2] ? (
-            <div className="transition-all duration-300 w-full flex justify-center">
-              <Maximize2 className="h-4 w-4" />
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 w-full">
-              <div className="transition-all duration-300">
-                <Minimize2 className="h-4 w-4" />
-              </div>
-              <span className="text-sm font-semibold">{panel3Title}</span>
-            </div>
-          )}
-        </div>
+        <PanelHeader title={panel3Title} collapsed={collapsed[2]} onToggle={() => toggleCollapse(2)} />
         {collapsed[2] ? (
           <div className="flex-1 flex justify-start bg-muted items-start px-0 py-4 mx-auto">
             <span
