@@ -75,7 +75,7 @@ export function ResizablePanels({
   const pendingMouseEventRef = useRef<MouseEvent | null>(null)
 
   const COLLAPSED_WIDTH = 80
-  const MIN_PANEL_WIDTH_PX = 400
+  const MIN_PANEL_WIDTH_PX = 320
   const MIN_PANEL_WIDTH_PERCENT_FALLBACK = 15
   const WIDTH_EPSILON = 0.1
 
@@ -85,46 +85,6 @@ export function ResizablePanels({
         return MIN_PANEL_WIDTH_PERCENT_FALLBACK
       }
       return (MIN_PANEL_WIDTH_PX / width) * 100
-    },
-    [],
-  )
-
-  const redistributeWidths = useCallback(
-    (currentWidths: [number, number, number], collapsedState: [boolean, boolean, boolean], minPercent: number) => {
-      const collapsedSum = collapsedState.reduce((sum, isCollapsed, i) => (isCollapsed ? sum + currentWidths[i] : sum), 0)
-      const availableForExpanded = Math.max(0, 100 - collapsedSum)
-      const expandedIndices = collapsedState
-        .map((isCollapsed, i) => (!isCollapsed ? i : -1))
-        .filter((i): i is number => i !== -1)
-      if (expandedIndices.length === 0) {
-        return [...currentWidths] as [number, number, number]
-      }
-
-      const next = [...currentWidths] as [number, number, number]
-      if (availableForExpanded <= 0) {
-        expandedIndices.forEach((i) => {
-          next[i] = 0
-        })
-        return next
-      }
-
-      const minimumTotal = minPercent * expandedIndices.length
-      if (availableForExpanded <= minimumTotal) {
-        const fallback = availableForExpanded / expandedIndices.length
-        expandedIndices.forEach((i) => {
-          next[i] = fallback
-        })
-        return next
-      }
-
-      const baseTotal = expandedIndices.reduce((sum, i) => sum + currentWidths[i], 0)
-      const normalizedBaseTotal = baseTotal === 0 ? expandedIndices.length : baseTotal
-      const leftover = availableForExpanded - minimumTotal
-      expandedIndices.forEach((i) => {
-        const proportion = baseTotal === 0 ? 1 / expandedIndices.length : currentWidths[i] / normalizedBaseTotal
-        next[i] = minPercent + leftover * proportion
-      })
-      return next
     },
     [],
   )
@@ -194,19 +154,50 @@ export function ResizablePanels({
   const toggleCollapse = (index: 0 | 1 | 2) => {
     setIsAnimatingCollapse(true)
     const newCollapsed = [...collapsed] as [boolean, boolean, boolean]
+    const wasCollapsed = collapsed[index]
     newCollapsed[index] = !newCollapsed[index]
 
-    const rect = containerRef.current?.getBoundingClientRect()
-    const measuredContainerWidth = rect ? rect.width : containerWidthRef.current
-    if (!measuredContainerWidth || measuredContainerWidth <= 0) {
+    if (!containerRef.current) {
       setCollapsed(newCollapsed)
       setTimeout(() => setIsAnimatingCollapse(false), 300)
       return
     }
 
-    const minPercent = getMinWidthPercent(measuredContainerWidth)
-    const nextWidths = redistributeWidths(widths, newCollapsed, minPercent)
-    setWidths(nextWidths)
+    const containerWidth = containerRef.current.getBoundingClientRect().width
+    const collapsedWidthPercent = (COLLAPSED_WIDTH / containerWidth) * 100
+
+    if (wasCollapsed) {
+      // Expanding: take space proportionally from other expanded panels
+      const expandedIndices = collapsed.map((c, i) => (i !== index && !c ? i : -1)).filter((i) => i !== -1)
+
+      if (expandedIndices.length > 0) {
+        const spaceToTake = widths[index] - collapsedWidthPercent
+        const totalExpandedWidth = expandedIndices.reduce((sum, i) => sum + widths[i], 0)
+
+        const newWidths = [...widths] as [number, number, number]
+        expandedIndices.forEach((i) => {
+          const proportion = widths[i] / totalExpandedWidth
+          newWidths[i] = widths[i] - spaceToTake * proportion
+        })
+        setWidths(newWidths)
+      }
+    } else {
+      // Collapsing: distribute freed space proportionally to other expanded panels
+      const expandedIndices = newCollapsed.map((c, i) => (i !== index && !c ? i : -1)).filter((i) => i !== -1)
+
+      if (expandedIndices.length > 0) {
+        const freedSpace = widths[index] - collapsedWidthPercent
+        const totalExpandedWidth = expandedIndices.reduce((sum, i) => sum + widths[i], 0)
+
+        const newWidths = [...widths] as [number, number, number]
+        expandedIndices.forEach((i) => {
+          const proportion = widths[i] / totalExpandedWidth
+          newWidths[i] = widths[i] + freedSpace * proportion
+        })
+        setWidths(newWidths)
+      }
+    }
+
     setCollapsed(newCollapsed)
     setTimeout(() => setIsAnimatingCollapse(false), 300)
   }
