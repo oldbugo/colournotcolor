@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch"
 import type { ColorPalette } from "@/app/page"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
-import { useState, useRef, useEffect, useMemo, useCallback } from "react"
+import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
 import { clampHsluv, hexToHpluv, hexToHsluv, hpluvToHex, hsluvToHex, type Hsluv } from "@/lib/hsluv"
 
 type PaletteManagerProps = {
@@ -36,6 +36,37 @@ const PLANE_MODE_OPTIONS: Array<{ key: PlaneAxis; label: string }> = [
   { key: "l", label: "L" },
 ]
 
+const PICKER_HEIGHTS_STORAGE_KEY = "palette-picker-heights-v1"
+
+function readPickerHeightFromStorage(paletteId: string): number | null {
+  if (typeof window === "undefined") {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(PICKER_HEIGHTS_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const value = parsed?.[paletteId]
+    return typeof value === "number" ? value : null
+  } catch {
+    return null
+  }
+}
+
+function writePickerHeightToStorage(paletteId: string, height: number) {
+  if (typeof window === "undefined") {
+    return
+  }
+  try {
+    const raw = window.localStorage.getItem(PICKER_HEIGHTS_STORAGE_KEY)
+    const parsed = raw ? ((JSON.parse(raw) as Record<string, unknown>) ?? {}) : {}
+    parsed[paletteId] = height
+    window.localStorage.setItem(PICKER_HEIGHTS_STORAGE_KEY, JSON.stringify(parsed))
+  } catch {
+    // ignore persistence errors
+  }
+}
+
 export function PaletteManager({
   palettes,
   activePaletteId,
@@ -48,12 +79,15 @@ export function PaletteManager({
 }: PaletteManagerProps) {
   void _lastInteractedColor
   const [isPickerExpanded, setIsPickerExpanded] = useState(true)
-  const [pickerHeight, setPickerHeight] = useState(400)
+  const [pickerHeight, setPickerHeight] = useState<number | null>(null)
   const [isResizingPicker, setIsResizingPicker] = useState(false)
+  const [hasCustomPickerHeight, setHasCustomPickerHeight] = useState(false)
   const supportsEyedropper = typeof window !== "undefined" && "EyeDropper" in window
   const [liveUpdate, setLiveUpdate] = useState(false)
   const sidebarRef = useRef<HTMLDivElement>(null)
   const [sidebarWidth, setSidebarWidth] = useState<number | null>(null)
+  const pickerContentRef = useRef<HTMLDivElement>(null)
+  const pickerHeightPendingRef = useRef<number | null>(null)
 
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
@@ -326,6 +360,8 @@ export function PaletteManager({
 
       if (newHeight >= minHeight && newHeight <= maxHeight) {
         setPickerHeight(newHeight)
+        setHasCustomPickerHeight(true)
+        pickerHeightPendingRef.current = newHeight
       }
     }
 
@@ -345,6 +381,44 @@ export function PaletteManager({
       document.removeEventListener("mouseup", handleMouseUp)
     }
   }, [isResizingPicker])
+
+  useLayoutEffect(() => {
+    if (!isPickerExpanded || hasCustomPickerHeight) {
+      return
+    }
+    const node = pickerContentRef.current
+    if (!node) return
+    const measuredHeight = node.scrollHeight
+    if (measuredHeight <= 0) {
+      return
+    }
+    setPickerHeight((current) => {
+      const next = Math.ceil(measuredHeight)
+      if (current === next) {
+        return current
+      }
+      return next
+    })
+  }, [activePaletteId, colorMode, editingColor, hasCustomPickerHeight, isPickerExpanded, planeMode, sidebarWidth])
+
+  useEffect(() => {
+    if (!isResizingPicker && hasCustomPickerHeight && pickerHeightPendingRef.current !== null) {
+      writePickerHeightToStorage(activePaletteId, Math.round(pickerHeightPendingRef.current))
+      pickerHeightPendingRef.current = null
+    }
+  }, [activePaletteId, hasCustomPickerHeight, isResizingPicker])
+
+  useEffect(() => {
+    const storedHeight = readPickerHeightFromStorage(activePaletteId)
+    if (typeof storedHeight === "number" && storedHeight > 0) {
+      setPickerHeight(storedHeight)
+      setHasCustomPickerHeight(true)
+    } else {
+      setPickerHeight(null)
+      setHasCustomPickerHeight(false)
+    }
+    pickerHeightPendingRef.current = null
+  }, [activePaletteId])
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -820,8 +894,8 @@ export function PaletteManager({
         {isPickerExpanded && (
           <div
             className={cn(
-              "relative h-6 w-full cursor-row-resize flex items-center justify-center my-1 transition-colors",
-              !isResizingPicker && "hover:bg-blue-500/10",
+              "relative group h-6 w-full cursor-row-resize flex items-center justify-center my-1 transition-colors",
+              isResizingPicker ? "bg-blue-50/60" : "hover:bg-blue-500/10",
             )}
             onMouseDown={(e) => {
               e.preventDefault()
@@ -829,25 +903,30 @@ export function PaletteManager({
             }}
           >
             {/* Thin horizontal line spanning full width */}
-            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-border" />
+            <div
+              className={cn(
+                "absolute inset-x-0 top-1/2 -translate-y-1/2 h-px transition-colors",
+                isResizingPicker ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
+              )}
+            />
 
             {/* Double bar indicator in the middle */}
             <div
               className={cn(
-                "relative flex flex-col gap-1 px-2 py-1 rounded transition-opacity",
-                !isResizingPicker && "group-hover:opacity-100",
+                "pointer-events-none relative flex flex-col gap-1 px-2 py-1 rounded transition-opacity duration-200",
+                isResizingPicker ? "opacity-100" : "opacity-0 group-hover:opacity-100",
               )}
             >
               <div
                 className={cn(
                   "w-8 h-0.5 rounded-full transition-colors",
-                  isResizingPicker ? "bg-blue-500" : "bg-muted-foreground/50",
+                  isResizingPicker ? "bg-blue-500" : "bg-muted-foreground/60",
                 )}
               />
               <div
                 className={cn(
                   "w-8 h-0.5 rounded-full transition-colors",
-                  isResizingPicker ? "bg-blue-500" : "bg-muted-foreground/50",
+                  isResizingPicker ? "bg-blue-500" : "bg-muted-foreground/60",
                 )}
               />
             </div>
@@ -877,9 +956,10 @@ export function PaletteManager({
         </div>
 
         <div
+          ref={pickerContentRef}
           className="overflow-hidden transition-all duration-200 ease-out px-0"
           style={{
-            height: isPickerExpanded ? `${pickerHeight}px` : "0px",
+            height: isPickerExpanded ? (pickerHeight === null ? "auto" : `${pickerHeight}px`) : "0px",
           }}
         >
           {editingColor ? (

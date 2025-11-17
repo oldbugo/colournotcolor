@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, type ReactNode } from "react"
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react"
 import { Maximize2, Minimize2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -23,7 +23,7 @@ function PanelHeader({ title, collapsed, onToggle }: PanelHeaderProps) {
       aria-expanded={!collapsed}
     >
       {collapsed ? (
-        <span className="mx-auto inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted/70 text-muted-foreground transition-all duration-300 group-hover:bg-muted group-hover:text-foreground/90">
+        <span className="mx-auto inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted/70 text-muted-foreground transition-all duration-300 group-hover:bg-muted group-hover:text-foreground/90">
           <Maximize2 className="h-3.5 w-3.5" />
         </span>
       ) : (
@@ -75,8 +75,59 @@ export function ResizablePanels({
   const pendingMouseEventRef = useRef<MouseEvent | null>(null)
 
   const COLLAPSED_WIDTH = 80
-  const MIN_WIDTH_THRESHOLD = 15
+  const MIN_PANEL_WIDTH_PX = 400
+  const MIN_PANEL_WIDTH_PERCENT_FALLBACK = 15
   const WIDTH_EPSILON = 0.1
+
+  const getMinWidthPercent = useCallback(
+    (width: number | null) => {
+      if (!width || width <= 0) {
+        return MIN_PANEL_WIDTH_PERCENT_FALLBACK
+      }
+      return (MIN_PANEL_WIDTH_PX / width) * 100
+    },
+    [],
+  )
+
+  const redistributeWidths = useCallback(
+    (currentWidths: [number, number, number], collapsedState: [boolean, boolean, boolean], minPercent: number) => {
+      const collapsedSum = collapsedState.reduce((sum, isCollapsed, i) => (isCollapsed ? sum + currentWidths[i] : sum), 0)
+      const availableForExpanded = Math.max(0, 100 - collapsedSum)
+      const expandedIndices = collapsedState
+        .map((isCollapsed, i) => (!isCollapsed ? i : -1))
+        .filter((i): i is number => i !== -1)
+      if (expandedIndices.length === 0) {
+        return [...currentWidths]
+      }
+
+      const next = [...currentWidths] as [number, number, number]
+      if (availableForExpanded <= 0) {
+        expandedIndices.forEach((i) => {
+          next[i] = 0
+        })
+        return next
+      }
+
+      const minimumTotal = minPercent * expandedIndices.length
+      if (availableForExpanded <= minimumTotal) {
+        const fallback = availableForExpanded / expandedIndices.length
+        expandedIndices.forEach((i) => {
+          next[i] = fallback
+        })
+        return next
+      }
+
+      const baseTotal = expandedIndices.reduce((sum, i) => sum + currentWidths[i], 0)
+      const normalizedBaseTotal = baseTotal === 0 ? expandedIndices.length : baseTotal
+      const leftover = availableForExpanded - minimumTotal
+      expandedIndices.forEach((i) => {
+        const proportion = baseTotal === 0 ? 1 / expandedIndices.length : currentWidths[i] / normalizedBaseTotal
+        next[i] = minPercent + leftover * proportion
+      })
+      return next as [number, number, number]
+    },
+    [],
+  )
 
   const cancelScheduledResize = () => {
     if (resizeRafRef.current !== null && typeof window !== "undefined") {
@@ -143,50 +194,19 @@ export function ResizablePanels({
   const toggleCollapse = (index: 0 | 1 | 2) => {
     setIsAnimatingCollapse(true)
     const newCollapsed = [...collapsed] as [boolean, boolean, boolean]
-    const wasCollapsed = collapsed[index]
     newCollapsed[index] = !newCollapsed[index]
 
-    if (!containerRef.current) {
+    const measuredContainerWidth =
+      containerRef.current?.getBoundingClientRect().width ?? containerWidthRef.current ?? null
+    if (!measuredContainerWidth || measuredContainerWidth <= 0) {
       setCollapsed(newCollapsed)
       setTimeout(() => setIsAnimatingCollapse(false), 300)
       return
     }
 
-    const containerWidth = containerRef.current.getBoundingClientRect().width
-    const collapsedWidthPercent = (COLLAPSED_WIDTH / containerWidth) * 100
-
-    if (wasCollapsed) {
-      // Expanding: take space proportionally from other expanded panels
-      const expandedIndices = collapsed.map((c, i) => (i !== index && !c ? i : -1)).filter((i) => i !== -1)
-
-      if (expandedIndices.length > 0) {
-        const spaceToTake = widths[index] - collapsedWidthPercent
-        const totalExpandedWidth = expandedIndices.reduce((sum, i) => sum + widths[i], 0)
-
-        const newWidths = [...widths] as [number, number, number]
-        expandedIndices.forEach((i) => {
-          const proportion = widths[i] / totalExpandedWidth
-          newWidths[i] = widths[i] - spaceToTake * proportion
-        })
-        setWidths(newWidths)
-      }
-    } else {
-      // Collapsing: distribute freed space proportionally to other expanded panels
-      const expandedIndices = newCollapsed.map((c, i) => (i !== index && !c ? i : -1)).filter((i) => i !== -1)
-
-      if (expandedIndices.length > 0) {
-        const freedSpace = widths[index] - collapsedWidthPercent
-        const totalExpandedWidth = expandedIndices.reduce((sum, i) => sum + widths[i], 0)
-
-        const newWidths = [...widths] as [number, number, number]
-        expandedIndices.forEach((i) => {
-          const proportion = widths[i] / totalExpandedWidth
-          newWidths[i] = widths[i] + freedSpace * proportion
-        })
-        setWidths(newWidths)
-      }
-    }
-
+    const minPercent = getMinWidthPercent(measuredContainerWidth)
+    const nextWidths = redistributeWidths(widths, newCollapsed, minPercent)
+    setWidths(nextWidths)
     setCollapsed(newCollapsed)
     setTimeout(() => setIsAnimatingCollapse(false), 300)
   }
@@ -223,9 +243,10 @@ export function ResizablePanels({
       const collapsedWidthPercent =
         containerWidthRef.current && containerWidthRef.current > 0
           ? (COLLAPSED_WIDTH / containerWidthRef.current) * 100
-          : MIN_WIDTH_THRESHOLD
+          : MIN_PANEL_WIDTH_PERCENT_FALLBACK
+      const minWidthPercent = getMinWidthPercent(containerWidthRef.current)
       const panelMinimums = collapsedRef.current.map((isCollapsed) =>
-        isCollapsed ? collapsedWidthPercent : MIN_WIDTH_THRESHOLD,
+        isCollapsed ? collapsedWidthPercent : minWidthPercent,
       ) as [number, number, number]
       const nextWidths = [...widthsRef.current] as [number, number, number]
 
@@ -241,10 +262,7 @@ export function ResizablePanels({
           const panel2Width = currentActualWidths[1]
           const availableForPanels13 = 100 - panel2Width
 
-          const desiredPanel1Width = Math.max(
-            MIN_WIDTH_THRESHOLD,
-            Math.min(percentage, availableForPanels13 - MIN_WIDTH_THRESHOLD),
-          )
+          const desiredPanel1Width = Math.max(minWidthPercent, Math.min(percentage, availableForPanels13 - minWidthPercent))
           const desiredPanel3Width = availableForPanels13 - desiredPanel1Width
 
           nextWidths[0] = desiredPanel1Width
@@ -282,8 +300,8 @@ export function ResizablePanels({
           const availableForPanels13 = 100 - panel2Width
 
           const desiredPanel1Width = Math.max(
-            MIN_WIDTH_THRESHOLD,
-            Math.min(percentage - panel2Width, availableForPanels13 - MIN_WIDTH_THRESHOLD),
+            minWidthPercent,
+            Math.min(percentage - panel2Width, availableForPanels13 - minWidthPercent),
           )
           const desiredPanel3Width = availableForPanels13 - desiredPanel1Width
 

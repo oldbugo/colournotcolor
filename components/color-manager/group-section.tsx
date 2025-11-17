@@ -376,10 +376,10 @@ export function GroupSection({
     <div
       ref={rootRef}
       className={`relative overflow-visible rounded-lg border border-border/50 bg-background p-3 transition ${
-        isCollapsed ? "space-y-1" : "space-y-3"
-      } ${isGroupDragging ? "opacity-50" : "opacity-100"} ${
-        isNewlyCreated ? "animate-in fade-in-0 slide-in-from-top-4 duration-300" : ""
-      } ${isRemoving ? "pointer-events-none" : ""}`}
+        isGroupDragging ? "opacity-50" : "opacity-100"
+      } ${isNewlyCreated ? "animate-in fade-in-0 slide-in-from-top-4 duration-300" : ""} ${
+        isRemoving ? "pointer-events-none" : ""
+      }`}
       style={removalStyle}
       data-group-section=""
       data-group-name={groupName}
@@ -420,7 +420,7 @@ export function GroupSection({
 
       <div
         aria-hidden={isCollapsed}
-        className="relative overflow-hidden"
+        className={`relative overflow-hidden ${isCollapsed ? "mt-0" : "mt-3"}`}
         style={collapsibleContentStyle}
       >
         <div
