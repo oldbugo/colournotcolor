@@ -50,9 +50,19 @@ export function calculateContrast(color1: string, color2: string): number {
   return (lighter + 0.05) / (darker + 0.05)
 }
 
-export function getWCAGLevel(ratio: number): { aa: boolean; aaa: boolean } {
+export type ContrastThresholds = {
+  aa: number
+  aaa?: number
+}
+
+export function getWCAGLevel(ratio: number, thresholds: ContrastThresholds = { aa: 4.5, aaa: 7 }): {
+  aa: boolean
+  aaa: boolean
+} {
+  const { aa, aaa } = thresholds
+
   return {
-    aa: ratio >= 4.5,
-    aaa: ratio >= 7,
+    aa: ratio >= aa,
+    aaa: typeof aaa === "number" ? ratio >= aaa : false,
   }
 }

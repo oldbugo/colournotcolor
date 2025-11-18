@@ -2,16 +2,59 @@
 
 import React from "react"
 import { useState, useRef, useEffect } from "react"
-import { Plus, Trash2 } from "lucide-react"
+import { ChevronDown, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
-import { calculateContrast, getWCAGLevel, extractHexFromColor, extractCustomName } from "@/lib/contrast-utils"
+import {
+  calculateContrast,
+  getWCAGLevel,
+  extractHexFromColor,
+  extractCustomName,
+  type ContrastThresholds,
+} from "@/lib/contrast-utils"
 
 const CARD_SIZE = 132 // px
 const GAP_SIZE = 16 // px (gap-4)
 const ANIMATION_DURATION = 0.25 // seconds - faster animation
 const CARD_WITH_GAP = CARD_SIZE + GAP_SIZE // 148px
 const BORDER_GAP = 8 // px - gap for borders (-inset-2 = 8px)
+
+type ContrastRequirementOption = {
+  id: "non-text" | "large-text" | "normal-text"
+  label: string
+  shortLabel: string
+  description: string
+  thresholds: ContrastThresholds
+}
+
+const CONTRAST_REQUIREMENT_OPTIONS: ContrastRequirementOption[] = [
+  {
+    id: "non-text",
+    label: "Non-text contrast",
+    shortLabel: "Non-text",
+    description: "UI components or graphic objects that only need to meet a 3:1 requirement.",
+    thresholds: { aa: 3 },
+  },
+  {
+    id: "large-text",
+    label: "Large text",
+    shortLabel: "Large text",
+    description: "Text ≥ 24px or ≥ 19px bold needs 3:1 for AA and 4.5:1 for AAA.",
+    thresholds: { aa: 3, aaa: 4.5 },
+  },
+  {
+    id: "normal-text",
+    label: "Normal text",
+    shortLabel: "Body text",
+    description: "Standard body copy where AA is 4.5:1 and AAA is 7:1.",
+    thresholds: { aa: 4.5, aaa: 7 },
+  },
+]
+
+const CONTRAST_SLIDER_MAX = CONTRAST_REQUIREMENT_OPTIONS.length - 1
+
+const formatThresholdLabel = (value: number) => (Number.isInteger(value) ? `${value.toFixed(0)}:1` : `${value.toFixed(1)}:1`)
 
 type ContrastGridProps = {
   foregroundColors: string[]
@@ -83,6 +126,11 @@ export function ContrastGrid({
 
   const [fgSwapHighlightStyle, setFgSwapHighlightStyle] = useState<React.CSSProperties | null>(null)
   const [bgSwapHighlightStyle, setBgSwapHighlightStyle] = useState<React.CSSProperties | null>(null)
+
+  const [requirementIndex, setRequirementIndex] = useState(CONTRAST_SLIDER_MAX)
+  const activeRequirement = CONTRAST_REQUIREMENT_OPTIONS[requirementIndex]
+  const hasAAARequirement = typeof activeRequirement.thresholds.aaa === "number"
+  const [isRequirementMenuOpen, setIsRequirementMenuOpen] = useState(false)
 
   useEffect(() => {
     return () => {
@@ -593,7 +641,7 @@ export function ContrastGrid({
   const isAnyHeaderDragging = draggedFgIndex !== null || draggedBgIndex !== null
 
   return (
-    <div className="border-2 border-border p-6 bg-background overflow-visible rounded-md px-6 py-6 mx-2">
+    <div className="bg-background overflow-visible rounded-md p-4">
       <style jsx>{`
         @keyframes zoomOut {
           from {
@@ -637,10 +685,111 @@ export function ContrastGrid({
             transform: translateY(0);
           }
         }
+        :global(.contrast-scroll-area) {
+          scrollbar-width: thick;
+          scrollbar-color: rgba(79, 79, 79, 0.7) rgba(0, 0, 0, 0.12);
+        }
+        :global(.contrast-scroll-area::-webkit-scrollbar) {
+          width: 16px;
+          height: 16px;
+        }
+        :global(.contrast-scroll-area::-webkit-scrollbar-track) {
+          background-color: rgba(0, 0, 0, 0.12);
+          border-radius: 999px;
+        }
+        :global(.contrast-scroll-area::-webkit-scrollbar-thumb) {
+          background-color: rgba(79, 79, 79, 0.7);
+          border-radius: 999px;
+          border: 4px solid rgba(0, 0, 0, 0);
+          background-clip: content-box;
+        }
+        :global(.contrast-scroll-area:hover::-webkit-scrollbar-thumb) {
+          background-color: rgba(55, 55, 55, 0.85);
+        }
       `}</style>
 
-      <div className="pb-2 mb-6 border-b-2">
-        <h2 className="text-xl font-semibold">Contrast Matrix</h2>
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
+          <p className="text-sm font-semibold text-foreground">{activeRequirement.label}</p>
+          <p className="text-xs text-muted-foreground">
+            AA ≥ {formatThresholdLabel(activeRequirement.thresholds.aa)}
+            {hasAAARequirement && (
+              <>
+                {" "}
+                • AAA ≥ {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
+              </>
+            )}
+          </p>
+        </div>
+        <DropdownMenu open={isRequirementMenuOpen} onOpenChange={setIsRequirementMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={`flex items-center gap-2 rounded-full border-border px-3 py-1 text-xs font-semibold ${
+                isRequirementMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : ""
+              }`}
+            >
+              Adjust
+              <ChevronDown className={`h-3 w-3 transition-transform ${isRequirementMenuOpen ? "rotate-180" : ""}`} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            sideOffset={8}
+            className="w-[320px] space-y-4 border border-border bg-background/95 p-4 text-foreground shadow-lg backdrop-blur"
+          >
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
+              <p className="text-base font-semibold text-foreground">{activeRequirement.label}</p>
+              <p className="text-xs text-muted-foreground">{activeRequirement.description}</p>
+            </div>
+            <div className="text-xs font-medium text-muted-foreground">
+              AA ≥ {formatThresholdLabel(activeRequirement.thresholds.aa)}
+              {hasAAARequirement && (
+                <>
+                  {" "}
+                  • AAA ≥ {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
+                </>
+              )}
+            </div>
+            <div>
+              <input
+                type="range"
+                min={0}
+                max={CONTRAST_SLIDER_MAX}
+                step={1}
+                value={requirementIndex}
+                aria-label="Set contrast requirement focus"
+                aria-valuetext={`${activeRequirement.label} requirement`}
+                onChange={(event) => setRequirementIndex(Number(event.currentTarget.value))}
+                className="w-full accent-foreground cursor-pointer"
+              />
+            </div>
+            <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-muted-foreground">
+              {CONTRAST_REQUIREMENT_OPTIONS.map((option, index) => {
+                const isActive = index === requirementIndex
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => {
+                      setRequirementIndex(index)
+                      setIsRequirementMenuOpen(false)
+                    }}
+                    className={`rounded-full px-3 py-1 transition-all duration-150 ${
+                      isActive ? "bg-foreground text-background shadow-sm" : "bg-transparent"
+                    }`}
+                  >
+                    {option.shortLabel}
+                  </button>
+                )
+              })}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {fgOverlayStyle && <div className="pointer-events-none fixed z-10 rounded-lg" style={fgOverlayStyle} />}
@@ -661,7 +810,7 @@ export function ContrastGrid({
         />
       )}
 
-      <div className="overflow-x-auto overflow-visible px-4 py-4">
+      <div className="contrast-scroll-area overflow-x-auto overflow-visible px-4 py-4">
         <div className="relative inline-block overflow-visible">
           <div
             ref={gridRef}
@@ -854,7 +1003,7 @@ export function ContrastGrid({
                     const isFgDragging = draggedFgIndex === fgIndex
                     const fgHexColor = extractHexFromColor(fgColor)
                     const ratio = calculateContrast(fgHexColor, bgHexColor) // Use bgHexColor instead of bgColor for consistency
-                    const level = getWCAGLevel(ratio)
+                    const level = getWCAGLevel(ratio, activeRequirement.thresholds)
 
                     return (
                       <div
@@ -889,7 +1038,7 @@ export function ContrastGrid({
                           {level.aa && (
                             <span className="rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white">AA</span>
                           )}
-                          {level.aaa && (
+                          {hasAAARequirement && level.aaa && (
                             <span className="rounded bg-green-700 px-2 py-0.5 text-xs font-medium text-white">AAA</span>
                           )}
                           {!level.aa && (

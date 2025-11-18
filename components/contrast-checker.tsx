@@ -131,7 +131,7 @@ export function ContrastChecker({
 
   if (showOnlyGrid) {
     return (
-      <div className="p-6 px-4">
+      <div className="p-4">
         <ContrastGrid
           foregroundColors={palette.foregroundColors}
           backgroundColors={palette.backgroundColors}
@@ -151,7 +151,7 @@ export function ContrastChecker({
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 space-y-6">
       <ColorManager
         label="Foreground"
         colors={foregroundSwatches}

@@ -2061,7 +2061,7 @@ const GROUP_SNAP_HOLD_MS = 160
   return (
     <div
       ref={managerRef}
-      className="space-y-8 border-border p-6 relative border-2 rounded-md bg-background mx-0"
+      className="space-y-8 border-border p-4 relative border-2 rounded-md bg-background mx-0"
       style={{ overflowAnchor: "none" }}
     >
       <div className="pb-4 border-b-2">
