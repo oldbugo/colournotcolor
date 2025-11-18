@@ -151,7 +151,7 @@ function updateColorGroup(color: string, newGroup: string): string {
 }
 
 export function ColorManager({
-  label,
+  label: _label,
   colors: swatches,
   onAddColor,
   onRemoveColor,
@@ -2061,69 +2061,64 @@ const GROUP_SNAP_HOLD_MS = 160
   return (
     <div
       ref={managerRef}
-      className="space-y-8 border-border p-4 relative border-2 rounded-md bg-background mx-0"
+      className="space-y-8 p-4 relative rounded-xl bg-background"
       style={{ overflowAnchor: "none" }}
     >
-      <div className="pb-4 border-b-2">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-2xl font-semibold leading-tight">{label}</h2>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
-            <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
-                    isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
-                  )}
-                  style={{
-                    borderRadius: isCardSizeMenuOpen
-                      ? CARD_CONTROL_RADII.elevated
-                      : CARD_CONTROL_RADII.pill,
-                  }}
-                >
-                  <span>{selectedCardSize.label}</span>
-                  <ChevronDown className="h-3 w-3 opacity-70" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                sideOffset={6}
-                className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
-                style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
-              >
-                <div className="flex items-center gap-1">
-                  {CARD_SIZE_TOKENS.map((option, index) => {
-                    const isActive = index === cardSizeIndex
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => {
-                          setCardSizeIndex(index)
-                          setIsCardSizeMenuOpen(false)
-                        }}
-                        className={cn(
-                          "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                          isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
-                        )}
-                        style={{
-                          borderRadius: isActive
-                            ? CARD_CONTROL_RADII.elevated
-                            : CARD_CONTROL_RADII.pill,
-                        }}
-                      >
-                        <span>{option.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
+        <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn(
+                "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
+                isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
+              )}
+              style={{
+                borderRadius: isCardSizeMenuOpen
+                  ? CARD_CONTROL_RADII.elevated
+                  : CARD_CONTROL_RADII.pill,
+              }}
+            >
+              <span>{selectedCardSize.label}</span>
+              <ChevronDown className="h-3 w-3 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            sideOffset={6}
+            className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
+            style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
+          >
+            <div className="flex items-center gap-1">
+              {CARD_SIZE_TOKENS.map((option, index) => {
+                const isActive = index === cardSizeIndex
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => {
+                      setCardSizeIndex(index)
+                      setIsCardSizeMenuOpen(false)
+                    }}
+                    className={cn(
+                      "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                      isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
+                    )}
+                    style={{
+                      borderRadius: isActive
+                        ? CARD_CONTROL_RADII.elevated
+                        : CARD_CONTROL_RADII.pill,
+                    }}
+                  >
+                    <span>{option.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {Array.from(groupedColors.entries()).map(([groupName, groupColors], groupIndex) => {

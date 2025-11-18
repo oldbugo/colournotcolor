@@ -59,7 +59,7 @@ export function ResizablePanels({
   panel3,
   defaultWidths = [20, 40, 40],
   panel1Title = "Palette Manager",
-  panel2Title = "Color Manager",
+  panel2Title = "Colour Manager",
   panel3Title = "Contrast Matrix",
 }: ResizablePanelsProps) {
   const [collapsed, setCollapsed] = useState<[boolean, boolean, boolean]>([false, false, false])

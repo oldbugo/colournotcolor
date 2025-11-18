@@ -5,7 +5,7 @@ import type React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import type { ColorPalette } from "@/app/page"
+import type { ColorPalette, EditingColor } from "@/app/page"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
 import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
@@ -17,7 +17,7 @@ type PaletteManagerProps = {
   onSelectPalette: (id: string) => void
   onAddPalette: () => void
   onReorderPalettes: (fromIndex: number, toIndex: number) => void
-  editingColor: { type: "foreground" | "background"; index: number; color: string } | null
+  editingColor: EditingColor
   onColorChange: (color: string) => void
   lastInteractedColor?: string
 }
@@ -300,25 +300,24 @@ export function PaletteManager({
   )
 
   useEffect(() => {
-    if (!editingColor?.color) {
+    if (!editingColor?.swatch) {
       previousEditingColorRef.current = null
       return
     }
 
-    if (previousEditingColorRef.current === editingColor.color) {
+    const colorKey = `${editingColor.swatch.id}-${editingColor.swatch.hex}-${editingColor.swatch.name ?? ""}-${editingColor.swatch.group ?? ""}`
+    if (previousEditingColorRef.current === colorKey) {
       return
     }
-    previousEditingColorRef.current = editingColor.color
+    previousEditingColorRef.current = colorKey
 
     const applyEditingColor = () => {
-      const colorString = editingColor.color
-      const parts = colorString.split("#")
-      const name = parts.length > 1 ? parts[0] : ""
-      const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
+      const hex = editingColor.swatch.hex
+      const name = editingColor.swatch.name ?? ""
 
       setCustomName(name)
       const reuseStored =
-        lastEmittedColorRef.current === colorString &&
+        lastEmittedColorRef.current === editingColor.legacyValue &&
         lastEmittedModeRef.current === colorMode &&
         lastEmittedChannelsRef.current
       const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex, colorMode)
@@ -408,6 +407,7 @@ export function PaletteManager({
     }
   }, [activePaletteId, hasCustomPickerHeight, isResizingPicker])
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const storedHeight = readPickerHeightFromStorage(activePaletteId)
     if (typeof storedHeight === "number" && storedHeight > 0) {
@@ -419,6 +419,7 @@ export function PaletteManager({
     }
     pickerHeightPendingRef.current = null
   }, [activePaletteId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -614,11 +615,6 @@ export function PaletteManager({
     }
   }
 
-  const extractHex = (color: string): string => {
-    const parts = color.split("#")
-    return "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-  }
-
   const maxVisiblePerRow = useMemo(() => {
     if (!sidebarWidth || sidebarWidth <= 0) {
       return 2
@@ -631,7 +627,7 @@ export function PaletteManager({
     return Math.max(2, maxCircles - 1)
   }, [sidebarWidth])
 
-  const renderColorRow = (colors: string[]) => {
+  const renderColorRow = (colors: ColorPalette["colors"]) => {
     const maxVisible = maxVisiblePerRow
     const visibleColors = colors.slice(0, maxVisible)
     const remainingCount = colors.length - maxVisible
@@ -640,10 +636,10 @@ export function PaletteManager({
       <div className="flex items-center -space-x-2 py-1.5 px-2">
         {visibleColors.map((color, i) => (
           <div
-            key={i}
+            key={color.id}
             className="h-7 w-7 rounded-full flex-shrink-0"
             style={{
-              backgroundColor: extractHex(color),
+              backgroundColor: color.hex,
               zIndex: i,
               boxShadow: "0 0 0 2px white, 0 0 0 3px black",
             }}
@@ -868,10 +864,7 @@ export function PaletteManager({
                   />
                 )}
 
-                <div className="flex flex-col gap-3 w-full">
-                  {renderColorRow(palette.foregroundColors)}
-                  {renderColorRow(palette.backgroundColors)}
-                </div>
+                <div className="flex flex-col gap-3 w-full">{renderColorRow(palette.colors)}</div>
                 <span className="text-xs text-foreground">{palette.name}</span>
               </button>
 

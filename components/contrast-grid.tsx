@@ -1,10 +1,27 @@
 "use client"
 
 import React from "react"
-import { useState, useRef, useEffect } from "react"
-import { ChevronDown, Plus, Trash2 } from "lucide-react"
+import { useState, useRef, useEffect, useMemo, useCallback } from "react"
+import { ChevronDown, Plus, Settings, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
+import { Slider } from "@/components/ui/slider"
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog"
 
 import {
   calculateContrast,
@@ -13,12 +30,39 @@ import {
   extractCustomName,
   type ContrastThresholds,
 } from "@/lib/contrast-utils"
+import type { ColorSwatch } from "@/types/palette"
+import type { EditingColor } from "@/app/page"
+import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
+import { CARD_CONTROL_RADII } from "@/lib/design-tokens"
 
 const CARD_SIZE = 132 // px
 const GAP_SIZE = 16 // px (gap-4)
 const ANIMATION_DURATION = 0.25 // seconds - faster animation
 const CARD_WITH_GAP = CARD_SIZE + GAP_SIZE // 148px
 const BORDER_GAP = 8 // px - gap for borders (-inset-2 = 8px)
+const UNGROUPED_LABEL = "Ungrouped"
+const DIGITS_ONLY_PATTERN = /^\d+$/
+const NUMBER_FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
+const FILTER_STEP_VALUES = [1, 10, 100, 1000] as const
+const FILTER_STEP_MAX_INDEX = FILTER_STEP_VALUES.length - 1
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+
+const extractNumericValue = (swatch: ColorSwatch): number | null => {
+  const candidateName = swatch.name?.trim()
+  if (candidateName && DIGITS_ONLY_PATTERN.test(candidateName)) {
+    return Number(candidateName)
+  }
+  const isUngrouped = !swatch.group?.trim()
+  const hexDigits = swatch.hex.replace("#", "")
+  if (hexDigits && DIGITS_ONLY_PATTERN.test(hexDigits)) {
+    if (isUngrouped && hexDigits.length === 6) {
+      return null
+    }
+    return Number(hexDigits)
+  }
+  return null
+}
 
 type ContrastRequirementOption = {
   id: "non-text" | "large-text" | "normal-text"
@@ -56,36 +100,75 @@ const CONTRAST_SLIDER_MAX = CONTRAST_REQUIREMENT_OPTIONS.length - 1
 
 const formatThresholdLabel = (value: number) => (Number.isInteger(value) ? `${value.toFixed(0)}:1` : `${value.toFixed(1)}:1`)
 
+type ColorEntry = {
+  id: string
+  legacy: string
+  label: string
+  baseIndex: number
+  groupKey: string
+  groupLabel: string
+  numericValue: number | null
+}
+
+type GroupedColorEntry = {
+  key: string
+  label: string
+  entries: ColorEntry[]
+}
+
+type NumberRange = {
+  min: number
+  max: number
+}
+
+type StoredNumberFilterState = {
+  rows: NumberRange | null
+  columns: NumberRange | null
+}
+
+const readNumberFilterStorage = (): Record<string, StoredNumberFilterState> => {
+  if (typeof window === "undefined") {
+    return {}
+  }
+  try {
+    const raw = window.localStorage.getItem(NUMBER_FILTER_STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as Record<string, StoredNumberFilterState>) : {}
+  } catch {
+    return {}
+  }
+}
+
+const writeNumberFilterStorage = (value: Record<string, StoredNumberFilterState>) => {
+  if (typeof window === "undefined") {
+    return
+  }
+  try {
+    window.localStorage.setItem(NUMBER_FILTER_STORAGE_KEY, JSON.stringify(value))
+  } catch {
+    // ignore
+  }
+}
+
 type ContrastGridProps = {
-  foregroundColors: string[]
-  backgroundColors: string[]
-  onReorderForeground: (fromIndex: number, toIndex: number) => void
-  onReorderBackground: (fromIndex: number, toIndex: number) => void
-  onSwapForeground: (fromIndex: number, toIndex: number) => void
-  onSwapBackground: (fromIndex: number, toIndex: number) => void
-  onClearColorPicker?: () => void
-  onColorEdit?: (type: "foreground" | "background", index: number) => void
-  editingColor?: { type: "foreground" | "background"; index: number; color: string } | null
-  onAddForeground?: () => void
-  onAddBackground?: () => void
-  onRemoveForeground?: (index: number) => void
-  onRemoveBackground?: (index: number) => void
+  paletteId: string
+  colors: ColorSwatch[]
+  onReorderColors: (fromIndex: number, toIndex: number) => void
+  onSwapColors: (fromIndex: number, toIndex: number) => void
+  onColorEdit?: (index: number) => void
+  editingColor?: EditingColor
+  onAddColor?: () => void
+  onRemoveColor?: (index: number) => void
 }
 
 export function ContrastGrid({
-  foregroundColors,
-  backgroundColors,
-  onReorderForeground,
-  onReorderBackground,
-  onSwapForeground,
-  onSwapBackground,
-  onClearColorPicker,
+  paletteId,
+  colors,
+  onReorderColors,
+  onSwapColors,
   onColorEdit,
   editingColor,
-  onAddForeground,
-  onAddBackground,
-  onRemoveForeground,
-  onRemoveBackground,
+  onAddColor,
+  onRemoveColor,
 }: ContrastGridProps) {
   const [hoveredFgIndex, setHoveredFgIndex] = useState<number | null>(null)
   const [hoveredBgIndex, setHoveredBgIndex] = useState<number | null>(null)
@@ -97,6 +180,18 @@ export function ContrastGrid({
   const [bgDragMode, setBgDragMode] = useState<"swap" | "insert" | null>(null)
   const [fgInsertPosition, setFgInsertPosition] = useState<"before" | "after" | null>(null)
   const [bgInsertPosition, setBgInsertPosition] = useState<"before" | "after" | null>(null)
+  const [rowFilterIds, setRowFilterIds] = useState<Set<string> | null>(null)
+  const [columnFilterIds, setColumnFilterIds] = useState<Set<string> | null>(null)
+  const [rowNumberFilter, setRowNumberFilter] = useState<NumberRange | null>(null)
+  const [columnNumberFilter, setColumnNumberFilter] = useState<NumberRange | null>(null)
+  const [rowNumberInputs, setRowNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
+  const [columnNumberInputs, setColumnNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set())
+  const [isRowFilterMenuOpen, setIsRowFilterMenuOpen] = useState(false)
+  const [isColumnFilterMenuOpen, setIsColumnFilterMenuOpen] = useState(false)
+  const [isFilterOptionsMenuOpen, setIsFilterOptionsMenuOpen] = useState(false)
+  const [filterStepIndex, setFilterStepIndex] = useState(1)
+
 
   const [isDragOverTrash, setIsDragOverTrash] = useState(false)
   const trashLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -120,6 +215,19 @@ export function ContrastGrid({
   const [bgIndicatorPosition, setBgIndicatorPosition] = useState<{ left: number; top: number; width?: number } | null>(
     null,
   )
+  const rowFilterTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const columnFilterTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const filterOptionsTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const numberFilterStep = FILTER_STEP_VALUES[filterStepIndex] ?? FILTER_STEP_VALUES[0]
+
+  const handleFilterStepSliderChange = useCallback((values: number[]) => {
+    const rawValue = values[0]
+    if (typeof rawValue !== "number") {
+      return
+    }
+    const clamped = Math.min(FILTER_STEP_MAX_INDEX, Math.max(0, Math.round(rawValue)))
+    setFilterStepIndex(clamped)
+  }, [])
 
   const [fgOverlayStyle, setFgOverlayStyle] = useState<React.CSSProperties | null>(null)
   const [bgOverlayStyle, setBgOverlayStyle] = useState<React.CSSProperties | null>(null)
@@ -132,13 +240,521 @@ export function ContrastGrid({
   const hasAAARequirement = typeof activeRequirement.thresholds.aaa === "number"
   const [isRequirementMenuOpen, setIsRequirementMenuOpen] = useState(false)
 
+const colorEntries = useMemo<ColorEntry[]>(
+    () =>
+      colors.map((swatch, index) => {
+        const groupLabel = swatch.group?.trim() || UNGROUPED_LABEL
+        const groupKey = swatch.group?.trim().toLowerCase() || "__ungrouped__"
+        const numericValue = extractNumericValue(swatch)
+        return {
+          id: swatch.id,
+          legacy: swatchToLegacy(swatch),
+          label: composeLabel(swatch.name, swatch.group, swatch.hex) || swatch.hex,
+          baseIndex: index,
+          groupKey,
+          groupLabel,
+          numericValue,
+        }
+      }),
+    [colors],
+  )
+
+  const allColorIds = useMemo(() => colorEntries.map((entry) => entry.id), [colorEntries])
+  const allColorIdSet = useMemo(() => new Set(allColorIds), [allColorIds])
+
+  const groupedColorEntries = useMemo<GroupedColorEntry[]>(() => {
+    const groups = new Map<string, GroupedColorEntry>()
+    colorEntries.forEach((entry) => {
+      if (!groups.has(entry.groupKey)) {
+        groups.set(entry.groupKey, {
+          key: entry.groupKey,
+          label: entry.groupLabel,
+          entries: [],
+        })
+      }
+      groups.get(entry.groupKey)!.entries.push(entry)
+    })
+    return Array.from(groups.values())
+  }, [colorEntries])
+
+  useEffect(() => {
+    setCollapsedGroupKeys(new Set(groupedColorEntries.map((group) => group.key)))
+  }, [groupedColorEntries])
+
+  useEffect(() => {
+    const stored = readNumberFilterStorage()[paletteId]
+    setRowNumberFilter(stored?.rows ?? null)
+    setColumnNumberFilter(stored?.columns ?? null)
+  }, [paletteId])
+
+  const effectiveRowFilterIds = useMemo(() => {
+    if (!rowFilterIds) return null
+    const filtered = [...rowFilterIds].filter((id) => allColorIdSet.has(id))
+    if (filtered.length === allColorIds.length) {
+      return null
+    }
+    return new Set(filtered)
+  }, [allColorIds.length, allColorIdSet, rowFilterIds])
+
+  const effectiveColumnFilterIds = useMemo(() => {
+    if (!columnFilterIds) return null
+    const filtered = [...columnFilterIds].filter((id) => allColorIdSet.has(id))
+    if (filtered.length === allColorIds.length) {
+      return null
+    }
+    return new Set(filtered)
+  }, [allColorIds.length, allColorIdSet, columnFilterIds])
+
+  const numericBounds = useMemo(() => {
+    const values = colorEntries
+      .map((entry) => entry.numericValue)
+      .filter((value): value is number => typeof value === "number")
+    if (values.length === 0) {
+      return null
+    }
+    return {
+      min: 0,
+      max: Math.max(...values),
+    }
+  }, [colorEntries])
+
+  const clampRangeToBounds = useCallback(
+    (range: NumberRange | null): NumberRange | null => {
+      if (!range || !numericBounds) {
+        return numericBounds ? { ...numericBounds } : null
+      }
+      const min = clamp(range.min, numericBounds.min, numericBounds.max)
+      const max = clamp(range.max, numericBounds.min, numericBounds.max)
+      const normalizedMin = Math.min(min, max)
+      const normalizedMax = Math.max(min, max)
+      return { min: normalizedMin, max: normalizedMax }
+    },
+    [numericBounds],
+  )
+
+  useEffect(() => {
+    if (!numericBounds) {
+      setRowNumberFilter(null)
+      setColumnNumberFilter(null)
+      return
+    }
+    setRowNumberFilter((current) => clampRangeToBounds(current))
+    setColumnNumberFilter((current) => clampRangeToBounds(current))
+  }, [clampRangeToBounds, numericBounds])
+
+  useEffect(() => {
+    if (!rowNumberFilter) {
+      setRowNumberInputs({ min: "", max: "" })
+      return
+    }
+    setRowNumberInputs({
+      min: rowNumberFilter.min.toString(),
+      max: rowNumberFilter.max.toString(),
+    })
+  }, [rowNumberFilter])
+
+  useEffect(() => {
+    if (!columnNumberFilter) {
+      setColumnNumberInputs({ min: "", max: "" })
+      return
+    }
+    setColumnNumberInputs({
+      min: columnNumberFilter.min.toString(),
+      max: columnNumberFilter.max.toString(),
+    })
+  }, [columnNumberFilter])
+
+  useEffect(() => {
+    const existing = readNumberFilterStorage()
+    existing[paletteId] = { rows: rowNumberFilter, columns: columnNumberFilter }
+    writeNumberFilterStorage(existing)
+  }, [paletteId, rowNumberFilter, columnNumberFilter])
+
+  const passesNumberFilter = useCallback(
+    (entry: ColorEntry, filter: NumberRange | null) => {
+      if (!filter || !numericBounds) {
+        return true
+      }
+      if (entry.numericValue == null) {
+        return true
+      }
+      return entry.numericValue >= filter.min && entry.numericValue <= filter.max
+    },
+    [numericBounds],
+  )
+
+  const rowEntries = useMemo(() => {
+    const subset = effectiveRowFilterIds ? colorEntries.filter((entry) => effectiveRowFilterIds.has(entry.id)) : colorEntries
+    return subset.filter((entry) => passesNumberFilter(entry, rowNumberFilter))
+  }, [colorEntries, effectiveRowFilterIds, passesNumberFilter, rowNumberFilter])
+  const columnEntries = useMemo(() => {
+    const subset = effectiveColumnFilterIds
+      ? colorEntries.filter((entry) => effectiveColumnFilterIds.has(entry.id))
+      : colorEntries
+    return subset.filter((entry) => passesNumberFilter(entry, columnNumberFilter))
+  }, [colorEntries, effectiveColumnFilterIds, passesNumberFilter, columnNumberFilter])
+
+  const foregroundColors = columnEntries.map((entry) => entry.legacy)
+  const backgroundColors = rowEntries.map((entry) => entry.legacy)
+  const foregroundBaseIndexes = columnEntries.map((entry) => entry.baseIndex)
+  const backgroundBaseIndexes = rowEntries.map((entry) => entry.baseIndex)
+
+  const editingRowIndex =
+    editingColor && typeof editingColor.index === "number"
+      ? backgroundBaseIndexes.indexOf(editingColor.index)
+      : -1
+  const editingColumnIndex =
+    editingColor && typeof editingColor.index === "number"
+      ? foregroundBaseIndexes.indexOf(editingColor.index)
+      : -1
+
+  const totalColorCount = colorEntries.length
+
+  const adjustFilterSet = useCallback(
+    (current: Set<string> | null, ids: string[]): Set<string> | null => {
+      if (allColorIds.length === 0) {
+        return null
+      }
+      if (ids.length === 0) {
+        return current
+      }
+      const base = current
+        ? new Set(allColorIds.filter((id) => current.has(id)))
+        : new Set(allColorIds)
+      const shouldDeselect = ids.every((id) => base.has(id))
+      const next = new Set(base)
+      ids.forEach((id) => {
+        if (!allColorIdSet.has(id)) {
+          return
+        }
+        if (shouldDeselect) {
+          next.delete(id)
+        } else {
+          next.add(id)
+        }
+      })
+      if (next.size === allColorIds.length) {
+        return null
+      }
+      return next
+    },
+    [allColorIdSet, allColorIds],
+  )
+
+  const describeFilter = (filter: Set<string> | null) => {
+    if (totalColorCount === 0) return "No colors"
+    if (!filter) return "All colors"
+    if (filter.size === 0) return "None"
+    return `${filter.size} selected`
+  }
+
+  const rowFilterSummary = describeFilter(effectiveRowFilterIds)
+  const columnFilterSummary = describeFilter(effectiveColumnFilterIds)
+
+  const toggleRowFilterValue = (id: string) => {
+    setRowFilterIds((current) => adjustFilterSet(current, [id]))
+  }
+
+  const toggleColumnFilterValue = (id: string) => {
+    setColumnFilterIds((current) => adjustFilterSet(current, [id]))
+  }
+
+  const toggleRowGroupValue = (ids: string[]) => {
+    setRowFilterIds((current) => adjustFilterSet(current, ids))
+  }
+
+  const toggleColumnGroupValue = (ids: string[]) => {
+    setColumnFilterIds((current) => adjustFilterSet(current, ids))
+  }
+
+  const toggleGroupCollapse = (key: string) => {
+    setCollapsedGroupKeys((current) => {
+      const next = new Set(current)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  const collapseAllGroups = () => {
+    setCollapsedGroupKeys(new Set(groupedColorEntries.map((group) => group.key)))
+  }
+
+  const expandAllGroups = () => {
+    setCollapsedGroupKeys(new Set())
+  }
+
+  const selectAllRows = () => setRowFilterIds(null)
+  const selectAllColumns = () => setColumnFilterIds(null)
+  const clearAllRows = () => setRowFilterIds(new Set())
+  const clearAllColumns = () => setColumnFilterIds(new Set())
+
+const renderFilterGroups = (
+  effectiveSet: Set<string> | null,
+  toggleSingle: (id: string) => void,
+  toggleGroup: (ids: string[]) => void,
+  collapsedSet: Set<string>,
+  onToggleCollapse: (key: string) => void,
+) => {
+  if (groupedColorEntries.length === 0) {
+    return <div className="px-2 py-1 text-xs text-muted-foreground">No colors available</div>
+  }
+  return (
+    <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+      {groupedColorEntries.map((group) => {
+        const groupIds = group.entries.map((entry) => entry.id)
+        const selectedCount = effectiveSet
+          ? groupIds.filter((id) => effectiveSet.has(id)).length
+          : group.entries.length
+        const isFullySelected = selectedCount === group.entries.length && group.entries.length > 0
+        const isPartiallySelected = selectedCount > 0 && selectedCount < group.entries.length
+        const indicatorClass = isFullySelected
+          ? "bg-primary border-primary"
+          : isPartiallySelected
+            ? "bg-primary/60 border-primary/80"
+            : "border-muted-foreground/40"
+        const isCollapsed = collapsedSet.has(group.key)
+
+        return (
+          <div key={group.key} className="rounded-md border border-border/40 bg-muted/5 p-2">
+            <div
+              role="button"
+              tabIndex={0}
+              className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm font-medium text-foreground hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              onMouseDown={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+              }}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onToggleCollapse(group.key)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault()
+                  onToggleCollapse(group.key)
+                }
+              }}
+            >
+              <span className="flex items-center gap-2 truncate">
+                <span className="text-base leading-none">{isCollapsed ? "+" : "\u2212"}</span>
+                <span className="truncate">{group.label}</span>
+              </span>
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                {selectedCount}/{group.entries.length}
+                <button
+                  type="button"
+                  className={`h-3.5 w-3.5 rounded-sm border transition-colors ${indicatorClass}`}
+                  aria-label={isFullySelected ? "Deselect group" : "Select group"}
+                  aria-pressed={isFullySelected ? true : isPartiallySelected ? "mixed" : false}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    toggleGroup(groupIds)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault()
+                      toggleGroup(groupIds)
+                    }
+                  }}
+                />
+              </span>
+            </div>
+            {!isCollapsed && (
+              <div className="mt-1 space-y-1">
+                {group.entries.map((entry) => {
+                  const isSelected = effectiveSet ? effectiveSet.has(entry.id) : true
+                  const labelParts = entry.label.split("/")
+                  const displayLabel = labelParts[labelParts.length - 1]?.trim() || entry.label
+                  const hexColor = extractHexFromColor(entry.legacy)
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className={`flex w-full items-center justify-between rounded-md px-2 py-1 text-sm ${
+                        isSelected ? "text-foreground" : "text-muted-foreground"
+                      } hover:bg-muted/30`}
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        toggleSingle(entry.id)
+                      }}
+                    >
+                      <span className="flex items-center gap-2 truncate">
+                        <span
+                          className="h-3 w-5 rounded-[3px] border border-border/60"
+                          style={{ backgroundColor: hexColor }}
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">{displayLabel}</span>
+                      </span>
+                      <span
+                        className={`h-3 w-3 rounded-full border ${
+                          isSelected ? "bg-primary border-primary" : "border-muted-foreground/40"
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
   useEffect(() => {
     return () => {
       if (trashLeaveTimeoutRef.current) {
         clearTimeout(trashLeaveTimeoutRef.current)
+        trashLeaveTimeoutRef.current = null
       }
     }
   }, [])
+
+const renderNumberFilterSection = (
+  label: string,
+  filter: NumberRange | null,
+  setFilter: React.Dispatch<React.SetStateAction<NumberRange | null>>,
+  inputValues: { min: string; max: string },
+  setInputValues: React.Dispatch<React.SetStateAction<{ min: string; max: string }>>,
+) => {
+  const normalizedRange = clampRangeToBounds(filter) ?? (numericBounds ? { ...numericBounds } : null)
+  if (!numericBounds || !normalizedRange) {
+    return (
+      <div className="rounded-md border border-dashed border-muted-foreground/40 px-3 py-2 text-xs text-muted-foreground">
+        Add numeric names (e.g., &ldquo;Red/100&rdquo;) to unlock range filtering.
+        </div>
+      )
+    }
+
+    const sliderValues: [number, number] = [normalizedRange.min, normalizedRange.max]
+
+    const handleInputChange = (field: "min" | "max", value: string) => {
+      setInputValues((prev) => ({ ...prev, [field]: value }))
+    }
+
+    const commitInputValue = (field: "min" | "max") => {
+      const rawValue = inputValues[field]
+      const fallback = field === "min" ? sliderValues[0] : sliderValues[1]
+      if (!rawValue.trim()) {
+        setInputValues((prev) => ({
+          ...prev,
+          [field]: fallback.toString(),
+        }))
+        return
+      }
+      const parsed = Number(rawValue)
+      if (Number.isNaN(parsed)) {
+        setInputValues((prev) => ({
+          ...prev,
+          [field]: fallback.toString(),
+        }))
+        return
+      }
+      if (field === "min") {
+        const bounded = clamp(parsed, numericBounds.min, numericBounds.max)
+        const nextMin = Math.min(bounded, sliderValues[1])
+        const nextRange = clampRangeToBounds({ min: nextMin, max: sliderValues[1] })
+        if (nextRange) {
+          setFilter(nextRange)
+        }
+      } else {
+        const bounded = clamp(parsed, numericBounds.min, numericBounds.max)
+        const nextMax = Math.max(bounded, sliderValues[0])
+        const nextRange = clampRangeToBounds({ min: sliderValues[0], max: nextMax })
+        if (nextRange) {
+          setFilter(nextRange)
+        }
+      }
+    }
+
+    return (
+      <div className="space-y-3 rounded-md border border-border/60 bg-muted/20 p-3">
+        <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <span>{label}</span>
+          <button
+            type="button"
+            className="text-foreground underline-offset-2 hover:underline"
+            onClick={() => {
+              const defaults = clampRangeToBounds({ ...numericBounds })
+              if (defaults) {
+                setFilter(defaults)
+              }
+            }}
+          >
+            Reset
+          </button>
+        </div>
+        <div className="flex items-center gap-2 text-sm">
+          <label className="text-xs font-medium text-muted-foreground">Min</label>
+          <Input
+            type="number"
+            inputMode="numeric"
+            value={inputValues.min}
+            onChange={(event) => handleInputChange("min", event.currentTarget.value)}
+            onBlur={() => commitInputValue("min")}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                commitInputValue("min")
+              }
+            }}
+            className="h-8"
+          />
+          <label className="text-xs font-medium text-muted-foreground">Max</label>
+          <Input
+            type="number"
+            inputMode="numeric"
+            value={inputValues.max}
+            onChange={(event) => handleInputChange("max", event.currentTarget.value)}
+            onBlur={() => commitInputValue("max")}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                commitInputValue("max")
+              }
+            }}
+            className="h-8"
+          />
+        </div>
+        <div className="px-1">
+          <Slider
+            min={numericBounds.min}
+            max={numericBounds.max}
+            step={numberFilterStep}
+            value={sliderValues}
+            onValueChange={(values) => {
+              if (values.length < 2) return
+              const nextRange = clampRangeToBounds({ min: values[0], max: values[1] })
+              if (nextRange) {
+                setFilter(nextRange)
+              }
+            }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <span>{sliderValues[0]}</span>
+          <span>{sliderValues[1]}</span>
+        </div>
+      </div>
+    )
+  }
 
   useEffect(() => {
     if (hoveredFgIndex !== null && gridRef.current) {
@@ -301,7 +917,6 @@ export function ContrastGrid({
   const handleFgDragStart = (e: React.DragEvent, index: number) => {
     setDraggedFgIndex(index)
     e.dataTransfer.effectAllowed = "move"
-    onClearColorPicker?.()
   }
 
   const handleFgDragOver = (e: React.DragEvent, index: number) => {
@@ -336,9 +951,19 @@ export function ContrastGrid({
       return
     }
 
+    const fromBaseIndex = foregroundBaseIndexes[draggedFgIndex]
+    if (typeof fromBaseIndex !== "number") {
+      handleFgDragEnd()
+      return
+    }
 
     if (fgDragMode === "swap") {
-      onSwapForeground(draggedFgIndex, dragOverFgIndex)
+      const targetBaseIndex = foregroundBaseIndexes[dragOverFgIndex]
+      if (typeof targetBaseIndex !== "number") {
+        handleFgDragEnd()
+        return
+      }
+      onSwapColors(fromBaseIndex, targetBaseIndex)
     } else if (fgDragMode === "insert") {
       let targetIndex = dragOverFgIndex
       if (fgInsertPosition === "after") {
@@ -347,11 +972,21 @@ export function ContrastGrid({
       if (draggedFgIndex < targetIndex) {
         targetIndex--
       }
+      const insertBeforeBase =
+        targetIndex >= foregroundBaseIndexes.length ? colors.length : foregroundBaseIndexes[targetIndex]
+      if (typeof insertBeforeBase !== "number") {
+        handleFgDragEnd()
+        return
+      }
+      let insertionIndex = insertBeforeBase
+      if (insertionIndex > fromBaseIndex) {
+        insertionIndex -= 1
+      }
       setFgAnimationState({
         draggedIndex: draggedFgIndex,
-        targetIndex: targetIndex,
+        targetIndex,
       })
-      onReorderForeground(draggedFgIndex, targetIndex)
+      onReorderColors(fromBaseIndex, insertionIndex)
     }
     handleFgDragEnd()
   }
@@ -371,7 +1006,6 @@ export function ContrastGrid({
   const handleBgDragStart = (e: React.DragEvent, index: number) => {
     setDraggedBgIndex(index)
     e.dataTransfer.effectAllowed = "move"
-    onClearColorPicker?.()
   }
 
   const handleBgDragOver = (e: React.DragEvent, index: number) => {
@@ -411,9 +1045,14 @@ export function ContrastGrid({
       return
     }
 
-
     if (bgDragMode === "swap") {
-      onSwapBackground(draggedBgIndex, dragOverBgIndex)
+      const fromBaseIndex = backgroundBaseIndexes[draggedBgIndex]
+      const targetBaseIndex = backgroundBaseIndexes[dragOverBgIndex]
+      if (typeof fromBaseIndex !== "number" || typeof targetBaseIndex !== "number") {
+        handleBgDragEnd()
+        return
+      }
+      onSwapColors(fromBaseIndex, targetBaseIndex)
     } else if (bgDragMode === "insert") {
       let targetIndex = dragOverBgIndex
       if (bgInsertPosition === "after") {
@@ -422,11 +1061,22 @@ export function ContrastGrid({
       if (draggedBgIndex < targetIndex) {
         targetIndex--
       }
+      const fromBaseIndex = backgroundBaseIndexes[draggedBgIndex]
+      const insertBeforeBase =
+        targetIndex >= backgroundBaseIndexes.length ? colors.length : backgroundBaseIndexes[targetIndex]
+      if (typeof fromBaseIndex !== "number" || typeof insertBeforeBase !== "number") {
+        handleBgDragEnd()
+        return
+      }
+      let insertionIndex = insertBeforeBase
+      if (insertionIndex > fromBaseIndex) {
+        insertionIndex -= 1
+      }
       setBgAnimationState({
         draggedIndex: draggedBgIndex,
-        targetIndex: targetIndex,
+        targetIndex,
       })
-      onReorderBackground(draggedBgIndex, targetIndex)
+      onReorderColors(fromBaseIndex, insertionIndex)
     }
     handleBgDragEnd()
   }
@@ -447,12 +1097,16 @@ export function ContrastGrid({
     e.preventDefault()
     e.stopPropagation()
 
+    let baseIndex: number | null = null
     if (draggedFgIndex !== null) {
-      onColorEdit?.("foreground", -1)
-      onRemoveForeground?.(draggedFgIndex)
+      baseIndex = foregroundBaseIndexes[draggedFgIndex] ?? null
     } else if (draggedBgIndex !== null) {
-      onColorEdit?.("background", -1)
-      onRemoveBackground?.(draggedBgIndex)
+      baseIndex = backgroundBaseIndexes[draggedBgIndex] ?? null
+    }
+
+    if (typeof baseIndex === "number") {
+      onColorEdit?.(-1)
+      onRemoveColor?.(baseIndex)
     }
 
     setIsDragOverTrash(false)
@@ -465,7 +1119,11 @@ export function ContrastGrid({
     if (target.closest("[data-drag-handle]")) {
       return
     }
-    onColorEdit?.("foreground", index)
+    const baseIndex = foregroundBaseIndexes[index]
+    if (typeof baseIndex !== "number") {
+      return
+    }
+    onColorEdit?.(baseIndex)
   }
 
   const handleBgHeaderClick = (index: number, e: React.MouseEvent) => {
@@ -473,7 +1131,11 @@ export function ContrastGrid({
     if (target.closest("[data-drag-handle]")) {
       return
     }
-    onColorEdit?.("background", index)
+    const baseIndex = backgroundBaseIndexes[index]
+    if (typeof baseIndex !== "number") {
+      return
+    }
+    onColorEdit?.(baseIndex)
   }
 
   const getFgAnimationStyle = (currentIndex: number) => {
@@ -708,91 +1370,314 @@ export function ContrastGrid({
         }
       `}</style>
 
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
-          <p className="text-sm font-semibold text-foreground">{activeRequirement.label}</p>
-          <p className="text-xs text-muted-foreground">
-            AA ≥ {formatThresholdLabel(activeRequirement.thresholds.aa)}
-            {hasAAARequirement && (
-              <>
-                {" "}
-                • AAA ≥ {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
-              </>
-            )}
-          </p>
-        </div>
-        <DropdownMenu open={isRequirementMenuOpen} onOpenChange={setIsRequirementMenuOpen}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className={`flex items-center gap-2 rounded-full border-border px-3 py-1 text-xs font-semibold ${
-                isRequirementMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : ""
-              }`}
-            >
-              Adjust
-              <ChevronDown className={`h-3 w-3 transition-transform ${isRequirementMenuOpen ? "rotate-180" : ""}`} />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            sideOffset={8}
-            className="w-[320px] space-y-4 border border-border bg-background/95 p-4 text-foreground shadow-lg backdrop-blur"
-          >
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
-              <p className="text-base font-semibold text-foreground">{activeRequirement.label}</p>
-              <p className="text-xs text-muted-foreground">{activeRequirement.description}</p>
-            </div>
-            <div className="text-xs font-medium text-muted-foreground">
-              AA ≥ {formatThresholdLabel(activeRequirement.thresholds.aa)}
-              {hasAAARequirement && (
-                <>
-                  {" "}
-                  • AAA ≥ {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
-                </>
-              )}
-            </div>
-            <div>
-              <input
-                type="range"
-                min={0}
-                max={CONTRAST_SLIDER_MAX}
-                step={1}
-                value={requirementIndex}
-                aria-label="Set contrast requirement focus"
-                aria-valuetext={`${activeRequirement.label} requirement`}
-                onChange={(event) => setRequirementIndex(Number(event.currentTarget.value))}
-                className="w-full accent-foreground cursor-pointer"
-              />
-            </div>
-            <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-muted-foreground">
-              {CONTRAST_REQUIREMENT_OPTIONS.map((option, index) => {
-                const isActive = index === requirementIndex
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => {
-                      setRequirementIndex(index)
-                      setIsRequirementMenuOpen(false)
-                    }}
-                    className={`rounded-full px-3 py-1 transition-all duration-150 ${
-                      isActive ? "bg-foreground text-background shadow-sm" : "bg-transparent"
+      <div className="mb-6 flex flex-wrap gap-4">
+        <div className="space-y-2 min-w-[220px]">
+          <DropdownMenu open={isRequirementMenuOpen} onOpenChange={setIsRequirementMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-expanded={isRequirementMenuOpen}
+                className={`inline-flex max-w-full flex-col border border-border px-4 py-3 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                  isRequirementMenuOpen ? "border-primary/60 bg-primary/5 shadow-sm" : "bg-muted/20 hover:border-primary/40"
+                }`}
+                style={{
+                  borderRadius: isRequirementMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                }}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex flex-col text-left">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</span>
+                    <span className="text-base font-bold leading-tight text-foreground">{activeRequirement.label}</span>
+                  </div>
+                  <ChevronDown
+                    className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+                      isRequirementMenuOpen ? "rotate-180" : ""
                     }`}
-                  >
-                    {option.shortLabel}
-                  </button>
-                )
-              })}
-            </div>
-          </DropdownMenuContent>
-        </DropdownMenu>
+                  />
+                </div>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              sideOffset={8}
+              className="w-[320px] space-y-4 border border-border bg-background/95 p-4 text-foreground shadow-lg backdrop-blur"
+              style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
+            >
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
+                <p className="text-base font-semibold text-foreground">{activeRequirement.label}</p>
+                <p className="text-xs text-muted-foreground">{activeRequirement.description}</p>
+                <p className="text-xs text-muted-foreground">
+                  AA must reach {formatThresholdLabel(activeRequirement.thresholds.aa)}
+                  {hasAAARequirement && (
+                    <>
+                      {" "}
+                      and AAA {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
+                    </>
+                  )}
+                  .
+                </p>
+              </div>
+              <div className="text-xs font-medium text-muted-foreground">
+                AA ≥ {formatThresholdLabel(activeRequirement.thresholds.aa)}
+                {hasAAARequirement && (
+                  <>
+                    {" "}
+                    • AAA ≥ {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
+                  </>
+                )}
+              </div>
+              <div>
+                <input
+                  type="range"
+                  min={0}
+                  max={CONTRAST_SLIDER_MAX}
+                  step={1}
+                  value={requirementIndex}
+                  aria-label="Set contrast requirement focus"
+                  aria-valuetext={`${activeRequirement.label} requirement`}
+                  onChange={(event) => setRequirementIndex(Number(event.currentTarget.value))}
+                className="w-full accent-foreground cursor-pointer transition-[transform,filter] duration-200 focus:brightness-110 active:brightness-125 active:scale-[1.01]"
+              />
+              </div>
+              <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-muted-foreground">
+                {CONTRAST_REQUIREMENT_OPTIONS.map((option, index) => {
+                  const isActive = index === requirementIndex
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        setRequirementIndex(index)
+                        setIsRequirementMenuOpen(false)
+                      }}
+                      className={`rounded-full px-3 py-1 transition-all duration-150 ${
+                        isActive ? "bg-foreground text-background shadow-sm" : "bg-transparent"
+                      }`}
+                    >
+                      {option.shortLabel}
+                    </button>
+                  )
+                })}
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <div className="flex w-full flex-wrap items-start gap-2 justify-start md:w-auto md:ml-auto md:justify-end">
+          <DropdownMenu
+            open={isRowFilterMenuOpen}
+            onOpenChange={(open) => {
+              setIsRowFilterMenuOpen(open)
+              if (!open && rowFilterTriggerRef.current) {
+                rowFilterTriggerRef.current.blur()
+              }
+            }}
+          >
+            <DropdownMenuTrigger asChild>
+              <Button
+                ref={rowFilterTriggerRef}
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={colorEntries.length === 0}
+                className={`flex items-center gap-2 border border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                  isRowFilterMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 text-foreground hover:border-primary/40"
+                }`}
+                style={{
+                  borderRadius: isRowFilterMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                }}
+              >
+                Rows: {rowFilterSummary}
+                <ChevronDown
+                  className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+                    isRowFilterMenuOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" sideOffset={6} className="w-[420px] space-y-3 max-h-[70vh] overflow-y-auto">
+              {renderNumberFilterSection("Row Number Range", rowNumberFilter, setRowNumberFilter, rowNumberInputs, setRowNumberInputs)}
+              <div className="flex items-center justify-end gap-2 pr-2 text-[11px] font-medium text-muted-foreground">
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    collapseAllGroups()
+                  }}
+                >
+                  Collapse all
+                </button>
+                <span className="text-muted-foreground/50">|</span>
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    expandAllGroups()
+                  }}
+                >
+                  Expand all
+                </button>
+              </div>
+              <div className="h-px bg-border/40" />
+              {renderFilterGroups(
+                effectiveRowFilterIds,
+                toggleRowFilterValue,
+                toggleRowGroupValue,
+                collapsedGroupKeys,
+                toggleGroupCollapse,
+              )}
+              <div className="flex gap-2">
+                <ConfirmActionButton variant="clear" description="This will clear every row from your selection." onConfirm={clearAllRows} />
+                <ConfirmActionButton variant="select" description="This will add every row back into your selection." onConfirm={selectAllRows} />
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu
+            open={isColumnFilterMenuOpen}
+            onOpenChange={(open) => {
+              setIsColumnFilterMenuOpen(open)
+              if (!open && columnFilterTriggerRef.current) {
+                columnFilterTriggerRef.current.blur()
+              }
+            }}
+          >
+            <DropdownMenuTrigger asChild>
+              <Button
+                ref={columnFilterTriggerRef}
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={colorEntries.length === 0}
+                className={`flex items-center gap-2 border border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                  isColumnFilterMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 text-foreground hover:border-primary/40"
+                }`}
+                style={{
+                  borderRadius: isColumnFilterMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                }}
+              >
+                Columns: {columnFilterSummary}
+                <ChevronDown
+                  className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+                    isColumnFilterMenuOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" sideOffset={6} className="w-[420px] space-y-3 max-h-[70vh] overflow-y-auto">
+              {renderNumberFilterSection(
+                "Column Number Range",
+                columnNumberFilter,
+                setColumnNumberFilter,
+                columnNumberInputs,
+                setColumnNumberInputs,
+              )}
+              <div className="flex items-center justify-end gap-2 pr-2 text-[11px] font-medium text-muted-foreground">
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    collapseAllGroups()
+                  }}
+                >
+                  Collapse all
+                </button>
+                <span className="text-muted-foreground/50">|</span>
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    expandAllGroups()
+                  }}
+                >
+                  Expand all
+                </button>
+              </div>
+              <div className="h-px bg-border/40" />
+              {renderFilterGroups(
+                effectiveColumnFilterIds,
+                toggleColumnFilterValue,
+                toggleColumnGroupValue,
+                collapsedGroupKeys,
+                toggleGroupCollapse,
+              )}
+              <div className="flex gap-2">
+                <ConfirmActionButton
+                  variant="clear"
+                  description="This will clear every column from your selection."
+                  onConfirm={clearAllColumns}
+                />
+                <ConfirmActionButton
+                  variant="select"
+                  description="This will add every column back into your selection."
+                  onConfirm={selectAllColumns}
+                />
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu
+            open={isFilterOptionsMenuOpen}
+            onOpenChange={(open) => {
+              setIsFilterOptionsMenuOpen(open)
+              if (!open && filterOptionsTriggerRef.current) {
+                filterOptionsTriggerRef.current.blur()
+              }
+            }}
+          >
+            <DropdownMenuTrigger asChild>
+              <Button
+                ref={filterOptionsTriggerRef}
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Filter options"
+                className={`flex items-center gap-2 border border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                  isFilterOptionsMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 text-foreground hover:border-primary/40"
+                }`}
+                style={{
+                  borderRadius: isFilterOptionsMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                }}
+              >
+                <Settings className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={6}
+              className="w-[320px] space-y-4 border border-border bg-background/95 p-4 text-foreground shadow-lg backdrop-blur"
+            >
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Slider scale</p>
+                <p className="text-sm font-semibold text-foreground">{numberFilterStep} units per step</p>
+              </div>
+              <div className="space-y-3">
+                <Slider
+                  min={0}
+                  max={FILTER_STEP_MAX_INDEX}
+                  step={1}
+                  value={[filterStepIndex]}
+                  onValueChange={handleFilterStepSliderChange}
+                />
+                <div className="flex justify-between text-[11px] font-medium text-muted-foreground">
+                  {FILTER_STEP_VALUES.map((value) => (
+                    <span key={value}>{value}</span>
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Adjust how much the row and column number sliders move whenever you drag or tap them.
+              </p>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
-      {fgOverlayStyle && <div className="pointer-events-none fixed z-10 rounded-lg" style={fgOverlayStyle} />}
+    {fgOverlayStyle && <div className="pointer-events-none fixed z-10 rounded-lg" style={fgOverlayStyle} />}
 
       {bgOverlayStyle && <div className="pointer-events-none fixed z-10 rounded-lg" style={bgOverlayStyle} />}
 
@@ -848,7 +1733,7 @@ export function ContrastGrid({
 
             {foregroundColors.map((color, i) => {
               const isDragging = draggedFgIndex === i
-              const isEditing = editingColor?.type === "foreground" && editingColor.index === i
+              const isEditing = editingColumnIndex === i
               const customName = extractCustomName(color)
               const hexColor = extractHexFromColor(color)
               const displayText = customName || hexColor
@@ -925,7 +1810,7 @@ export function ContrastGrid({
                   height: `${CARD_SIZE}px`,
                   width: `${CARD_SIZE}px`,
                 }}
-                onClick={onAddForeground}
+                onClick={() => onAddColor?.()}
               >
                 <Plus className="h-8 w-8" />
               </Button>
@@ -933,7 +1818,7 @@ export function ContrastGrid({
 
             {backgroundColors.map((bgColor, bgIndex) => {
               const isBgDragging = draggedBgIndex === bgIndex
-              const isEditing = editingColor?.type === "background" && editingColor.index === bgIndex
+              const isEditing = editingRowIndex === bgIndex
               const bgCustomName = extractCustomName(bgColor)
               const bgHexColor = extractHexFromColor(bgColor)
               const bgDisplayText = bgCustomName || bgHexColor
@@ -1072,7 +1957,7 @@ export function ContrastGrid({
                   height: `${CARD_SIZE}px`,
                   width: `${CARD_SIZE}px`,
                 }}
-                onClick={onAddBackground}
+                onClick={() => onAddColor?.()}
               >
                 <Plus className="h-8 w-8" />
               </Button>
@@ -1137,5 +2022,52 @@ export function ContrastGrid({
         </div>
       )}
     </div>
+  )
+}
+
+type ConfirmActionButtonProps = {
+  variant: "clear" | "select"
+  description: string
+  onConfirm: () => void
+}
+
+const ConfirmActionButton = ({ variant, description, onConfirm }: ConfirmActionButtonProps) => {
+  const isClear = variant === "clear"
+  const buttonText = isClear ? "Clear all" : "Select all"
+  const triggerVariant = isClear ? "blackOutline" : "black"
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant={triggerVariant} size="sm" className="flex-1">
+          {buttonText}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`Confirm ${buttonText.toLowerCase()}`}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="gap-2">
+          <AlertDialogCancel asChild>
+            <Button variant="blackOutline" size="sm">
+              Cancel
+            </Button>
+          </AlertDialogCancel>
+          <AlertDialogAction asChild>
+            <Button
+              variant="black"
+              size="sm"
+              onClick={(event) => {
+                event.preventDefault()
+                onConfirm()
+              }}
+            >
+              {buttonText}
+            </Button>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

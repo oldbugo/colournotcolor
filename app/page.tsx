@@ -6,29 +6,45 @@ import { PaletteManager } from "@/components/palette-manager"
 import { Header } from "@/components/header"
 import { ResizablePanels } from "@/components/resizable-panels"
 import { storage } from "@/lib/storage-utils"
+import type { ColorSwatch } from "@/types/palette"
+import { createSwatch, parseLegacyColor, splitLabel, swatchToLegacy, updateSwatch } from "@/lib/color-utils"
 
 export type ColorPalette = {
   id: string
   name: string
-  foregroundColors: string[]
-  backgroundColors: string[]
+  colors: ColorSwatch[]
 }
 
 export type EditingColor = {
-  type: "foreground" | "background"
   index: number
-  color: string
+  swatch: ColorSwatch
+  legacyValue: string
 } | null
 
-const DEFAULT_FOREGROUND = ["#41B4C8", "#8C5887", "#BDDB59", "#F5A26E", "#15134B", "#B0B34C"]
-const DEFAULT_BACKGROUND = ["#F0EFEF", "#BFBFBF", "#E0FFF8", "#221B4C", "#FFFFFF"]
+const DEFAULT_COLOR_VALUES = [
+  "#41B4C8",
+  "#8C5887",
+  "#BDDB59",
+  "#F5A26E",
+  "#15134B",
+  "#B0B34C",
+  "#F0EFEF",
+  "#BFBFBF",
+  "#E0FFF8",
+  "#221B4C",
+  "#FFFFFF",
+]
+
+const STARTER_COLOR_VALUES = ["#000000", "#FFFFFF"]
+
+const createDefaultColors = (): ColorSwatch[] => DEFAULT_COLOR_VALUES.map((hex) => createSwatch({ hex }))
+const createStarterColors = (): ColorSwatch[] => STARTER_COLOR_VALUES.map((hex) => createSwatch({ hex }))
 
 function createDefaultPalette(): ColorPalette {
   return {
     id: "1",
     name: "Custom name 1",
-    foregroundColors: [...DEFAULT_FOREGROUND],
-    backgroundColors: [...DEFAULT_BACKGROUND],
+    colors: createDefaultColors(),
   }
 }
 
@@ -117,15 +133,17 @@ export default function Home() {
   }, [])
 
   const focusNewColor = useCallback(
-    (type: "foreground" | "background", colors: string[]) => {
+    (colors: ColorSwatch[]) => {
       if (colors.length === 0) return
       const newIndex = colors.length - 1
-      const newColor = colors[newIndex]
-      if (!newColor) return
-      const parts = newColor.split("#")
-      const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-      setLastInteractedColor(hex)
-      setEditingColor({ type, index: newIndex, color: newColor })
+      const newSwatch = colors[newIndex]
+      if (!newSwatch) return
+      setLastInteractedColor(newSwatch.hex)
+      setEditingColor({
+        index: newIndex,
+        swatch: newSwatch,
+        legacyValue: swatchToLegacy(newSwatch),
+      })
     },
     [setEditingColor, setLastInteractedColor],
   )
@@ -139,51 +157,46 @@ export default function Home() {
           return palette
         }
 
-        const next: ColorPalette = {
+        const nextColors = updates.colors ?? palette.colors
+
+        if (id === activePaletteId && updates.colors && updates.colors.length > palette.colors.length) {
+          focusNewColor(updates.colors)
+        }
+
+        return {
           ...palette,
           ...updates,
-          foregroundColors: updates.foregroundColors ?? palette.foregroundColors,
-          backgroundColors: updates.backgroundColors ?? palette.backgroundColors,
+          colors: nextColors,
         }
-
-        if (id === activePaletteId) {
-          if (
-            updates.foregroundColors &&
-            updates.foregroundColors.length > palette.foregroundColors.length
-          ) {
-            focusNewColor("foreground", updates.foregroundColors)
-          }
-          if (
-            updates.backgroundColors &&
-            updates.backgroundColors.length > palette.backgroundColors.length
-          ) {
-            focusNewColor("background", updates.backgroundColors)
-          }
-        }
-
-        return next
       }),
     )
   }
 
   const addPalette = () => {
+    const starterColors = createStarterColors()
     const newPalette: ColorPalette = {
       id: Date.now().toString(),
       name: `Custom name ${palettes.length + 1}`,
-      foregroundColors: ["#000000"],
-      backgroundColors: ["#FFFFFF"],
+      colors: starterColors,
     }
     setPalettes((prev) => [...prev, newPalette])
     setActivePaletteId(newPalette.id)
-    setEditingColor({ type: "foreground", index: 0, color: "#000000" })
+    setEditingColor({
+      index: 0,
+      swatch: starterColors[0],
+      legacyValue: swatchToLegacy(starterColors[0]),
+    })
+    setLastInteractedColor(starterColors[0].hex)
   }
 
   const duplicatePalette = () => {
+    const clonedColors = activePalette.colors.map((swatch) =>
+      createSwatch({ hex: swatch.hex, name: swatch.name, group: swatch.group }),
+    )
     const newPalette: ColorPalette = {
       id: Date.now().toString(),
       name: `${activePalette.name} (Copy)`,
-      foregroundColors: [...activePalette.foregroundColors],
-      backgroundColors: [...activePalette.backgroundColors],
+      colors: clonedColors,
     }
     setPalettes((prev) => [...prev, newPalette])
     setActivePaletteId(newPalette.id)
@@ -206,58 +219,55 @@ export default function Home() {
     setPalettes(newPalettes)
   }
 
-  const handleColorEdit = (type: "foreground" | "background", index: number) => {
+  const handleColorEdit = (index: number) => {
     if (index === -1) {
       setEditingColor(null)
       return
     }
 
-    const color = type === "foreground" ? activePalette.foregroundColors[index] : activePalette.backgroundColors[index]
+    const swatch = activePalette.colors[index]
 
-    if (color) {
-      const parts = color.split("#")
-      const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-      setLastInteractedColor(hex)
-      setEditingColor({ type, index, color: color }) // Pass full color string, not just hex
+    if (swatch) {
+      setLastInteractedColor(swatch.hex)
+      setEditingColor({
+        index,
+        swatch,
+        legacyValue: swatchToLegacy(swatch),
+      })
     }
   }
 
   const handleColorChange = (newColor: string) => {
     if (!editingColor) return
 
-    const parts = newColor.split("#")
-    const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-    setLastInteractedColor(hex)
-
-    if (editingColor.type === "foreground") {
-      const colors = [...activePalette.foregroundColors]
-      colors[editingColor.index] = newColor
-      updatePalette(activePalette.id, { foregroundColors: colors })
-      setEditingColor({ ...editingColor, color: newColor })
-    } else {
-      const colors = [...activePalette.backgroundColors]
-      colors[editingColor.index] = newColor
-      updatePalette(activePalette.id, { backgroundColors: colors })
-      setEditingColor({ ...editingColor, color: newColor })
-    }
+    const { label, hex } = parseLegacyColor(newColor)
+    const { name, group } = splitLabel(label)
+    const updatedSwatch = updateSwatch(editingColor.swatch, { hex, name, group })
+    const colors = [...activePalette.colors]
+    colors[editingColor.index] = updatedSwatch
+    setLastInteractedColor(updatedSwatch.hex)
+    updatePalette(activePalette.id, { colors })
+    setEditingColor({
+      index: editingColor.index,
+      swatch: updatedSwatch,
+      legacyValue: swatchToLegacy(updatedSwatch),
+    })
   }
 
-  const handleColorUpdate = (type: "foreground" | "background", index: number, newColor: string) => {
-    if (editingColor && editingColor.type === type && editingColor.index === index) {
-      setEditingColor({ ...editingColor, color: newColor })
+  const handleColorUpdate = (index: number, newSwatch: ColorSwatch) => {
+    if (editingColor && editingColor.index === index) {
+      setEditingColor({
+        index,
+        swatch: newSwatch,
+        legacyValue: swatchToLegacy(newSwatch),
+      })
+      setLastInteractedColor(newSwatch.hex)
     }
   }
 
   const handleClearCache = () => {
     storage.clearAll()
-    const defaultPalettes = [
-      {
-        id: Date.now().toString(),
-        name: "Custom name 1",
-        foregroundColors: ["#41B4C8", "#8C5887", "#BDDB59", "#F5A26E", "#15134B", "#B0B34C"],
-        backgroundColors: ["#F0EFEF", "#BFBFBF", "#E0FFF8", "#221B4C", "#FFFFFF"],
-      },
-    ]
+    const defaultPalettes = createDefaultPalettes()
     setPalettes(defaultPalettes)
     setActivePaletteId(defaultPalettes[0].id)
     setEditingColor(null)
@@ -276,7 +286,7 @@ export default function Home() {
       />
       <ResizablePanels
         panel1Title="Palette Manager"
-        panel2Title="Color Manager"
+        panel2Title="Colour Manager"
         panel3Title="Contrast Matrix"
         panel1={
           <PaletteManager

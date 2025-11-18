@@ -8,12 +8,10 @@ export type ColorSwatch = {
 export type ColorPalette = {
   id: string
   name: string
-  foregroundColors: ColorSwatch[]
-  backgroundColors: ColorSwatch[]
+  colors: ColorSwatch[]
 }
 
 export type EditingColor = {
-  type: "foreground" | "background"
   index: number
   swatch: ColorSwatch
   legacyValue: string

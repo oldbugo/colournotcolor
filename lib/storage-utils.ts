@@ -1,3 +1,6 @@
+import type { ColorSwatch } from "@/types/palette"
+import { createSwatch, swatchFromLegacy } from "@/lib/color-utils"
+
 const STORAGE_KEYS = {
   PALETTES: "color-checker-palettes",
   ACTIVE_PALETTE_ID: "color-checker-active-palette",
@@ -7,12 +10,51 @@ const STORAGE_KEYS = {
 export type StoredPalette = {
   id: string
   name: string
+  colors: ColorSwatch[]
+}
+
+type StoredPaletteV1 = {
+  id: string
+  name: string
   foregroundColors: string[]
   backgroundColors: string[]
 }
 
+type RawStoredPalette = StoredPalette | StoredPaletteV1
+
 type LayoutPreferences = {
   [paletteId: string]: boolean
+}
+
+const ensureSwatch = (value: ColorSwatch | string): ColorSwatch => {
+  if (typeof value === "string") {
+    return swatchFromLegacy(value)
+  }
+  const hasId = value.id && value.id.trim().length > 0
+  return createSwatch({
+    id: hasId ? value.id : undefined,
+    hex: value.hex ?? "#000000",
+    name: value.name,
+    group: value.group,
+  })
+}
+
+const normalizeStoredPalette = (palette: RawStoredPalette): StoredPalette => {
+  if ("colors" in palette) {
+    return {
+      id: String(palette.id ?? ""),
+      name: palette.name ?? "Untitled",
+      colors: Array.isArray(palette.colors) ? palette.colors.map(ensureSwatch) : [],
+    }
+  }
+  const foreground = Array.isArray(palette.foregroundColors) ? palette.foregroundColors : []
+  const background = Array.isArray(palette.backgroundColors) ? palette.backgroundColors : []
+  const combined = [...foreground, ...background]
+  return {
+    id: String(palette.id ?? ""),
+    name: palette.name ?? "Untitled",
+    colors: combined.map(ensureSwatch),
+  }
 }
 
 export const storage = {
@@ -29,7 +71,14 @@ export const storage = {
   loadPalettes: (): StoredPalette[] | null => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.PALETTES)
-      return stored ? JSON.parse(stored) : null
+      if (!stored) {
+        return null
+      }
+      const parsed = JSON.parse(stored) as RawStoredPalette[]
+      if (!Array.isArray(parsed)) {
+        return null
+      }
+      return parsed.map(normalizeStoredPalette)
     } catch {
       return null
     }
