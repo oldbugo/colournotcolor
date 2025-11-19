@@ -39,6 +39,8 @@ import {
 } from "@/lib/color-utils"
 import { cn } from "@/lib/utils"
 import { scheduleSnap, findScrollParent as detectScrollParent, type Align, type CancelHandle } from "@/lib/scroll-snap"
+import { computeDragMode, computeInsertTargetIndex } from "@/lib/index-dnd"
+import { computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
 
 type ColorManagerProps = {
   label: string
@@ -162,6 +164,7 @@ export function ColorManager({
   lastInteractedColor = "#808080",
   collapseGroupsDuringGroupDrag,
 }: ColorManagerProps) {
+  void _label
   const colors = useMemo(() => swatches.map((swatch) => swatchToLegacy(swatch)), [swatches])
   const getSwatchAt = (index: number): ColorSwatch | undefined => swatches[index]
   const toSwatch = (value: string, index?: number) =>
@@ -912,27 +915,15 @@ const GROUP_SNAP_HOLD_MS = 160
           const computedStyles = window.getComputedStyle(container)
           const gapValueRaw = computedStyles.columnGap || computedStyles.gap || "0"
           const gapValue = Number.parseFloat(gapValueRaw) || 0
-          const horizontalOffset = gapValue > 0 ? gapValue / 2 : 6
-          const indicatorHeight = Math.max(rect.height - 24, rect.height * 0.7, 64)
-          const centerY = rect.top - containerRect.top + rect.height / 2
-          const rawLeft =
-            insertPosition === "before" ? rect.left - containerRect.left : rect.right - containerRect.left
-          let left = rawLeft + (insertPosition === "before" ? -horizontalOffset : horizontalOffset)
-          const maxWidth = containerRect.width
-          if (maxWidth > 0) {
-            const indicatorHalfWidth = 2 // indicator is Tailwind w-1 (4px), so keep 2px margin inside container
-            const edgeInset = 1.5
-            const minBound = indicatorHalfWidth + edgeInset
-            const maxBound = Math.max(minBound, maxWidth - indicatorHalfWidth - edgeInset)
-            const withPadding = Math.min(Math.max(left, minBound), maxBound)
-            left = withPadding
-          }
-
-          setIndicatorPosition({
-            left,
-            top: centerY,
-            height: indicatorHeight,
+          const indicator = computeVerticalIndicatorPosition({
+            containerRect,
+            targetRect: rect,
+            position: insertPosition,
+            gap: gapValue,
+            align: "center",
+            lengthStrategy: (targetHeight) => Math.max(targetHeight - 24, targetHeight * 0.7, 64),
           })
+          setIndicatorPosition(indicator)
         }
       }
     } else {
@@ -1151,25 +1142,11 @@ const GROUP_SNAP_HOLD_MS = 160
     e.preventDefault()
     if (draggedIndex !== null && draggedIndex !== index) {
       const rect = e.currentTarget.getBoundingClientRect()
-      const mouseX = e.clientX - rect.left
-      const cardWidth = rect.width
-
-      const leftThreshold = cardWidth * 0.25
-      const rightThreshold = cardWidth * 0.75
-
-      if (mouseX < leftThreshold) {
-        setDragMode("insert")
-        setInsertPosition("before")
-        setDragOverIndex(index)
-      } else if (mouseX > rightThreshold) {
-        setDragMode("insert")
-        setInsertPosition("after")
-        setDragOverIndex(index)
-      } else {
-        setDragMode("swap")
-        setInsertPosition(null)
-        setDragOverIndex(index)
-      }
+      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
+      const intent = computeDragMode(pointerRatio)
+      setDragMode(intent.mode)
+      setInsertPosition(intent.insertPosition)
+      setDragOverIndex(index)
     }
   }
 
@@ -1215,7 +1192,12 @@ const GROUP_SNAP_HOLD_MS = 160
       setJustDropped(true)
       const isCrossGroupMove = draggedGroup !== targetGroup
       triggerCardSnapIllusion(draggedIndex, dragOverIndex, targetGroup, { isCrossGroup: isCrossGroupMove })
-    } else if (draggedIndex !== null && dragOverIndex !== null && dragMode === "insert") {
+    } else if (
+      draggedIndex !== null &&
+      dragOverIndex !== null &&
+      dragMode === "insert" &&
+      insertPosition
+    ) {
       const newColors = [...colors]
       const draggedColor = colors[draggedIndex]
       const targetColor = colors[dragOverIndex]
@@ -1236,12 +1218,24 @@ const GROUP_SNAP_HOLD_MS = 160
 
       newColors.splice(draggedIndex, 1)
 
-      let targetIndex = dragOverIndex
-      if (draggedIndex < dragOverIndex) {
-        targetIndex--
-      }
-      if (insertPosition === "after") {
-        targetIndex++
+      const targetIndex = computeInsertTargetIndex({
+        draggedIndex,
+        dragOverIndex,
+        insertPosition,
+        length: colors.length,
+      })
+
+      if (targetIndex === null) {
+        setDraggedIndex(null)
+        setDragOverIndex(null)
+        setDragMode(null)
+        setInsertPosition(null)
+        setDragOverGroup(null)
+        setIsAnyCardDragging(false)
+        setIsDragOverNewGroup(false)
+        setIsDragOverTrash(false)
+        setIsBetweenZonesActive(false)
+        return
       }
 
       newColors.splice(targetIndex, 0, colorToInsert)

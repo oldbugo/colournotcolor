@@ -2,7 +2,7 @@
 
 import React from "react"
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
-import { ChevronDown, Plus, Settings, Trash2 } from "lucide-react"
+import { ChevronDown, Plus, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -34,6 +34,10 @@ import type { ColorSwatch } from "@/types/palette"
 import type { EditingColor } from "@/app/page"
 import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
 import { CARD_CONTROL_RADII } from "@/lib/design-tokens"
+import { DragHandle } from "@/components/ui/drag-handle"
+import { DropToTrash } from "@/components/dnd/drop-to-trash"
+import { computeDragMode, computeInsertTargetIndex, computePaletteInsertion } from "@/lib/index-dnd"
+import { computeHorizontalIndicatorPosition, computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
 
 const CARD_SIZE = 132 // px
 const GAP_SIZE = 16 // px (gap-4)
@@ -193,8 +197,6 @@ export function ContrastGrid({
   const [filterStepIndex, setFilterStepIndex] = useState(1)
 
 
-  const [isDragOverTrash, setIsDragOverTrash] = useState(false)
-  const trashLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const [fgAnimationState, setFgAnimationState] = useState<{
     draggedIndex: number
@@ -409,6 +411,29 @@ const colorEntries = useMemo<ColorEntry[]>(
       : -1
 
   const totalColorCount = colorEntries.length
+  const hasRows = backgroundColors.length > 0
+  const hasColumns = foregroundColors.length > 0
+  const isMatrixEmpty = !hasRows && !hasColumns
+  const hasRowIdFilter = rowFilterIds !== null
+  const hasColumnIdFilter = columnFilterIds !== null
+  const hasRowNumberFilterActive =
+    !!numericBounds &&
+    !!rowNumberFilter &&
+    (rowNumberFilter.min > numericBounds.min || rowNumberFilter.max < numericBounds.max)
+  const hasColumnNumberFilterActive =
+    !!numericBounds &&
+    !!columnNumberFilter &&
+    (columnNumberFilter.min > numericBounds.min || columnNumberFilter.max < numericBounds.max)
+  const hasActiveFilters = hasRowIdFilter || hasColumnIdFilter || hasRowNumberFilterActive || hasColumnNumberFilterActive
+  const emptyStateMessage = useMemo(() => {
+    if (totalColorCount === 0) {
+      return "Add colors to build a contrast matrix."
+    }
+    if (!hasRows && !hasColumns) {
+      return "All rows and columns are filtered out."
+    }
+    return ""
+  }, [totalColorCount, hasRows, hasColumns])
 
   const adjustFilterSet = useCallback(
     (current: Set<string> | null, ids: string[]): Set<string> | null => {
@@ -491,6 +516,18 @@ const colorEntries = useMemo<ColorEntry[]>(
   const selectAllColumns = () => setColumnFilterIds(null)
   const clearAllRows = () => setRowFilterIds(new Set())
   const clearAllColumns = () => setColumnFilterIds(new Set())
+
+  const handleResetFilters = useCallback(() => {
+    setRowFilterIds(null)
+    setColumnFilterIds(null)
+    if (numericBounds) {
+      setRowNumberFilter({ ...numericBounds })
+      setColumnNumberFilter({ ...numericBounds })
+    } else {
+      setRowNumberFilter(null)
+      setColumnNumberFilter(null)
+    }
+  }, [numericBounds])
 
 const renderFilterGroups = (
   effectiveSet: Set<string> | null,
@@ -618,15 +655,6 @@ const renderFilterGroups = (
     </div>
   )
 }
-  useEffect(() => {
-    return () => {
-      if (trashLeaveTimeoutRef.current) {
-        clearTimeout(trashLeaveTimeoutRef.current)
-        trashLeaveTimeoutRef.current = null
-      }
-    }
-  }, [])
-
 const renderNumberFilterSection = (
   label: string,
   filter: NumberRange | null,
@@ -847,26 +875,21 @@ const renderNumberFilterSection = (
         const rect = header.getBoundingClientRect()
         const containerRect = gridRef.current.getBoundingClientRect()
 
-        const indicatorHeight = (backgroundColors.length + 1) * CARD_WITH_GAP - GAP_SIZE + 26 // +1 for the add button row
+        const indicator = computeVerticalIndicatorPosition({
+          containerRect,
+          targetRect: rect,
+          position: fgInsertPosition,
+          gap: GAP_SIZE,
+          offset: GAP_SIZE / 2 + 1,
+          span: "container",
+        })
 
-        if (fgInsertPosition === "before") {
-          setFgIndicatorPosition({
-            left: rect.left - containerRect.left - GAP_SIZE / 2 - 1, // -1px offset
-            top: 0,
-            height: indicatorHeight,
-          })
-        } else {
-          setFgIndicatorPosition({
-            left: rect.right - containerRect.left + GAP_SIZE / 2 - 1, // -1px offset
-            top: 0,
-            height: indicatorHeight,
-          })
-        }
+        setFgIndicatorPosition(indicator)
       }
     } else {
       setFgIndicatorPosition(null)
     }
-  }, [dragOverFgIndex, fgDragMode, fgInsertPosition, backgroundColors.length])
+  }, [dragOverFgIndex, fgDragMode, fgInsertPosition])
 
   useEffect(() => {
     if (dragOverBgIndex !== null && bgDragMode === "insert" && bgInsertPosition) {
@@ -875,26 +898,25 @@ const renderNumberFilterSection = (
         const rect = label.getBoundingClientRect()
         const containerRect = gridRef.current.getBoundingClientRect()
 
-        const indicatorWidth = 164 + foregroundColors.length * CARD_WITH_GAP
+        const indicator = computeHorizontalIndicatorPosition({
+          containerRect,
+          targetRect: rect,
+          position: bgInsertPosition,
+          gap: GAP_SIZE,
+          offset: GAP_SIZE / 2,
+          span: "container",
+        })
 
-        if (bgInsertPosition === "before") {
-          setBgIndicatorPosition({
-            left: 0,
-            top: rect.top - containerRect.top - GAP_SIZE / 2 - 2, // -2px offset (1px higher)
-            width: indicatorWidth,
-          })
-        } else {
-          setBgIndicatorPosition({
-            left: 0,
-            top: rect.bottom - containerRect.top + GAP_SIZE / 2 - 2, // -2px offset (1px higher)
-            width: indicatorWidth,
-          })
-        }
+        setBgIndicatorPosition({
+          left: indicator.left,
+          top: indicator.top - 2,
+          width: indicator.width,
+        })
       }
     } else {
       setBgIndicatorPosition(null)
     }
-  }, [dragOverBgIndex, bgDragMode, bgInsertPosition, foregroundColors.length])
+  }, [dragOverBgIndex, bgDragMode, bgInsertPosition])
 
   useEffect(() => {
     if (fgAnimationState) {
@@ -919,29 +941,26 @@ const renderNumberFilterSection = (
     e.dataTransfer.effectAllowed = "move"
   }
 
+  const applyFgDragIntent = (index: number, pointerRatio: number) => {
+    const intent = computeDragMode(pointerRatio)
+    setFgDragMode(intent.mode)
+    setFgInsertPosition(intent.insertPosition)
+    setDragOverFgIndex(index)
+  }
+
+  const applyBgDragIntent = (index: number, pointerRatio: number) => {
+    const intent = computeDragMode(pointerRatio)
+    setBgDragMode(intent.mode)
+    setBgInsertPosition(intent.insertPosition)
+    setDragOverBgIndex(index)
+  }
+
   const handleFgDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault()
     if (draggedFgIndex !== null && draggedFgIndex !== index && draggedBgIndex === null) {
       const rect = e.currentTarget.getBoundingClientRect()
-      const mouseX = e.clientX - rect.left
-      const width = rect.width
-
-      const leftThreshold = width * 0.2
-      const rightThreshold = width * 0.8
-
-      if (mouseX < leftThreshold) {
-        setFgDragMode("insert")
-        setFgInsertPosition("before")
-        setDragOverFgIndex(index)
-      } else if (mouseX > rightThreshold) {
-        setFgDragMode("insert")
-        setFgInsertPosition("after")
-        setDragOverFgIndex(index)
-      } else {
-        setFgDragMode("swap")
-        setFgInsertPosition(null)
-        setDragOverFgIndex(index)
-      }
+      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
+      applyFgDragIntent(index, pointerRatio)
     }
   }
 
@@ -964,29 +983,36 @@ const renderNumberFilterSection = (
         return
       }
       onSwapColors(fromBaseIndex, targetBaseIndex)
-    } else if (fgDragMode === "insert") {
-      let targetIndex = dragOverFgIndex
-      if (fgInsertPosition === "after") {
-        targetIndex++
-      }
-      if (draggedFgIndex < targetIndex) {
-        targetIndex--
-      }
-      const insertBeforeBase =
-        targetIndex >= foregroundBaseIndexes.length ? colors.length : foregroundBaseIndexes[targetIndex]
-      if (typeof insertBeforeBase !== "number") {
+    } else if (fgDragMode === "insert" && fgInsertPosition) {
+      const targetIndex = computeInsertTargetIndex({
+        draggedIndex: draggedFgIndex,
+        dragOverIndex: dragOverFgIndex,
+        insertPosition: fgInsertPosition,
+        length: foregroundColors.length,
+      })
+
+      if (targetIndex === null) {
         handleFgDragEnd()
         return
       }
-      let insertionIndex = insertBeforeBase
-      if (insertionIndex > fromBaseIndex) {
-        insertionIndex -= 1
+
+      const paletteMove = computePaletteInsertion({
+        baseIndexes: foregroundBaseIndexes,
+        draggedIndex: draggedFgIndex,
+        targetIndex,
+        paletteLength: colors.length,
+      })
+
+      if (!paletteMove) {
+        handleFgDragEnd()
+        return
       }
+
       setFgAnimationState({
         draggedIndex: draggedFgIndex,
         targetIndex,
       })
-      onReorderColors(fromBaseIndex, insertionIndex)
+      onReorderColors(paletteMove.fromIndex, paletteMove.insertionIndex)
     }
     handleFgDragEnd()
   }
@@ -996,11 +1022,6 @@ const renderNumberFilterSection = (
     setDragOverFgIndex(null)
     setFgDragMode(null)
     setFgInsertPosition(null)
-    setIsDragOverTrash(false)
-    if (trashLeaveTimeoutRef.current) {
-      clearTimeout(trashLeaveTimeoutRef.current)
-      trashLeaveTimeoutRef.current = null
-    }
   }
 
   const handleBgDragStart = (e: React.DragEvent, index: number) => {
@@ -1012,25 +1033,8 @@ const renderNumberFilterSection = (
     e.preventDefault()
     if (draggedBgIndex !== null && draggedBgIndex !== index && draggedFgIndex === null) {
       const rect = e.currentTarget.getBoundingClientRect()
-      const mouseY = e.clientY - rect.top
-      const height = rect.height
-
-      const topThreshold = height * 0.2
-      const bottomThreshold = height * 0.8
-
-      if (mouseY < topThreshold) {
-        setBgDragMode("insert")
-        setBgInsertPosition("before")
-        setDragOverBgIndex(index)
-      } else if (mouseY > bottomThreshold) {
-        setBgDragMode("insert")
-        setBgInsertPosition("after")
-        setDragOverBgIndex(index)
-      } else {
-        setBgDragMode("swap")
-        setBgInsertPosition(null)
-        setDragOverBgIndex(index)
-      }
+      const pointerRatio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5
+      applyBgDragIntent(index, pointerRatio)
     }
   }
 
@@ -1053,30 +1057,36 @@ const renderNumberFilterSection = (
         return
       }
       onSwapColors(fromBaseIndex, targetBaseIndex)
-    } else if (bgDragMode === "insert") {
-      let targetIndex = dragOverBgIndex
-      if (bgInsertPosition === "after") {
-        targetIndex++
-      }
-      if (draggedBgIndex < targetIndex) {
-        targetIndex--
-      }
-      const fromBaseIndex = backgroundBaseIndexes[draggedBgIndex]
-      const insertBeforeBase =
-        targetIndex >= backgroundBaseIndexes.length ? colors.length : backgroundBaseIndexes[targetIndex]
-      if (typeof fromBaseIndex !== "number" || typeof insertBeforeBase !== "number") {
+    } else if (bgDragMode === "insert" && bgInsertPosition) {
+      const targetIndex = computeInsertTargetIndex({
+        draggedIndex: draggedBgIndex,
+        dragOverIndex: dragOverBgIndex,
+        insertPosition: bgInsertPosition,
+        length: backgroundColors.length,
+      })
+
+      if (targetIndex === null) {
         handleBgDragEnd()
         return
       }
-      let insertionIndex = insertBeforeBase
-      if (insertionIndex > fromBaseIndex) {
-        insertionIndex -= 1
+
+      const paletteMove = computePaletteInsertion({
+        baseIndexes: backgroundBaseIndexes,
+        draggedIndex: draggedBgIndex,
+        targetIndex,
+        paletteLength: colors.length,
+      })
+
+      if (!paletteMove) {
+        handleBgDragEnd()
+        return
       }
+
       setBgAnimationState({
         draggedIndex: draggedBgIndex,
         targetIndex,
       })
-      onReorderColors(fromBaseIndex, insertionIndex)
+      onReorderColors(paletteMove.fromIndex, paletteMove.insertionIndex)
     }
     handleBgDragEnd()
   }
@@ -1086,14 +1096,9 @@ const renderNumberFilterSection = (
     setDragOverBgIndex(null)
     setBgDragMode(null)
     setBgInsertPosition(null)
-    setIsDragOverTrash(false)
-    if (trashLeaveTimeoutRef.current) {
-      clearTimeout(trashLeaveTimeoutRef.current)
-      trashLeaveTimeoutRef.current = null
-    }
   }
 
-  const handleDropOnTrash = (e: React.DragEvent) => {
+  const handleDropOnTrash = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     e.stopPropagation()
 
@@ -1109,9 +1114,11 @@ const renderNumberFilterSection = (
       onRemoveColor?.(baseIndex)
     }
 
-    setIsDragOverTrash(false)
-    setDraggedFgIndex(null)
-    setDraggedBgIndex(null)
+    if (draggedFgIndex !== null) {
+      handleFgDragEnd()
+    } else if (draggedBgIndex !== null) {
+      handleBgDragEnd()
+    }
   }
 
   const handleFgHeaderClick = (index: number, e: React.MouseEvent) => {
@@ -1243,25 +1250,8 @@ const renderNumberFilterSection = (
     e.preventDefault()
     if (draggedFgIndex !== null && draggedFgIndex !== fgIndex && draggedBgIndex === null) {
       const rect = e.currentTarget.getBoundingClientRect()
-      const mouseX = e.clientX - rect.left
-      const width = rect.width
-
-      const leftThreshold = width * 0.2
-      const rightThreshold = width * 0.8
-
-      if (mouseX < leftThreshold) {
-        setFgDragMode("insert")
-        setFgInsertPosition("before")
-        setDragOverFgIndex(fgIndex)
-      } else if (mouseX > rightThreshold) {
-        setFgDragMode("insert")
-        setFgInsertPosition("after")
-        setDragOverFgIndex(fgIndex)
-      } else {
-        setFgDragMode("swap")
-        setFgInsertPosition(null)
-        setDragOverFgIndex(fgIndex)
-      }
+      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
+      applyFgDragIntent(fgIndex, pointerRatio)
     }
   }
 
@@ -1275,25 +1265,8 @@ const renderNumberFilterSection = (
 
     // This ensures consistent threshold logic across headers, cells, and gaps
     const rect = e.currentTarget.getBoundingClientRect()
-    const mouseY = e.clientY - rect.top
-    const height = rect.height
-
-    const topThreshold = height * 0.2
-    const bottomThreshold = height * 0.8
-
-    if (mouseY < topThreshold) {
-      setBgDragMode("insert")
-      setBgInsertPosition("before")
-      setDragOverBgIndex(bgIndex)
-    } else if (mouseY > bottomThreshold) {
-      setBgDragMode("insert")
-      setBgInsertPosition("after")
-      setDragOverBgIndex(bgIndex)
-    } else {
-      setBgDragMode("swap")
-      setBgInsertPosition(null)
-      setDragOverBgIndex(bgIndex)
-    }
+    const pointerRatio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5
+    applyBgDragIntent(bgIndex, pointerRatio)
   }
 
   const handleGridDragOver = (e: React.DragEvent) => {
@@ -1696,8 +1669,25 @@ const renderNumberFilterSection = (
       )}
 
       <div className="contrast-scroll-area overflow-x-auto overflow-visible px-4 py-4">
-        <div className="relative inline-block overflow-visible">
-          <div
+        {isMatrixEmpty ? (
+          <div className="flex min-h-[320px] w-full flex-col items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/10 px-6 py-12 text-center">
+            <p className="text-sm text-muted-foreground">{emptyStateMessage}</p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+              {hasActiveFilters && (
+                <Button variant="outline" size="sm" onClick={handleResetFilters}>
+                  Reset filters
+                </Button>
+              )}
+              {onAddColor && (
+                <Button size="sm" onClick={() => onAddColor?.()}>
+                  Add color
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="relative inline-block overflow-visible">
+            <div
             ref={gridRef}
             className="inline-grid relative gap-4 overflow-visible"
             style={{ gridTemplateColumns: `164px repeat(${foregroundColors.length}, ${CARD_SIZE}px) ${CARD_SIZE}px` }}
@@ -1765,18 +1755,16 @@ const renderNumberFilterSection = (
                     />
                   )}
 
-                  <div
+                  <DragHandle
                     draggable
-                    onDragStart={(e) => handleFgDragStart(e, i)}
+                    data-drag-handle
+                    className="mb-1"
+                    highlighted={hoveredFgIndex === i}
+                    onDragStart={(event) => handleFgDragStart(event, i)}
                     onDragEnd={handleFgDragEnd}
                     onMouseEnter={() => setHoveredFgIndex(i)}
                     onMouseLeave={() => setHoveredFgIndex(null)}
-                    className="mb-1 flex cursor-grab active:cursor-grabbing flex-col gap-1 rounded p-2 hover:bg-foreground/5"
-                    data-drag-handle
-                  >
-                    <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
-                    <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
-                  </div>
+                  />
 
                   <div
                     className="flex flex-col items-center justify-end border-2 transition-all cursor-pointer hover:opacity-90 border-border rounded-sm pb-0"
@@ -1851,18 +1839,17 @@ const renderNumberFilterSection = (
                       />
                     )}
 
-                    <div
+                    <DragHandle
                       draggable
-                      onDragStart={(e) => handleBgDragStart(e, bgIndex)}
+                      data-drag-handle
+                      orientation="vertical"
+                      className="px-1 py-2"
+                      highlighted={hoveredBgIndex === bgIndex}
+                      onDragStart={(event) => handleBgDragStart(event, bgIndex)}
                       onDragEnd={handleBgDragEnd}
                       onMouseEnter={() => setHoveredBgIndex(bgIndex)}
                       onMouseLeave={() => setHoveredBgIndex(null)}
-                      className="flex cursor-grab active:cursor-grabbing gap-1 rounded p-2 hover:bg-foreground/5"
-                      data-drag-handle
-                    >
-                      <div className="h-8 w-0.5 rounded-full bg-foreground/40" />
-                      <div className="h-8 w-0.5 rounded-full bg-foreground/40" />
-                    </div>
+                    />
 
                     <div className="flex flex-col items-center gap-1">
                       <div
@@ -1979,48 +1966,12 @@ const renderNumberFilterSection = (
                 width: `${CARD_SIZE}px`,
               }}
             />
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      {isAnyHeaderDragging && (
-        <div
-          className="fixed bottom-8 right-8 z-50"
-          onDragOver={(e) => {
-            e.preventDefault()
-            if (trashLeaveTimeoutRef.current) {
-              clearTimeout(trashLeaveTimeoutRef.current)
-              trashLeaveTimeoutRef.current = null
-            }
-            setIsDragOverTrash(true)
-          }}
-          onDragLeave={() => {
-            if (trashLeaveTimeoutRef.current) {
-              clearTimeout(trashLeaveTimeoutRef.current)
-            }
-            trashLeaveTimeoutRef.current = setTimeout(() => {
-              setIsDragOverTrash(false)
-              trashLeaveTimeoutRef.current = null
-            }, 200)
-          }}
-          onDrop={handleDropOnTrash}
-        >
-          <div
-            className={`flex flex-col items-center justify-center gap-2 p-6 rounded-lg border-2 border-dashed transition-all duration-200 ${
-              isDragOverTrash ? "bg-red-100 border-red-500 scale-110 shadow-lg" : "bg-gray-100 border-gray-400"
-            }`}
-          >
-            <Trash2
-              className={`transition-all duration-200 ${isDragOverTrash ? "h-10 w-10 text-red-600" : "h-8 w-8 text-gray-600"}`}
-            />
-            <span
-              className={`text-sm font-medium transition-colors duration-200 ${isDragOverTrash ? "text-red-600" : "text-gray-600"}`}
-            >
-              {isDragOverTrash ? "Drop to Delete" : "Delete"}
-            </span>
-          </div>
-        </div>
-      )}
+      <DropToTrash active={isAnyHeaderDragging} onDrop={handleDropOnTrash} variant="floating" />
     </div>
   )
 }

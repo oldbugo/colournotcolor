@@ -21,26 +21,37 @@ type DragHandleProps = React.HTMLAttributes<HTMLDivElement> & {
    * Additional class applied to each grip line.
    */
   lineClassName?: string
+  /**
+   * Orientation of each grip line.
+   */
+  orientation?: "horizontal" | "vertical"
 }
 
 export const DragHandle = React.forwardRef<HTMLDivElement, DragHandleProps>(function DragHandle(
-  { variant = "inline", highlighted = false, lines = 2, lineClassName, className, ...props },
+  { variant = "inline", highlighted = false, lines = 2, lineClassName, orientation = "horizontal", className, ...props },
   forwardedRef,
 ) {
-  const baseLineClass =
-    variant === "inline"
-      ? "h-0.5 w-8 rounded-full bg-foreground/40 transition-colors"
-      : "h-px w-5 rounded-full bg-foreground/40 transition-colors"
+  const isPill = variant === "pill"
+  const isVertical = orientation === "vertical"
+
+  const baseLineClass = (() => {
+    if (isPill) {
+      return isVertical ? "h-5 w-px rounded-full bg-foreground/40 transition-colors" : "h-px w-5 rounded-full bg-foreground/40 transition-colors"
+    }
+    return isVertical ? "h-8 w-0.5 rounded-full bg-foreground/40 transition-colors" : "h-0.5 w-8 rounded-full bg-foreground/40 transition-colors"
+  })()
 
   const rootClass =
-    variant === "pill"
+    isPill
       ? cn(
-          "flex h-6 w-16 flex-col items-center justify-center gap-1 rounded-full bg-white text-muted-foreground transition cursor-grab active:cursor-grabbing",
+          "flex h-6 w-16 items-center justify-center gap-1 rounded-full bg-white text-muted-foreground transition cursor-grab active:cursor-grabbing",
+          isVertical ? "flex-row" : "flex-col",
           highlighted ? "bg-slate-200 text-slate-700" : "hover:bg-slate-100 hover:text-slate-700 active:bg-slate-200",
           className,
         )
       : cn(
-          "flex cursor-grab active:cursor-grabbing flex-col gap-1 rounded p-2 hover:bg-foreground/5 transition",
+          "flex cursor-grab active:cursor-grabbing gap-1 rounded p-2 hover:bg-foreground/5 transition",
+          isVertical ? "flex-row" : "flex-col",
           highlighted ? "bg-foreground/10" : "",
           className,
         )
