@@ -505,11 +505,10 @@ export function PaletteManager({
         setPreservedHue(channels.h)
       }
       updateColorFromChannels(channels, "immediate")
+      setIsEditingHex(false)
+      return
     }
-    setIsEditingHex(false)
-  }
-
-  const handleHexCancel = () => {
+    setTempHexValue(hexValue)
     setIsEditingHex(false)
   }
 
@@ -553,25 +552,53 @@ export function PaletteManager({
   }
 
   const handleSliderInputChange = (axis: PlaneAxis, value: string) => {
-    const trimmed = value.trim()
-    if (!trimmed) {
-      return
-    }
-    const parsed = Number(trimmed)
-    if (!Number.isFinite(parsed)) {
-      return
-    }
-    const normalized =
-      axis === "h" ? ((parsed % 360) + 360) % 360 : Math.max(0, Math.min(100, parsed))
-    const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
-    nextChannels[axis] = normalized
-    if (axis === "h") {
-      setPreservedHue(normalized)
-    } else if (axis === "s" && normalized > 0) {
-      setPreservedHue(nextChannels.h)
-    }
-    updateColorFromChannels(nextChannels, "immediate")
+    setSliderInputValues((current) => ({
+      ...current,
+      [axis]: value,
+    }))
   }
+
+  useEffect(() => {
+    setSliderInputValues({
+      h: formatChannelValue("h", hue),
+      s: formatChannelValue("s", saturation),
+      l: formatChannelValue("l", lightness),
+    })
+  }, [hue, saturation, lightness])
+
+  const commitSliderInputValue = useCallback(
+    (axis: PlaneAxis) => {
+      setSliderInputValues((current) => {
+        const raw = (current[axis] ?? "").trim().replace(",", ".")
+        const fallbackValue = axis === "h" ? hue : axis === "s" ? saturation : lightness
+        const revertState = { ...current, [axis]: formatChannelValue(axis, fallbackValue) }
+
+        if (!raw) {
+          return revertState
+        }
+
+        const parsed = Number(raw)
+        if (!Number.isFinite(parsed)) {
+          return revertState
+        }
+
+        const normalized = axis === "h" ? ((parsed % 360) + 360) % 360 : Math.max(0, Math.min(100, parsed))
+        const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
+        nextChannels[axis] = normalized
+        if (axis === "h") {
+          setPreservedHue(normalized)
+        } else if (axis === "s" && normalized > 0) {
+          setPreservedHue(nextChannels.h)
+        }
+        updateColorFromChannels(nextChannels, "immediate")
+        return {
+          ...current,
+          [axis]: formatChannelValue(axis, normalized),
+        }
+      })
+    },
+    [hue, saturation, lightness, updateColorFromChannels],
+  )
 
   const handlePlaneModeChange = (mode: PlaneAxis) => {
     if (colorMode === "hsl") {
@@ -811,7 +838,15 @@ export function PaletteManager({
 
   const sliderLabels: Record<PlaneAxis, string> = { h: "Hue", s: "Saturation", l: "Lightness" }
 
-  const formatChannelValue = (axis: PlaneAxis, value: number) => value.toFixed(axis === "h" ? 1 : 2)
+  function formatChannelValue(axis: PlaneAxis, value: number) {
+    return value.toFixed(axis === "h" ? 1 : 2)
+  }
+
+  const [sliderInputValues, setSliderInputValues] = useState<Record<PlaneAxis, string>>(() => ({
+    h: formatChannelValue("h", sliderValues.h),
+    s: formatChannelValue("s", sliderValues.s),
+    l: formatChannelValue("l", sliderValues.l),
+  }))
 
 
   return (
@@ -845,8 +880,8 @@ export function PaletteManager({
               <button
                 onClick={() => onSelectPalette(palette.id)}
                 className={cn(
-                  "flex flex-1 flex-col items-start bg-card p-3 text-left transition-all hover:bg-accent w-full relative border-border gap-2 py-3 border rounded-xs",
-                  activePaletteId === palette.id && "border-[3px] border-foreground",
+                  "flex flex-1 flex-col items-start bg-card p-3 text-left transition-all hover:bg-accent w-full relative border-border gap-2 py-3 border rounded-lg",
+                  activePaletteId === palette.id && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
                   isDragging && "opacity-50 scale-95",
                   !isCustomPalette && "cursor-pointer",
                 )}
@@ -876,7 +911,7 @@ export function PaletteManager({
         })}
         <Button
           variant="outline"
-          className="w-full bg-transparent cursor-pointer font-semibold border rounded-xs"
+          className="w-full bg-transparent cursor-pointer font-semibold border rounded-lg"
           onClick={onAddPalette}
         >
           + New Palette
@@ -1008,7 +1043,7 @@ export function PaletteManager({
                 onMouseDown={handlePlaneMouseDown}
               >
                 <div
-                  className="absolute w-4 h-4 border-2 border-white rounded-full shadow-lg pointer-events-none"
+                  className="absolute w-4 h-4 border border-white rounded-full shadow-lg pointer-events-none"
                   style={{
                     left: `calc(${planeCursorX}% - 8px)`,
                     top: `calc(${planeCursorY}% - 8px)`,
@@ -1038,7 +1073,7 @@ export function PaletteManager({
                         onMouseDown={(event) => handleSliderMouseDown(axis, event)}
                       >
                         <div
-                          className="absolute w-4 h-4 border-2 border-white rounded-full shadow-lg pointer-events-none -top-0.5"
+                          className="absolute w-4 h-4 border border-white rounded-full shadow-lg pointer-events-none -top-0.5"
                           style={{
                             left: `calc(${sliderPercents[axis]}% - 8px)`,
                             backgroundColor: sliderHandleColors[axis],
@@ -1053,8 +1088,19 @@ export function PaletteManager({
                         step={axis === "h" ? 0.1 : 0.01}
                         min={0}
                         max={axis === "h" ? 359.99 : 100}
-                        value={formatChannelValue(axis, sliderValues[axis])}
+                        value={sliderInputValues[axis]}
                         onChange={(event) => handleSliderInputChange(axis, event.target.value)}
+                        onBlur={() => commitSliderInputValue(axis)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            commitSliderInputValue(axis)
+                          } else if (event.key === "Escape") {
+                            setSliderInputValues((current) => ({
+                              ...current,
+                              [axis]: formatChannelValue(axis, sliderValues[axis]),
+                            }))
+                          }
+                        }}
                         className="h-8 w-20 text-center font-mono text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                     </div>
@@ -1070,12 +1116,17 @@ export function PaletteManager({
                     value={tempCustomName}
                     onChange={(e) => handleNameInputChange(e.target.value)}
                     onFocus={handleNameInputFocus}
-                    onBlur={handleNameCancel}
+                    onBlur={() => {
+                      setIsEditingName(false)
+                      setCustomName(tempCustomName)
+                      const fullColor = tempCustomName ? `${tempCustomName}#${hexValue.replace("#", "")}` : hexValue
+                      emitColorNow(fullColor)
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleNameSave()
                       if (e.key === "Escape") handleNameCancel()
                     }}
-                    className="flex-1 text-xs h-8 border-2 border-input"
+                    className="flex-1 text-xs h-8 border border-input"
                     placeholder="e.g. primary/500"
                     autoFocus
                   />
@@ -1093,14 +1144,22 @@ export function PaletteManager({
                 <span className="text-xs font-medium w-12">Hex</span>
                 {isEditingHex ? (
                   <Input
+                    ref={(node) => {
+                      if (node && tempHexValue === hexValue) {
+                        requestAnimationFrame(() => node.select())
+                      }
+                    }}
                     value={tempHexValue}
                     onChange={(e) => handleHexInputChange(e.target.value)}
-                    onBlur={handleHexCancel}
+                    onBlur={handleHexSave}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleHexSave()
-                      if (e.key === "Escape") handleHexCancel()
+                      if (e.key === "Escape") {
+                        setTempHexValue(hexValue)
+                        setIsEditingHex(false)
+                      }
                     }}
-                    className="flex-1 font-mono text-xs h-8 border-2 border-input"
+                    className="flex-1 font-mono text-xs h-8 border border-input"
                     placeholder="#000000"
                     autoFocus
                   />

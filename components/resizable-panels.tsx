@@ -15,7 +15,7 @@ function PanelHeader({ title, collapsed, onToggle }: PanelHeaderProps) {
     <button
       type="button"
       className={cn(
-        "group relative flex w-full items-center justify-between bg-background/90 px-4 py-2.5 text-left text-sm font-semibold shadow-sm ring-1 ring-border/40",
+        "group sticky top-0 z-20 flex w-full items-center justify-between bg-background px-4 py-2.5 text-left text-sm font-semibold shadow-sm ring-1 ring-border/40",
         "transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2",
       )}
       onClick={onToggle}

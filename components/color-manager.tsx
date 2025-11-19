@@ -26,7 +26,7 @@ import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
 import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
-import type { ColorWithName, DragIndicatorPosition } from "@/components/color-manager/types"
+import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
   composeLabel,
   createSwatch,
@@ -174,9 +174,6 @@ export function ColorManager({
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingName, setEditingName] = useState("")
   const [originalEditingName, setOriginalEditingName] = useState("")
-  const [editingHexIndex, setEditingHexIndex] = useState<number | null>(null)
-  const [editingHex, setEditingHex] = useState("")
-  const [originalEditingHex, setOriginalEditingHex] = useState("")
   const [editingGroupName, setEditingGroupName] = useState<string | null>(null)
   const [newGroupName, setNewGroupName] = useState("")
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
@@ -218,6 +215,7 @@ export function ColorManager({
   const minCardWidth = CARD_MIN_COLUMN_WIDTH
   const [cardColumnCount, setCardColumnCount] = useState(1)
   const lastMeasuredGridWidthRef = useRef<number | null>(null)
+  const [cardValueMode, setCardValueMode] = useState<ColorFormatMode>("hex")
 
   const computeColumnCount = useCallback(
     (availableWidth: number | null) => {
@@ -1043,28 +1041,6 @@ const GROUP_SNAP_HOLD_MS = 160
     setEditingIndex(null)
     setNameError(null)
     setEditMode(null)
-  }
-
-  const handleEditHex = (index: number) => {
-    const currentSwatch = getSwatchAt(index)
-    const hex = currentSwatch?.hex ?? "#000000"
-    setEditingHexIndex(index)
-    setEditingHex(hex)
-    setOriginalEditingHex(hex)
-  }
-
-  const handleSaveHex = (index: number) => {
-    if (editingHex !== originalEditingHex) {
-      const currentSwatch = getSwatchAt(index)
-      const normalized = normalizeHex(editingHex)
-      const updated = updateSwatch(currentSwatch ?? createSwatch({ hex: normalized }), { hex: normalized })
-      onUpdateColor(index, updated)
-    }
-    setEditingHexIndex(null)
-  }
-
-  const handleCancelHexEdit = () => {
-    setEditingHexIndex(null)
   }
 
   const handleEditGroupName = (oldName: string) => {
@@ -2058,61 +2034,77 @@ const GROUP_SNAP_HOLD_MS = 160
       className="space-y-8 p-4 relative rounded-xl bg-background"
       style={{ overflowAnchor: "none" }}
     >
-      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
-        <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className={cn(
-                "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
-                isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
-              )}
-              style={{
-                borderRadius: isCardSizeMenuOpen
-                  ? CARD_CONTROL_RADII.elevated
-                  : CARD_CONTROL_RADII.pill,
-              }}
+      <div className="flex flex-wrap items-center gap-4 justify-between">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Card Size</span>
+          <DropdownMenu open={isCardSizeMenuOpen} onOpenChange={setIsCardSizeMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:ring-2 focus-visible:ring-primary/40",
+                  isCardSizeMenuOpen ? "border-primary/60 bg-primary/5 text-primary" : "",
+                )}
+                style={{
+                  borderRadius: isCardSizeMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                }}
+              >
+                <span>{selectedCardSize.label}</span>
+                <ChevronDown className="h-3 w-3 opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              sideOffset={6}
+              className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
+              style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
             >
-              <span>{selectedCardSize.label}</span>
-              <ChevronDown className="h-3 w-3 opacity-70" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="start"
-            sideOffset={6}
-            className="border border-border bg-background/95 p-2 shadow-lg backdrop-blur"
-            style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
-          >
-            <div className="flex items-center gap-1">
-              {CARD_SIZE_TOKENS.map((option, index) => {
-                const isActive = index === cardSizeIndex
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => {
-                      setCardSizeIndex(index)
-                      setIsCardSizeMenuOpen(false)
-                    }}
-                    className={cn(
-                      "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                      isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
-                    )}
-                    style={{
-                      borderRadius: isActive
-                        ? CARD_CONTROL_RADII.elevated
-                        : CARD_CONTROL_RADII.pill,
-                    }}
-                  >
-                    <span>{option.label}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <div className="flex items-center gap-1">
+                {CARD_SIZE_TOKENS.map((option, index) => {
+                  const isActive = index === cardSizeIndex
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        setCardSizeIndex(index)
+                        setIsCardSizeMenuOpen(false)
+                      }}
+                      className={cn(
+                        "relative flex h-8 min-w-[2.5rem] cursor-pointer items-center justify-center px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                        isActive ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/85" : "bg-muted text-foreground hover:bg-muted/70",
+                      )}
+                      style={{
+                        borderRadius: isActive ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                      }}
+                    >
+                      <span>{option.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Value</span>
+          <div className="inline-flex rounded-full border border-border bg-muted/40 p-1">
+            {["hex", "hsluv", "hpluv"].map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setCardValueMode(mode as ColorFormatMode)}
+                className={cn(
+                  "px-3 py-0.5 text-[11px] font-semibold uppercase tracking-wide transition rounded-full",
+                  cardValueMode === mode ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {mode.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {Array.from(groupedColors.entries()).map(([groupName, groupColors], groupIndex) => {
@@ -2261,8 +2253,6 @@ const GROUP_SNAP_HOLD_MS = 160
                     isEditingName: editingIndex === actualIndex,
                     editingName,
                     hasNameError: nameError === actualIndex,
-                    isEditingHex: editingHexIndex === actualIndex,
-                    editingHex,
                   }}
                   onNameChange={(value) => handleNameChange(value, actualIndex)}
                   onNameSave={() => handleSaveName(actualIndex)}
@@ -2270,10 +2260,6 @@ const GROUP_SNAP_HOLD_MS = 160
                   onNameEdit={(mode = "button") => handleEditName(actualIndex, colors[actualIndex], mode)}
                   onNameClick={() => handleClickName(actualIndex, colors[actualIndex])}
                   onDelete={() => setDeleteIndex(actualIndex)}
-                  onHexChange={setEditingHex}
-                  onHexSave={() => handleSaveHex(actualIndex)}
-                  onHexCancel={handleCancelHexEdit}
-                  onHexEdit={() => handleEditHex(actualIndex)}
                   onCopyValue={(value) => handleCopyValue(value, actualIndex)}
                   onDragStart={(event) => handleDragStart(event, actualIndex)}
                   onDragEnd={() => handleDragEnd()}
@@ -2284,6 +2270,7 @@ const GROUP_SNAP_HOLD_MS = 160
                   onCardClick={(event) => handleCardClick(actualIndex, event)}
                   onHandleHover={(hovering) => setHoveredHandleIndex(hovering ? actualIndex : null)}
                   onSwatchClick={() => onColorEdit?.(actualIndex)}
+                  valueMode={cardValueMode}
                 />
               )
             })}

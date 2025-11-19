@@ -2,7 +2,7 @@
 
 import React from "react"
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
-import { ChevronDown, Plus, Settings } from "lucide-react"
+import { ChevronDown, Plus, Settings, Shuffle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -36,7 +36,7 @@ import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
 import { CARD_CONTROL_RADII } from "@/lib/design-tokens"
 import { DragHandle } from "@/components/ui/drag-handle"
 import { DropToTrash } from "@/components/dnd/drop-to-trash"
-import { computeDragMode, computeInsertTargetIndex, computePaletteInsertion } from "@/lib/index-dnd"
+import { computeDragMode, computeInsertTargetIndex } from "@/lib/index-dnd"
 import { computeHorizontalIndicatorPosition, computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
 
 const CARD_SIZE = 132 // px
@@ -44,9 +44,10 @@ const GAP_SIZE = 16 // px (gap-4)
 const ANIMATION_DURATION = 0.25 // seconds - faster animation
 const CARD_WITH_GAP = CARD_SIZE + GAP_SIZE // 148px
 const BORDER_GAP = 8 // px - gap for borders (-inset-2 = 8px)
+const FILTER_CONTROL_SIZE = 40 // px
 const UNGROUPED_LABEL = "Ungrouped"
 const DIGITS_ONLY_PATTERN = /^\d+$/
-const NUMBER_FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
+const FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
 const FILTER_STEP_VALUES = [1, 10, 100, 1000] as const
 const FILTER_STEP_MAX_INDEX = FILTER_STEP_VALUES.length - 1
 
@@ -125,32 +126,80 @@ type NumberRange = {
   max: number
 }
 
-type StoredNumberFilterState = {
-  rows: NumberRange | null
-  columns: NumberRange | null
+type StoredFilterState = {
+  rowRange: NumberRange | null
+  columnRange: NumberRange | null
+  rowIds: string[] | null
+  columnIds: string[] | null
+  filterStepIndex: number | null
 }
 
-const readNumberFilterStorage = (): Record<string, StoredNumberFilterState> => {
+const readFilterStorage = (): Record<string, StoredFilterState> => {
   if (typeof window === "undefined") {
     return {}
   }
   try {
-    const raw = window.localStorage.getItem(NUMBER_FILTER_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as Record<string, StoredNumberFilterState>) : {}
+    const raw = window.localStorage.getItem(FILTER_STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as Record<string, StoredFilterState>) : {}
   } catch {
     return {}
   }
 }
 
-const writeNumberFilterStorage = (value: Record<string, StoredNumberFilterState>) => {
+const writeFilterStorage = (value: Record<string, StoredFilterState>) => {
   if (typeof window === "undefined") {
     return
   }
   try {
-    window.localStorage.setItem(NUMBER_FILTER_STORAGE_KEY, JSON.stringify(value))
+    window.localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(value))
   } catch {
     // ignore
   }
+}
+
+const isNumberRange = (value: unknown): value is NumberRange => {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  return typeof (value as NumberRange).min === "number" && typeof (value as NumberRange).max === "number"
+}
+
+const normalizeStoredFilterState = (value: unknown): StoredFilterState => {
+  if (!value || typeof value !== "object") {
+    return {
+      rowRange: null,
+      columnRange: null,
+      rowIds: null,
+      columnIds: null,
+      filterStepIndex: null,
+    }
+  }
+
+  const candidate = value as Partial<Record<string, unknown>>
+  const rowRangeCandidate = (candidate.rowRange ?? candidate.rows) as NumberRange | null
+  const columnRangeCandidate = (candidate.columnRange ?? candidate.columns) as NumberRange | null
+
+  const rowIds = Array.isArray(candidate.rowIds)
+    ? candidate.rowIds.filter((id): id is string => typeof id === "string")
+    : null
+  const columnIds = Array.isArray(candidate.columnIds)
+    ? candidate.columnIds.filter((id): id is string => typeof id === "string")
+    : null
+
+  return {
+    rowRange: isNumberRange(rowRangeCandidate) ? rowRangeCandidate : null,
+    columnRange: isNumberRange(columnRangeCandidate) ? columnRangeCandidate : null,
+    rowIds,
+    columnIds,
+    filterStepIndex: typeof candidate.filterStepIndex === "number" ? candidate.filterStepIndex : null,
+  }
+}
+
+const serializeFilterIds = (ids: Set<string> | null) => {
+  if (ids === null) {
+    return null
+  }
+  return Array.from(ids)
 }
 
 type ContrastGridProps = {
@@ -194,7 +243,9 @@ export function ContrastGrid({
   const [isRowFilterMenuOpen, setIsRowFilterMenuOpen] = useState(false)
   const [isColumnFilterMenuOpen, setIsColumnFilterMenuOpen] = useState(false)
   const [isFilterOptionsMenuOpen, setIsFilterOptionsMenuOpen] = useState(false)
+  const [isSwapButtonPressed, setIsSwapButtonPressed] = useState(false)
   const [filterStepIndex, setFilterStepIndex] = useState(1)
+  const [filtersInitialized, setFiltersInitialized] = useState(false)
 
 
 
@@ -284,9 +335,22 @@ const colorEntries = useMemo<ColorEntry[]>(
   }, [groupedColorEntries])
 
   useEffect(() => {
-    const stored = readNumberFilterStorage()[paletteId]
-    setRowNumberFilter(stored?.rows ?? null)
-    setColumnNumberFilter(stored?.columns ?? null)
+    setFiltersInitialized(false)
+    const stored = normalizeStoredFilterState(readFilterStorage()[paletteId])
+    setRowNumberFilter(stored.rowRange ?? null)
+    setColumnNumberFilter(stored.columnRange ?? null)
+    setRowFilterIds(stored.rowIds === null ? null : new Set<string>(stored.rowIds))
+    setColumnFilterIds(stored.columnIds === null ? null : new Set<string>(stored.columnIds))
+    if (
+      typeof stored.filterStepIndex === "number" &&
+      stored.filterStepIndex >= 0 &&
+      stored.filterStepIndex <= FILTER_STEP_MAX_INDEX
+    ) {
+      setFilterStepIndex(stored.filterStepIndex)
+    } else {
+      setFilterStepIndex(1)
+    }
+    setFiltersInitialized(true)
   }, [paletteId])
 
   const effectiveRowFilterIds = useMemo(() => {
@@ -367,10 +431,19 @@ const colorEntries = useMemo<ColorEntry[]>(
   }, [columnNumberFilter])
 
   useEffect(() => {
-    const existing = readNumberFilterStorage()
-    existing[paletteId] = { rows: rowNumberFilter, columns: columnNumberFilter }
-    writeNumberFilterStorage(existing)
-  }, [paletteId, rowNumberFilter, columnNumberFilter])
+    if (!filtersInitialized) {
+      return
+    }
+    const existing = readFilterStorage()
+    existing[paletteId] = {
+      rowRange: rowNumberFilter,
+      columnRange: columnNumberFilter,
+      rowIds: serializeFilterIds(rowFilterIds),
+      columnIds: serializeFilterIds(columnFilterIds),
+      filterStepIndex,
+    }
+    writeFilterStorage(existing)
+  }, [filtersInitialized, paletteId, rowNumberFilter, columnNumberFilter, rowFilterIds, columnFilterIds, filterStepIndex])
 
   const passesNumberFilter = useCallback(
     (entry: ColorEntry, filter: NumberRange | null) => {
@@ -528,6 +601,19 @@ const colorEntries = useMemo<ColorEntry[]>(
       setColumnNumberFilter(null)
     }
   }, [numericBounds])
+
+  const swapRowColumnFilters = useCallback(() => {
+    const nextRowIds = columnFilterIds ? new Set(columnFilterIds) : null
+    const nextColumnIds = rowFilterIds ? new Set(rowFilterIds) : null
+    const nextRowNumberFilter = columnNumberFilter ? { ...columnNumberFilter } : null
+    const nextColumnNumberFilter = rowNumberFilter ? { ...rowNumberFilter } : null
+
+    setRowFilterIds(nextRowIds)
+    setColumnFilterIds(nextColumnIds)
+    setRowNumberFilter(nextRowNumberFilter)
+    setColumnNumberFilter(nextColumnNumberFilter)
+    setIsSwapButtonPressed(false)
+  }, [columnFilterIds, rowFilterIds, columnNumberFilter, rowNumberFilter])
 
 const renderFilterGroups = (
   effectiveSet: Set<string> | null,
@@ -996,23 +1082,24 @@ const renderNumberFilterSection = (
         return
       }
 
-      const paletteMove = computePaletteInsertion({
-        baseIndexes: foregroundBaseIndexes,
-        draggedIndex: draggedFgIndex,
-        targetIndex,
-        paletteLength: colors.length,
-      })
-
-      if (!paletteMove) {
+      const insertBeforeBase =
+        targetIndex >= foregroundBaseIndexes.length ? colors.length : foregroundBaseIndexes[targetIndex]
+      if (typeof insertBeforeBase !== "number") {
         handleFgDragEnd()
         return
       }
+      const fromBaseIndex = foregroundBaseIndexes[draggedFgIndex]
+      if (typeof fromBaseIndex !== "number") {
+        handleFgDragEnd()
+        return
+      }
+      const isMovingLeft = targetIndex <= draggedFgIndex
 
       setFgAnimationState({
         draggedIndex: draggedFgIndex,
-        targetIndex,
+        targetIndex: isMovingLeft ? targetIndex : targetIndex - 1,
       })
-      onReorderColors(paletteMove.fromIndex, paletteMove.insertionIndex)
+      onReorderColors(fromBaseIndex, insertBeforeBase)
     }
     handleFgDragEnd()
   }
@@ -1070,23 +1157,20 @@ const renderNumberFilterSection = (
         return
       }
 
-      const paletteMove = computePaletteInsertion({
-        baseIndexes: backgroundBaseIndexes,
-        draggedIndex: draggedBgIndex,
-        targetIndex,
-        paletteLength: colors.length,
-      })
-
-      if (!paletteMove) {
+      const insertBeforeBase =
+        targetIndex >= backgroundBaseIndexes.length ? colors.length : backgroundBaseIndexes[targetIndex]
+      const fromBaseIndex = backgroundBaseIndexes[draggedBgIndex]
+      if (typeof fromBaseIndex !== "number" || typeof insertBeforeBase !== "number") {
         handleBgDragEnd()
         return
       }
+      const isMovingUp = targetIndex <= draggedBgIndex
 
       setBgAnimationState({
         draggedIndex: draggedBgIndex,
-        targetIndex,
+        targetIndex: isMovingUp ? targetIndex : targetIndex - 1,
       })
-      onReorderColors(paletteMove.fromIndex, paletteMove.insertionIndex)
+      onReorderColors(fromBaseIndex, insertBeforeBase)
     }
     handleBgDragEnd()
   }
@@ -1436,7 +1520,35 @@ const renderNumberFilterSection = (
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <div className="flex w-full flex-wrap items-start gap-2 justify-start md:w-auto md:ml-auto md:justify-end">
+        <div className="flex w-full flex-wrap items-start gap-2 justify-start md:w-auto md:ml-auto md:justify-end md:items-stretch">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            disabled={colorEntries.length === 0}
+            onClick={swapRowColumnFilters}
+            onPointerDown={() => setIsSwapButtonPressed(true)}
+            onPointerUp={() => setIsSwapButtonPressed(false)}
+            onPointerLeave={() => setIsSwapButtonPressed(false)}
+            onPointerCancel={() => setIsSwapButtonPressed(false)}
+            onBlur={() => setIsSwapButtonPressed(false)}
+            onKeyDown={(event) => {
+              if (event.key === " " || event.key === "Enter") {
+                setIsSwapButtonPressed(true)
+              }
+            }}
+            onKeyUp={() => setIsSwapButtonPressed(false)}
+            className="border border-border text-foreground transition-all hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            style={{
+              borderRadius: isSwapButtonPressed ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+              height: FILTER_CONTROL_SIZE,
+              width: FILTER_CONTROL_SIZE,
+            }}
+            aria-label="Swap row and column filters"
+          >
+            <Shuffle className="h-4 w-4" />
+          </Button>
+
           <DropdownMenu
             open={isRowFilterMenuOpen}
             onOpenChange={(open) => {
@@ -1453,11 +1565,12 @@ const renderNumberFilterSection = (
                 variant="outline"
                 size="sm"
                 disabled={colorEntries.length === 0}
-                className={`flex items-center gap-2 border border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                className={`flex items-center gap-2 border border-border px-3 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
                   isRowFilterMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 text-foreground hover:border-primary/40"
                 }`}
                 style={{
                   borderRadius: isRowFilterMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                  height: FILTER_CONTROL_SIZE,
                 }}
               >
                 Rows: {rowFilterSummary}
@@ -1524,11 +1637,12 @@ const renderNumberFilterSection = (
                 variant="outline"
                 size="sm"
                 disabled={colorEntries.length === 0}
-                className={`flex items-center gap-2 border border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                className={`flex items-center gap-2 border border-border px-3 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
                   isColumnFilterMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 text-foreground hover:border-primary/40"
                 }`}
                 style={{
                   borderRadius: isColumnFilterMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                  height: FILTER_CONTROL_SIZE,
                 }}
               >
                 Columns: {columnFilterSummary}
@@ -1607,13 +1721,15 @@ const renderNumberFilterSection = (
                 ref={filterOptionsTriggerRef}
                 type="button"
                 variant="outline"
-                size="sm"
+                size="icon"
                 aria-label="Filter options"
-                className={`flex items-center gap-2 border border-border px-3 py-1 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
-                  isFilterOptionsMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 text-foreground hover:border-primary/40"
+                className={`border border-border text-foreground transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                  isFilterOptionsMenuOpen ? "border-primary/60 bg-primary/5 text-primary shadow-sm" : "bg-muted/20 hover:border-primary/40"
                 }`}
                 style={{
                   borderRadius: isFilterOptionsMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                  height: FILTER_CONTROL_SIZE,
+                  width: FILTER_CONTROL_SIZE,
                 }}
               >
                 <Settings className="h-4 w-4" />
@@ -1767,7 +1883,7 @@ const renderNumberFilterSection = (
                   />
 
                   <div
-                    className="flex flex-col items-center justify-end border-2 transition-all cursor-pointer hover:opacity-90 border-border rounded-sm pb-0"
+                    className="flex flex-col items-center justify-end border border-border transition-all cursor-pointer hover:opacity-90 rounded-md pb-0"
                     style={{
                       height: `${CARD_SIZE}px`,
                       width: `${CARD_SIZE}px`,
@@ -1776,8 +1892,8 @@ const renderNumberFilterSection = (
                     onClick={(e) => handleFgHeaderClick(i, e)}
                   >
                     <div className="w-full py-2 px-2">
-                      <div className="rounded bg-white font-mono text-black truncate text-center px-2 my-0 text-sm rounded-sm border py-1 font-light leading-7">
-                        {displayText}
+                      <div className="rounded bg-white font-mono text-black text-center px-2 my-0 text-sm rounded-sm border py-1 font-light leading-6 break-words whitespace-normal min-h-[2.5rem] flex items-center justify-center">
+                        <span className="block w-full break-words whitespace-normal">{displayText}</span>
                       </div>
                     </div>
                   </div>
@@ -1793,7 +1909,7 @@ const renderNumberFilterSection = (
               <Button
                 variant="outline"
                 size="icon"
-                className="bg-transparent cursor-pointer border-2 border-border hover:bg-foreground/5 rounded-sm"
+                className="bg-transparent cursor-pointer border border-border hover:bg-foreground/5 rounded-md"
                 style={{
                   height: `${CARD_SIZE}px`,
                   width: `${CARD_SIZE}px`,
@@ -1822,7 +1938,7 @@ const renderNumberFilterSection = (
                         bgLabelRefs.current.delete(bgIndex)
                       }
                     }}
-                    className="relative flex items-center transition-all duration-200 pr-0 mr-0 gap-2 overflow-visible"
+                    className="relative flex w-full items-center transition-all duration-200 pr-0 mr-0 gap-2 overflow-visible"
                     style={{
                       opacity: isBgDragging ? 0.5 : 1,
                       transform: isBgDragging ? "scale(0.95)" : "scale(1)",
@@ -1839,21 +1955,21 @@ const renderNumberFilterSection = (
                       />
                     )}
 
-                    <DragHandle
-                      draggable
-                      data-drag-handle
-                      orientation="vertical"
-                      className="px-1 py-2"
-                      highlighted={hoveredBgIndex === bgIndex}
-                      onDragStart={(event) => handleBgDragStart(event, bgIndex)}
-                      onDragEnd={handleBgDragEnd}
-                      onMouseEnter={() => setHoveredBgIndex(bgIndex)}
-                      onMouseLeave={() => setHoveredBgIndex(null)}
-                    />
+                      <DragHandle
+                        draggable
+                        data-drag-handle
+                        orientation="vertical"
+                        className="px-1 py-2 shrink-0"
+                        highlighted={hoveredBgIndex === bgIndex}
+                        onDragStart={(event) => handleBgDragStart(event, bgIndex)}
+                        onDragEnd={handleBgDragEnd}
+                        onMouseEnter={() => setHoveredBgIndex(bgIndex)}
+                        onMouseLeave={() => setHoveredBgIndex(null)}
+                      />
 
-                    <div className="flex flex-col items-center gap-1">
+                    <div className="ml-auto flex flex-col items-center gap-1">
                       <div
-                        className="flex flex-col items-center justify-end border-2 border-border transition-all cursor-pointer hover:opacity-90 rounded-sm pb-0"
+                        className="flex flex-col items-center justify-end border border-border transition-all cursor-pointer hover:opacity-90 rounded-md pb-0"
                         style={{
                           height: `${CARD_SIZE}px`,
                           width: `${CARD_SIZE}px`,
@@ -1862,8 +1978,8 @@ const renderNumberFilterSection = (
                         onClick={(e) => handleBgHeaderClick(bgIndex, e)}
                       >
                         <div className="w-full px-2 py-2">
-                          <div className="rounded bg-white font-mono text-black px-2 truncate text-center border rounded-sm py-1 text-sm font-light">
-                            {bgDisplayText}
+                          <div className="rounded bg-white font-mono text-black px-2 text-center border rounded-sm py-1 text-sm font-light leading-6 break-words whitespace-normal min-h-[2.5rem] flex items-center justify-center">
+                            <span className="block w-full break-words whitespace-normal">{bgDisplayText}</span>
                           </div>
                         </div>
                       </div>
@@ -1880,7 +1996,7 @@ const renderNumberFilterSection = (
                     return (
                       <div
                         key={`${bgIndex}-${fgIndex}`}
-                        className="relative flex flex-col items-center justify-center border-2 border-border transition-all duration-200 rounded-sm"
+                        className="relative flex flex-col items-center justify-center border border-border transition-all duration-200 rounded-md"
                         style={{
                           height: `${CARD_SIZE}px`,
                           width: `${CARD_SIZE}px`,
@@ -1939,7 +2055,7 @@ const renderNumberFilterSection = (
               <Button
                 variant="outline"
                 size="icon"
-                className="rounded-lg bg-transparent cursor-pointer border-2 border-border hover:bg-foreground/5"
+                className="rounded-lg bg-transparent cursor-pointer border border-border hover:bg-foreground/5"
                 style={{
                   height: `${CARD_SIZE}px`,
                   width: `${CARD_SIZE}px`,
@@ -2009,8 +2125,7 @@ const ConfirmActionButton = ({ variant, description, onConfirm }: ConfirmActionB
             <Button
               variant="black"
               size="sm"
-              onClick={(event) => {
-                event.preventDefault()
+              onClick={() => {
                 onConfirm()
               }}
             >
