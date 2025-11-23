@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog"
 import { useState } from "react"
 import { Switch } from "@/components/ui/switch"
+import type { ContrastStandard } from "@/lib/contrast-utils"
 
 type HeaderProps = {
   onClearCache?: () => void
@@ -39,6 +40,8 @@ type HeaderProps = {
   onDeletePalette?: () => void
   collapseGroupsDuringGroupDrag?: boolean
   onCollapseGroupsDuringDragChange?: (value: boolean) => void
+  contrastStandard: ContrastStandard
+  onContrastStandardChange: (standard: ContrastStandard) => void
 }
 
 export function Header({
@@ -49,7 +52,11 @@ export function Header({
   onDeletePalette,
   collapseGroupsDuringGroupDrag = false,
   onCollapseGroupsDuringDragChange,
+  contrastStandard: _contrastStandard,
+  onContrastStandardChange: _onContrastStandardChange,
 }: HeaderProps) {
+  void _contrastStandard
+  void _onContrastStandardChange
   const [showClearDialog, setShowClearDialog] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(paletteName || "")
@@ -80,7 +87,7 @@ export function Header({
   return (
     <>
       <header className="border-border px-6 py-4 border-b-2 bg-secondary">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-6">
           <div className="flex items-center gap-6">
             <h1 className="text-xl font-bold">
               colour<span className="font-normal">not</span>color
@@ -135,36 +142,38 @@ export function Header({
                 </Button>
               </div>
             )}
-          </div>
+        </div>
+        <div className="flex items-center gap-4">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="cursor-pointer">
                 <Settings className="h-5 w-5" />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[220px]">
-              <DropdownMenuItem
-                onSelect={(event) => event.preventDefault()}
-                className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
-              >
-                <div className="flex w-full items-center justify-between gap-3">
-                  <span className="text-sm font-medium text-foreground">Collapse groups while dragging</span>
-                  <Switch
-                    checked={collapseGroupsDuringGroupDrag}
-                    onCheckedChange={(checked) => onCollapseGroupsDuringDragChange?.(checked)}
-                    aria-label="Collapse groups while dragging"
-                  />
-                </div>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-border/60" />
-              <DropdownMenuItem
-                onClick={() => setShowClearDialog(true)}
-                className="cursor-pointer text-red-600 focus:bg-accent/30 focus:text-red-600"
-              >
-                Clear Cache
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[220px]">
+                <DropdownMenuItem
+                  onSelect={(event) => event.preventDefault()}
+                  className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
+                >
+                  <div className="flex w-full items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-foreground">Collapse groups while dragging</span>
+                    <Switch
+                      checked={collapseGroupsDuringGroupDrag}
+                      onCheckedChange={(checked) => onCollapseGroupsDuringDragChange?.(checked)}
+                      aria-label="Collapse groups while dragging"
+                    />
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-border/60" />
+                <DropdownMenuItem
+                  onClick={() => setShowClearDialog(true)}
+                  className="cursor-pointer text-red-600 focus:bg-accent/30 focus:text-red-600"
+                >
+                  Clear Cache
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </header>
 

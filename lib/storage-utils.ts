@@ -1,10 +1,12 @@
 import type { ColorSwatch } from "@/types/palette"
 import { createSwatch, swatchFromLegacy } from "@/lib/color-utils"
+import type { ContrastStandard } from "@/lib/contrast-utils"
 
 const STORAGE_KEYS = {
   PALETTES: "color-checker-palettes",
   ACTIVE_PALETTE_ID: "color-checker-active-palette",
   LAYOUT_PREFERENCES: "color-checker-layout-preferences",
+  CONTRAST_STANDARD: "color-checker-contrast-standard",
 } as const
 
 export type StoredPalette = {
@@ -67,6 +69,23 @@ export const storage = {
     }
   },
 
+  saveContrastStandard: (standard: ContrastStandard) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.CONTRAST_STANDARD, standard)
+    } catch {
+      // Swallow storage errors
+    }
+  },
+
+  loadContrastStandard: (): ContrastStandard | null => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.CONTRAST_STANDARD)
+      return stored === "wcag2" || stored === "apca" ? stored : null
+    } catch {
+      return null
+    }
+  },
+
   // Load palettes from localStorage
   loadPalettes: (): StoredPalette[] | null => {
     try {
@@ -124,12 +143,13 @@ export const storage = {
     }
   },
 
-  // Clear all stored data
+  // Clear all stored data (including the contrast standard preference for a complete reset)
   clearAll: () => {
     try {
       localStorage.removeItem(STORAGE_KEYS.PALETTES)
       localStorage.removeItem(STORAGE_KEYS.ACTIVE_PALETTE_ID)
       localStorage.removeItem(STORAGE_KEYS.LAYOUT_PREFERENCES)
+      localStorage.removeItem(STORAGE_KEYS.CONTRAST_STANDARD)
     } catch {
       // Swallow storage errors
     }

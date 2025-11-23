@@ -4,11 +4,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DragHandle } from "@/components/ui/drag-handle"
 import { Copy, Pencil, Trash2 } from "lucide-react"
-import { useMemo, useState, useEffect } from "react"
+import { useMemo } from "react"
 import type React from "react"
 
 import type { ColorWithName, ColorFormatMode } from "@/components/color-manager/types"
-import { formatHslString, hexToHpluv, hexToHsluv, hpluvToHex, hsluvToHex, parseHslString } from "@/lib/hsluv"
+import { formatHslString, hexToHpluv, hexToHsluv } from "@/lib/hsluv"
 
 type InsertPosition = "before" | "after"
 type HslMode = Exclude<ColorFormatMode, "hex">
@@ -94,13 +94,8 @@ export function ColorCard({
     hasNameError,
   } = state
 
-  const [mode, setMode] = useState<ColorFormatMode>(valueMode ?? "hex")
+  const mode: ColorFormatMode = valueMode ?? "hex"
   const canonicalHex = color.hex || "#000000"
-  useEffect(() => {
-    if (valueMode && valueMode !== mode) {
-      setMode(valueMode)
-    }
-  }, [valueMode, mode])
 
   const formatHexAsHsl = (hexValue: string, kind: HslMode) => {
     try {

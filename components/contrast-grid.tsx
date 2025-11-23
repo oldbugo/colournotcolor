@@ -1,8 +1,9 @@
 "use client"
 
 import React from "react"
-import { useState, useRef, useEffect, useMemo, useCallback } from "react"
-import { ChevronDown, Plus, Settings, Shuffle } from "lucide-react"
+import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
+import { createPortal } from "react-dom"
+import { ChevronDown, Plus, Settings, Shuffle, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -24,11 +25,18 @@ import {
 } from "@/components/ui/alert-dialog"
 
 import {
-  calculateContrast,
-  getWCAGLevel,
   extractHexFromColor,
   extractCustomName,
-  type ContrastThresholds,
+  evaluateContrast,
+  CONTRAST_REQUIREMENTS,
+  APCA_FONT_GUIDANCE,
+} from "@/lib/contrast-utils"
+import type {
+  ContrastStandard,
+  ApcaFontGuidance,
+  ContrastRequirement,
+  ApcaContrastEvaluation,
+  ContrastRequirementId,
 } from "@/lib/contrast-utils"
 import type { ColorSwatch } from "@/types/palette"
 import type { EditingColor } from "@/app/page"
@@ -50,8 +58,57 @@ const DIGITS_ONLY_PATTERN = /^\d+$/
 const FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
 const FILTER_STEP_VALUES = [1, 10, 100, 1000] as const
 const FILTER_STEP_MAX_INDEX = FILTER_STEP_VALUES.length - 1
+const CONTRAST_SLIDER_MAX = CONTRAST_REQUIREMENTS.length - 1
+
+const STANDARD_LABELS: Record<ContrastStandard, string> = {
+  wcag2: "WCAG 2.x (ratio)",
+  apca: "APCA (Lc)",
+}
+
+const APCA_OVERLAY_SIZE = 420
+const APCA_OVERLAY_MARGIN = 16
+const POSITION_EPSILON = 0.5
+const APCA_OVERLAY_HEADER_BUFFER = 120
+const SCROLL_DELTA_EPSILON = 0.5
+const MIDDLE_PAN_EVENT = "contrastgrid:middlepan"
+// Temporary debug flag: keep APCA overlay open regardless of outside clicks.
+const DEBUG_KEEP_APCA_OVERLAY_OPEN = false
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+
+// Walk up the DOM to find the first ancestor that can actually scroll on the requested axis.
+const findScrollableParent = (node: HTMLElement | null, axis: "x" | "y"): HTMLElement | null => {
+  let current: HTMLElement | null = node
+  while (current) {
+    const hasRoom =
+      axis === "x"
+        ? current.scrollWidth - current.clientWidth > SCROLL_DELTA_EPSILON
+        : current.scrollHeight - current.clientHeight > SCROLL_DELTA_EPSILON
+    if (hasRoom) {
+      return current
+    }
+    current = current.parentElement
+  }
+  return null
+}
+
+// Apply a drag delta to a scrollable element; return any remaining distance when clamped at the edges.
+const applyPanToAxis = (target: HTMLElement, delta: number, axis: "x" | "y") => {
+  const total = axis === "x" ? target.scrollWidth : target.scrollHeight
+  const viewport = axis === "x" ? target.clientWidth : target.clientHeight
+  if (total <= viewport + SCROLL_DELTA_EPSILON) {
+    return delta
+  }
+  const current = axis === "x" ? target.scrollLeft : target.scrollTop
+  const desired = current - delta
+  const clamped = clamp(desired, 0, Math.max(0, total - viewport))
+  if (axis === "x") {
+    target.scrollLeft = clamped
+  } else {
+    target.scrollTop = clamped
+  }
+  return desired - clamped
+}
 
 const extractNumericValue = (swatch: ColorSwatch): number | null => {
   const candidateName = swatch.name?.trim()
@@ -69,41 +126,15 @@ const extractNumericValue = (swatch: ColorSwatch): number | null => {
   return null
 }
 
-type ContrastRequirementOption = {
-  id: "non-text" | "large-text" | "normal-text"
-  label: string
-  shortLabel: string
-  description: string
-  thresholds: ContrastThresholds
-}
-
-const CONTRAST_REQUIREMENT_OPTIONS: ContrastRequirementOption[] = [
-  {
-    id: "non-text",
-    label: "Non-text contrast",
-    shortLabel: "Non-text",
-    description: "UI components or graphic objects that only need to meet a 3:1 requirement.",
-    thresholds: { aa: 3 },
-  },
-  {
-    id: "large-text",
-    label: "Large text",
-    shortLabel: "Large text",
-    description: "Text ≥ 24px or ≥ 19px bold needs 3:1 for AA and 4.5:1 for AAA.",
-    thresholds: { aa: 3, aaa: 4.5 },
-  },
-  {
-    id: "normal-text",
-    label: "Normal text",
-    shortLabel: "Body text",
-    description: "Standard body copy where AA is 4.5:1 and AAA is 7:1.",
-    thresholds: { aa: 4.5, aaa: 7 },
-  },
-]
-
-const CONTRAST_SLIDER_MAX = CONTRAST_REQUIREMENT_OPTIONS.length - 1
-
 const formatThresholdLabel = (value: number) => (Number.isInteger(value) ? `${value.toFixed(0)}:1` : `${value.toFixed(1)}:1`)
+const formatLcThresholdLabel = (value: number) => `Lc ${value}`
+const formatLcValue = (value: number) => {
+  const rounded = Math.round(value * 10) / 10
+  if (Object.is(rounded, -0)) {
+    return "0"
+  }
+  return Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)
+}
 
 type ColorEntry = {
   id: string
@@ -205,6 +236,8 @@ const serializeFilterIds = (ids: Set<string> | null) => {
 type ContrastGridProps = {
   paletteId: string
   colors: ColorSwatch[]
+  contrastStandard: ContrastStandard
+  onContrastStandardChange?: (standard: ContrastStandard) => void
   onReorderColors: (fromIndex: number, toIndex: number) => void
   onSwapColors: (fromIndex: number, toIndex: number) => void
   onColorEdit?: (index: number) => void
@@ -216,6 +249,8 @@ type ContrastGridProps = {
 export function ContrastGrid({
   paletteId,
   colors,
+  contrastStandard,
+  onContrastStandardChange,
   onReorderColors,
   onSwapColors,
   onColorEdit,
@@ -239,13 +274,357 @@ export function ContrastGrid({
   const [columnNumberFilter, setColumnNumberFilter] = useState<NumberRange | null>(null)
   const [rowNumberInputs, setRowNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
   const [columnNumberInputs, setColumnNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
-  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set())
   const [isRowFilterMenuOpen, setIsRowFilterMenuOpen] = useState(false)
   const [isColumnFilterMenuOpen, setIsColumnFilterMenuOpen] = useState(false)
   const [isFilterOptionsMenuOpen, setIsFilterOptionsMenuOpen] = useState(false)
   const [isSwapButtonPressed, setIsSwapButtonPressed] = useState(false)
   const [filterStepIndex, setFilterStepIndex] = useState(1)
   const [filtersInitialized, setFiltersInitialized] = useState(false)
+  const [apcaOverlay, setApcaOverlay] = useState<{
+    key: string
+    evaluation: ApcaContrastEvaluation
+    requirementId: ContrastRequirementId
+    fgColor: string
+    bgColor: string
+    statusLabel: string
+  } | null>(null)
+  const [apcaOverlayExpanded, setApcaOverlayExpanded] = useState(false)
+  const [apcaOverlayClosing, setApcaOverlayClosing] = useState(false)
+  const [apcaOverlayPosition, setApcaOverlayPosition] = useState<{
+    top: number
+    left: number
+    width: number
+    height: number
+  } | null>(null)
+  const [isMiddlePanning, setIsMiddlePanning] = useState(false)
+  const standardLabel = STANDARD_LABELS[contrastStandard]
+
+  const getRequirementLabel = useCallback(
+    (requirement: ContrastRequirement) =>
+      contrastStandard === "apca" ? requirement.apcaLabel ?? requirement.label : requirement.label,
+    [contrastStandard],
+  )
+
+  const getRequirementShortLabel = useCallback(
+    (requirement: ContrastRequirement) =>
+      contrastStandard === "apca" ? requirement.apcaShortLabel ?? requirement.shortLabel : requirement.shortLabel,
+    [contrastStandard],
+  )
+
+  const getRequirementDescription = useCallback(
+    (requirement: ContrastRequirement) =>
+      contrastStandard === "apca" ? requirement.apcaDescription ?? requirement.description : requirement.description,
+    [contrastStandard],
+  )
+  const overlayGuidance = apcaOverlay ? APCA_FONT_GUIDANCE[apcaOverlay.requirementId] : undefined
+
+  useEffect(() => {
+    if (contrastStandard !== "apca") {
+      setApcaOverlay(null)
+      setApcaOverlayExpanded(false)
+      setApcaOverlayClosing(false)
+      if (apcaCloseTimeoutRef.current) {
+        window.clearTimeout(apcaCloseTimeoutRef.current)
+        apcaCloseTimeoutRef.current = null
+      }
+    }
+  }, [contrastStandard])
+
+  useEffect(() => {
+    if (!apcaOverlay) {
+      setApcaOverlayPosition(null)
+    }
+  }, [apcaOverlay, apcaOverlayExpanded])
+
+  const gridRef = useRef<HTMLDivElement>(null)
+  const fgHeaderRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+  const bgLabelRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+  const apcaCellRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const apcaOverlayRef = useRef<HTMLDivElement | null>(null)
+  const contrastScrollRef = useRef<HTMLDivElement | null>(null)
+  const apcaCloseTimeoutRef = useRef<number | null>(null)
+  const isMiddlePanningRef = useRef(false)
+  const panStateRef = useRef<{
+    active: boolean
+    lastX: number
+    lastY: number
+    xTarget: HTMLElement | null
+    yTarget: HTMLElement | null
+    pointerId: number | null
+  }>({
+    active: false,
+    lastX: 0,
+    lastY: 0,
+    xTarget: null,
+    yTarget: null,
+    pointerId: null,
+  })
+
+  const closeApcaOverlay = useCallback(() => {
+    if (DEBUG_KEEP_APCA_OVERLAY_OPEN) {
+      return
+    }
+    if (!apcaOverlay || apcaOverlayClosing) {
+      return
+    }
+    setApcaOverlayClosing(true)
+    if (apcaCloseTimeoutRef.current) {
+      window.clearTimeout(apcaCloseTimeoutRef.current)
+    }
+    // eslint-disable-next-line react-hooks/immutability
+    apcaCloseTimeoutRef.current = window.setTimeout(() => {
+      setApcaOverlay(null)
+      setApcaOverlayClosing(false)
+      apcaCloseTimeoutRef.current = null
+    }, 200)
+  }, [apcaOverlay, apcaOverlayClosing])
+
+  const updateApcaOverlayPosition = useCallback(() => {
+    if (!apcaOverlay || typeof window === "undefined") {
+      return
+    }
+    const cellNode = apcaCellRefs.current.get(apcaOverlay.key)
+    if (!cellNode) {
+      setApcaOverlay(null)
+      return
+    }
+
+    const cellRect = cellNode.getBoundingClientRect()
+    const boundsRect = contrastScrollRef.current?.getBoundingClientRect()
+
+    const viewportBounds = {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight,
+    }
+
+    const visibleLeft = Math.max(boundsRect?.left ?? 0, viewportBounds.left)
+    const visibleRight = Math.min(boundsRect?.right ?? viewportBounds.right, viewportBounds.right)
+    const visibleTop = Math.max(boundsRect?.top ?? 0, viewportBounds.top) + APCA_OVERLAY_HEADER_BUFFER
+    const visibleBottom = Math.min(boundsRect?.bottom ?? viewportBounds.bottom, viewportBounds.bottom)
+
+    const availableWidth = Math.max(0, visibleRight - visibleLeft - 2 * APCA_OVERLAY_MARGIN)
+    const availableHeight = Math.max(0, visibleBottom - visibleTop - 2 * APCA_OVERLAY_MARGIN)
+
+    const widthTarget = apcaOverlayExpanded ? availableWidth : Math.min(APCA_OVERLAY_SIZE, availableWidth || APCA_OVERLAY_SIZE)
+    const heightTarget =
+      apcaOverlayExpanded && availableHeight
+        ? availableHeight
+        : Math.min(APCA_OVERLAY_SIZE + 80, availableHeight || APCA_OVERLAY_SIZE + 80)
+
+    const overlayWidth = clamp(
+      widthTarget || APCA_OVERLAY_SIZE,
+      260,
+      Math.max(availableWidth || widthTarget || APCA_OVERLAY_SIZE, 260),
+    )
+    const overlayHeight = clamp(
+      heightTarget || APCA_OVERLAY_SIZE,
+      260,
+      Math.max(availableHeight || heightTarget || APCA_OVERLAY_SIZE, 260),
+    )
+
+    const minLeft = visibleLeft + APCA_OVERLAY_MARGIN
+    const maxLeft = visibleRight - overlayWidth - APCA_OVERLAY_MARGIN
+
+    const minTop = visibleTop + APCA_OVERLAY_MARGIN
+    const maxTop = visibleBottom - overlayHeight - APCA_OVERLAY_MARGIN
+
+    let left = cellRect.left + cellRect.width / 2 - overlayWidth / 2
+    left = clamp(left, minLeft, maxLeft)
+
+    const targetTop = cellRect.top + cellRect.height / 2 - overlayHeight / 2
+    const top = clamp(targetTop, minTop, maxTop)
+
+    setApcaOverlayPosition((prev) => {
+      if (prev && Math.abs(prev.top - top) < POSITION_EPSILON && Math.abs(prev.left - left) < POSITION_EPSILON) {
+        return prev
+      }
+      return { top, left, width: overlayWidth, height: overlayHeight }
+    })
+  }, [apcaOverlay, apcaOverlayExpanded])
+
+  useEffect(() => {
+    if (!apcaOverlay) {
+      return
+    }
+    if (DEBUG_KEEP_APCA_OVERLAY_OPEN) {
+      return
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || panStateRef.current.active || isMiddlePanningRef.current) {
+        return
+      }
+      const target = event.target as Node
+      if (apcaOverlayRef.current && apcaOverlayRef.current.contains(target)) {
+        return
+      }
+      closeApcaOverlay()
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeApcaOverlay()
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown, true)
+    window.addEventListener("keydown", handleKeyDown)
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true)
+      window.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [apcaOverlay, closeApcaOverlay])
+
+  useEffect(() => {
+    const scrollNode = contrastScrollRef.current
+    if (!scrollNode) {
+      return
+    }
+
+    const stopPanning = () => {
+      if (!panStateRef.current.active) return
+      panStateRef.current.active = false
+      setIsMiddlePanning(false)
+      isMiddlePanningRef.current = false
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(MIDDLE_PAN_EVENT, { detail: false }))
+      }
+      if (panStateRef.current.pointerId !== null) {
+        try {
+          scrollNode.releasePointerCapture?.(panStateRef.current.pointerId)
+        } catch {
+          // ignore if capture was not set
+        }
+      }
+      panStateRef.current.xTarget = null
+      panStateRef.current.yTarget = null
+      panStateRef.current.pointerId = null
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", stopPanning)
+      window.removeEventListener("pointercancel", stopPanning)
+      window.removeEventListener("blur", stopPanning)
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!panStateRef.current.active) return
+      event.preventDefault()
+      const dx = event.clientX - panStateRef.current.lastX
+      const dy = event.clientY - panStateRef.current.lastY
+
+      let leftoverX = dx
+      let leftoverY = dy
+
+      if (panStateRef.current.xTarget) {
+        leftoverX = applyPanToAxis(panStateRef.current.xTarget, dx, "x")
+      }
+
+      if (panStateRef.current.yTarget) {
+        leftoverY = applyPanToAxis(panStateRef.current.yTarget, dy, "y")
+      }
+
+      if (Math.abs(leftoverX) > SCROLL_DELTA_EPSILON || Math.abs(leftoverY) > SCROLL_DELTA_EPSILON) {
+        const scrollingElement = document.scrollingElement
+        if (scrollingElement) {
+          scrollingElement.scrollLeft -= leftoverX
+          scrollingElement.scrollTop -= leftoverY
+        } else {
+          window.scrollBy(-leftoverX, -leftoverY)
+        }
+      }
+
+      panStateRef.current.lastX = event.clientX
+      panStateRef.current.lastY = event.clientY
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse" || event.button !== 1) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+
+      const xTarget = findScrollableParent(scrollNode, "x") ?? scrollNode
+      const yTarget = findScrollableParent(scrollNode, "y") ?? scrollNode
+
+      panStateRef.current = {
+        active: true,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        xTarget,
+        yTarget,
+        pointerId: event.pointerId,
+      }
+      setIsMiddlePanning(true)
+      isMiddlePanningRef.current = true
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(MIDDLE_PAN_EVENT, { detail: true }))
+      }
+      try {
+        scrollNode.setPointerCapture?.(event.pointerId)
+      } catch {
+        // ignore if capture fails
+      }
+      window.addEventListener("pointermove", handlePointerMove, { passive: false })
+      window.addEventListener("pointerup", stopPanning)
+      window.addEventListener("pointercancel", stopPanning)
+      window.addEventListener("blur", stopPanning)
+    }
+
+    scrollNode.addEventListener("pointerdown", handlePointerDown)
+    return () => {
+      stopPanning()
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(MIDDLE_PAN_EVENT, { detail: false }))
+      }
+      scrollNode.removeEventListener("pointerdown", handlePointerDown)
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", stopPanning)
+      window.removeEventListener("pointercancel", stopPanning)
+      window.removeEventListener("blur", stopPanning)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (apcaOverlay) {
+      updateApcaOverlayPosition()
+    }
+  }, [apcaOverlay, updateApcaOverlayPosition, colors.length])
+
+  const overlayAnimationFrameRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!apcaOverlay) {
+      if (overlayAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(overlayAnimationFrameRef.current)
+        overlayAnimationFrameRef.current = null
+      }
+      return
+    }
+    const tick = () => {
+      updateApcaOverlayPosition()
+      overlayAnimationFrameRef.current = requestAnimationFrame(tick)
+    }
+    overlayAnimationFrameRef.current = requestAnimationFrame(tick)
+    return () => {
+      if (overlayAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(overlayAnimationFrameRef.current)
+        overlayAnimationFrameRef.current = null
+      }
+    }
+  }, [apcaOverlay, updateApcaOverlayPosition])
+
+  useEffect(() => {
+    if (!apcaOverlay) {
+      return
+    }
+    const handleReposition = () => {
+      updateApcaOverlayPosition()
+    }
+    window.addEventListener("scroll", handleReposition, true)
+    window.addEventListener("resize", handleReposition)
+    return () => {
+      window.removeEventListener("scroll", handleReposition, true)
+      window.removeEventListener("resize", handleReposition)
+    }
+  }, [apcaOverlay, updateApcaOverlayPosition])
 
 
 
@@ -257,11 +636,6 @@ export function ContrastGrid({
     draggedIndex: number
     targetIndex: number
   } | null>(null)
-
-  const gridRef = useRef<HTMLDivElement>(null)
-  const fgHeaderRefs = useRef<Map<number, HTMLDivElement>>(new Map())
-  const bgLabelRefs = useRef<Map<number, HTMLDivElement>>(new Map())
-
   const [fgIndicatorPosition, setFgIndicatorPosition] = useState<{ left: number; top: number; height?: number } | null>(
     null,
   )
@@ -289,9 +663,13 @@ export function ContrastGrid({
   const [bgSwapHighlightStyle, setBgSwapHighlightStyle] = useState<React.CSSProperties | null>(null)
 
   const [requirementIndex, setRequirementIndex] = useState(CONTRAST_SLIDER_MAX)
-  const activeRequirement = CONTRAST_REQUIREMENT_OPTIONS[requirementIndex]
-  const hasAAARequirement = typeof activeRequirement.thresholds.aaa === "number"
+  const activeRequirement = CONTRAST_REQUIREMENTS[requirementIndex]
+  const hasAAARequirement = typeof activeRequirement.wcagThresholds.aaa === "number"
+  const hasApcaPreferred = typeof activeRequirement.apcaThresholds.preferred === "number"
   const [isRequirementMenuOpen, setIsRequirementMenuOpen] = useState(false)
+  const [isRequirementDetailsOpen, setIsRequirementDetailsOpen] = useState(false)
+  const requirementLabel = getRequirementLabel(activeRequirement)
+  const requirementDescription = getRequirementDescription(activeRequirement)
 
 const colorEntries = useMemo<ColorEntry[]>(
     () =>
@@ -330,10 +708,9 @@ const colorEntries = useMemo<ColorEntry[]>(
     return Array.from(groups.values())
   }, [colorEntries])
 
-  useEffect(() => {
-    setCollapsedGroupKeys(new Set(groupedColorEntries.map((group) => group.key)))
-  }, [groupedColorEntries])
-
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(
+    () => new Set(groupedColorEntries.map((group) => group.key)),
+  )
   useEffect(() => {
     setFiltersInitialized(false)
     const stored = normalizeStoredFilterState(readFilterStorage()[paletteId])
@@ -352,7 +729,6 @@ const colorEntries = useMemo<ColorEntry[]>(
     }
     setFiltersInitialized(true)
   }, [paletteId])
-
   const effectiveRowFilterIds = useMemo(() => {
     if (!rowFilterIds) return null
     const filtered = [...rowFilterIds].filter((id) => allColorIdSet.has(id))
@@ -1428,7 +1804,7 @@ const renderNumberFilterSection = (
       `}</style>
 
       <div className="mb-6 flex flex-wrap gap-4">
-        <div className="space-y-2 min-w-[220px]">
+        <div className="space-y-3 min-w-[320px] max-w-[420px]">
           <DropdownMenu open={isRequirementMenuOpen} onOpenChange={setIsRequirementMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
@@ -1441,10 +1817,12 @@ const renderNumberFilterSection = (
                   borderRadius: isRequirementMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
                 }}
               >
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex items-start justify-between gap-4">
                   <div className="flex flex-col text-left">
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</span>
-                    <span className="text-base font-bold leading-tight text-foreground">{activeRequirement.label}</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Requirement focus
+                    </span>
+                    <span className="text-base font-bold leading-tight text-foreground">{requirementLabel}</span>
                   </div>
                   <ChevronDown
                     className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
@@ -1457,31 +1835,110 @@ const renderNumberFilterSection = (
             <DropdownMenuContent
               align="start"
               sideOffset={8}
-              className="w-[320px] space-y-4 border border-border bg-background/95 p-4 text-foreground shadow-lg backdrop-blur"
+              className="w-[380px] space-y-4 border border-border bg-background/95 p-4 text-foreground shadow-lg backdrop-blur"
               style={{ borderRadius: CARD_CONTROL_RADII.elevated }}
             >
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
-                <p className="text-base font-semibold text-foreground">{activeRequirement.label}</p>
-                <p className="text-xs text-muted-foreground">{activeRequirement.description}</p>
-                <p className="text-xs text-muted-foreground">
-                  AA must reach {formatThresholdLabel(activeRequirement.thresholds.aa)}
-                  {hasAAARequirement && (
-                    <>
-                      {" "}
-                      and AAA {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
-                    </>
-                  )}
-                  .
-                </p>
+              <div className="space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
+                    <p className="text-base font-semibold text-foreground">{requirementLabel}</p>
+                    <p className="text-xs text-muted-foreground">{requirementDescription}</p>
+                  </div>
+                  <div className="flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[11px] font-semibold transition-colors duration-200">
+                    <button
+                      type="button"
+                      onClick={() => onContrastStandardChange?.("wcag2")}
+                      className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
+                        contrastStandard === "wcag2" ? "bg-foreground text-background" : "text-muted-foreground"
+                      }`}
+                      aria-pressed={contrastStandard === "wcag2"}
+                    >
+                      WCAG
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onContrastStandardChange?.("apca")}
+                      className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
+                        contrastStandard === "apca" ? "bg-foreground text-background" : "text-muted-foreground"
+                      }`}
+                      aria-pressed={contrastStandard === "apca"}
+                    >
+                      APCA
+                    </button>
+                  </div>
+                </div>
+                {contrastStandard === "wcag2" ? (
+                  <p className="text-xs text-muted-foreground">
+                    AA must reach {formatThresholdLabel(activeRequirement.wcagThresholds.aa)}
+                    {hasAAARequirement && (
+                      <>
+                        {" "}
+                        and AAA {formatThresholdLabel(activeRequirement.wcagThresholds.aaa!)}
+                      </>
+                    )}
+                    .
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Minimum {formatLcThresholdLabel(activeRequirement.apcaThresholds.min)}
+                    {hasApcaPreferred && (
+                      <>
+                        {" "}
+                        - Preferred {formatLcThresholdLabel(activeRequirement.apcaThresholds.preferred!)}
+                      </>
+                    )}
+                    .
+                  </p>
+                )}
               </div>
               <div className="text-xs font-medium text-muted-foreground">
-                AA ≥ {formatThresholdLabel(activeRequirement.thresholds.aa)}
-                {hasAAARequirement && (
+                {contrastStandard === "wcag2" ? (
                   <>
-                    {" "}
-                    • AAA ≥ {formatThresholdLabel(activeRequirement.thresholds.aaa!)}
+                    AA {" >= "} {formatThresholdLabel(activeRequirement.wcagThresholds.aa)}
+                    {hasAAARequirement && (
+                      <>
+                        {" "}
+                        - AAA {" >= "} {formatThresholdLabel(activeRequirement.wcagThresholds.aaa!)}
+                      </>
+                    )}
                   </>
+                ) : (
+                  <>
+                    Minimum {" >= "} {formatLcThresholdLabel(activeRequirement.apcaThresholds.min)}
+                    {hasApcaPreferred && (
+                      <>
+                        {" "}
+                        - Preferred {" >= "} {formatLcThresholdLabel(activeRequirement.apcaThresholds.preferred!)}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="space-y-2 transition-all duration-200">
+                <button
+                  type="button"
+                  className="w-full rounded-md bg-muted/30 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
+                  onClick={() => setIsRequirementDetailsOpen((prev) => !prev)}
+                  aria-expanded={isRequirementDetailsOpen}
+                >
+                  Standard details
+                </button>
+                {isRequirementDetailsOpen && (
+                  <div className="space-y-2 rounded-md border border-border/60 bg-background/90 p-3 text-xs text-muted-foreground">
+                    {contrastStandard === "wcag2" ? (
+                      <>
+                        <p>WCAG 2.x uses relative luminance ratios.</p>
+                        <p>Large text AA: 3:1; Normal text AA: 4.5:1; AAA: 7:1.</p>
+                      </>
+                    ) : (
+                      <>
+                        <p>APCA uses Lc values; readability bands vary by size/weight.</p>
+                        <p>Bronze quick guide: Body text ~75-90; Large/fluent ~60-75; UI/iconography ~30-45.</p>
+                        <p>Silver/Gold introduce full lookups; see APCA docs for specifics.</p>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
               <div>
@@ -1491,14 +1948,14 @@ const renderNumberFilterSection = (
                   max={CONTRAST_SLIDER_MAX}
                   step={1}
                   value={requirementIndex}
-                  aria-label="Set contrast requirement focus"
-                  aria-valuetext={`${activeRequirement.label} requirement`}
+                  aria-label={`Set ${standardLabel} requirement focus`}
+                  aria-valuetext={`${requirementLabel} requirement (${standardLabel})`}
                   onChange={(event) => setRequirementIndex(Number(event.currentTarget.value))}
-                className="w-full accent-foreground cursor-pointer transition-[transform,filter] duration-200 focus:brightness-110 active:brightness-125 active:scale-[1.01]"
-              />
+                  className="w-full accent-foreground cursor-pointer transition-[transform,filter] duration-200 focus:brightness-110 active:brightness-125 active:scale-[1.01]"
+                />
               </div>
               <div className="flex flex-wrap justify-between gap-2 text-xs font-medium text-muted-foreground">
-                {CONTRAST_REQUIREMENT_OPTIONS.map((option, index) => {
+                {CONTRAST_REQUIREMENTS.map((option, index) => {
                   const isActive = index === requirementIndex
                   return (
                     <button
@@ -1512,7 +1969,7 @@ const renderNumberFilterSection = (
                         isActive ? "bg-foreground text-background shadow-sm" : "bg-transparent"
                       }`}
                     >
-                      {option.shortLabel}
+                      {getRequirementShortLabel(option)}
                     </button>
                   )
                 })}
@@ -1784,7 +2241,11 @@ const renderNumberFilterSection = (
         />
       )}
 
-      <div className="contrast-scroll-area overflow-x-auto overflow-visible px-4 py-4">
+      <div
+        ref={contrastScrollRef}
+        className="contrast-scroll-area overflow-auto px-4 py-4"
+        style={{ cursor: isMiddlePanning ? "grabbing" : undefined }}
+      >
         {isMatrixEmpty ? (
           <div className="flex min-h-[320px] w-full flex-col items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/10 px-6 py-12 text-center">
             <p className="text-sm text-muted-foreground">{emptyStateMessage}</p>
@@ -1804,15 +2265,15 @@ const renderNumberFilterSection = (
         ) : (
           <div className="relative inline-block overflow-visible">
             <div
-            ref={gridRef}
-            className="inline-grid relative gap-4 overflow-visible"
-            style={{ gridTemplateColumns: `164px repeat(${foregroundColors.length}, ${CARD_SIZE}px) ${CARD_SIZE}px` }}
-            onDragOver={handleGridDragOver}
-            onDrop={(e) => {
-              handleFgDrop(e)
-              handleBgDrop(e)
-            }}
-          >
+              ref={gridRef}
+              className="inline-grid relative gap-4 overflow-visible"
+              style={{ gridTemplateColumns: `164px repeat(${foregroundColors.length}, ${CARD_SIZE}px) ${CARD_SIZE}px` }}
+              onDragOver={handleGridDragOver}
+              onDrop={(e) => {
+                handleFgDrop(e)
+                handleBgDrop(e)
+              }}
+            >
             {fgIndicatorPosition && fgDragMode === "insert" && (
               <div
                 className="absolute w-1 bg-blue-500 rounded-full pointer-events-none z-30"
@@ -1990,20 +2451,126 @@ const renderNumberFilterSection = (
                   {foregroundColors.map((fgColor, fgIndex) => {
                     const isFgDragging = draggedFgIndex === fgIndex
                     const fgHexColor = extractHexFromColor(fgColor)
-                    const ratio = calculateContrast(fgHexColor, bgHexColor) // Use bgHexColor instead of bgColor for consistency
-                    const level = getWCAGLevel(ratio, activeRequirement.thresholds)
+                    const evaluation = evaluateContrast(contrastStandard, fgHexColor, bgHexColor, activeRequirement)
+                    const cellKey = `${bgIndex}-${fgIndex}`
+                    const isApcaEvaluation = evaluation?.standard === "apca"
+                    const showApcaDetailToggle = contrastStandard === "apca" && isApcaEvaluation
+
+                    let valueDisplay = "-"
+                    let badgeContent: React.ReactNode = (
+                      <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">N/A</span>
+                    )
+                    let cellLabel = `Contrast unavailable for ${requirementLabel}, ${standardLabel}`
+
+                    if (evaluation?.standard === "wcag2") {
+                      const ratioText = evaluation.ratio.toFixed(2)
+                      valueDisplay = ratioText
+                      badgeContent = (
+                        <>
+                          {evaluation.level.aa && (
+                            <span className="rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white">AA</span>
+                          )}
+                          {hasAAARequirement && evaluation.level.aaa && (
+                            <span className="rounded bg-green-700 px-2 py-0.5 text-xs font-medium text-white">AAA</span>
+                          )}
+                          {!evaluation.level.aa && (
+                            <span className="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white">FAIL</span>
+                          )}
+                        </>
+                      )
+
+                      cellLabel = `Contrast ratio ${ratioText}:1, ${
+                        evaluation.level.aa ? "AA pass" : "AA fail"
+                      }${hasAAARequirement ? `, ${evaluation.level.aaa ? "AAA pass" : "AAA fail"}` : ""}, ${requirementLabel}, ${standardLabel}.`
+                    } else if (evaluation?.standard === "apca") {
+                      const formattedLc = formatLcValue(evaluation.lcAbs)
+                      valueDisplay = `Lc ${formattedLc}`
+                      const status = evaluation.meetsPreferred
+                        ? { label: "Preferred", className: "bg-green-600 text-white" }
+                        : evaluation.meetsMinimum
+                          ? { label: "Minimum", className: "bg-amber-500 text-black" }
+                          : { label: "Below min", className: "bg-red-600 text-white" }
+
+                      badgeContent = (
+                        <span className={`rounded px-2 py-0.5 text-xs font-semibold ${status.className}`}>{status.label}</span>
+                      )
+
+                      cellLabel = `APCA contrast Lc ${formattedLc}, ${
+                        evaluation.meetsPreferred
+                          ? "meets preferred readability"
+                          : evaluation.meetsMinimum
+                            ? "meets minimum readability"
+                            : "below minimum readability"
+                      }, ${requirementLabel}, ${standardLabel}.`
+                    }
+
+                    const handleApcaOverlayToggle = () => {
+                      if (!showApcaDetailToggle || !evaluation || evaluation.standard !== "apca") {
+                        return
+                      }
+                      const statusLabel = evaluation.meetsPreferred
+                        ? "Preferred"
+                        : evaluation.meetsMinimum
+                          ? "Minimum"
+                          : "Below minimum"
+                      setApcaOverlay((current) => {
+                        if (current?.key === cellKey) {
+                          return null
+                        }
+                        if (apcaCloseTimeoutRef.current) {
+                          window.clearTimeout(apcaCloseTimeoutRef.current)
+                          apcaCloseTimeoutRef.current = null
+                        }
+                          setApcaOverlayClosing(false)
+                          setApcaOverlayExpanded(false)
+                          return {
+                            key: cellKey,
+                            evaluation,
+                            requirementId: activeRequirement.id,
+                            fgColor: fgHexColor,
+                            bgColor: bgHexColor,
+                            statusLabel,
+                          }
+                        })
+                    }
+
+                    const interactiveProps = showApcaDetailToggle
+                      ? {
+                          role: "button" as const,
+                          tabIndex: 0,
+                          onClick: handleApcaOverlayToggle,
+                          onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault()
+                              handleApcaOverlayToggle()
+                            }
+                          },
+                          "aria-expanded": apcaOverlay?.key === cellKey,
+                        }
+                      : {}
 
                     return (
                       <div
                         key={`${bgIndex}-${fgIndex}`}
+                        ref={(node) => {
+                          if (node) {
+                            apcaCellRefs.current.set(cellKey, node)
+                          } else {
+                            apcaCellRefs.current.delete(cellKey)
+                          }
+                        }}
                         className="relative flex flex-col items-center justify-center border border-border transition-all duration-200 rounded-md"
                         style={{
                           height: `${CARD_SIZE}px`,
                           width: `${CARD_SIZE}px`,
-                          backgroundColor: bgHexColor, // Use bgHexColor instead of bgColor to fix custom name display bug
+                          backgroundColor: bgHexColor,
                           opacity: isFgDragging || isBgDragging ? 0.5 : 1,
+                          cursor: showApcaDetailToggle ? "pointer" : undefined,
                           ...getCellAnimationStyle(fgIndex, bgIndex),
                         }}
+                        aria-label={cellLabel}
+                        title={cellLabel}
+                        {...interactiveProps}
                         onDragOver={(e) => {
                           if (draggedFgIndex !== null) {
                             handleCellFgDragOver(e, fgIndex)
@@ -2020,19 +2587,9 @@ const renderNumberFilterSection = (
                         }}
                       >
                         <div className="relative z-10 text-2xl font-bold" style={{ color: fgHexColor }}>
-                          {ratio.toFixed(2)}
+                          {valueDisplay}
                         </div>
-                        <div className="relative z-10 mt-2 flex gap-1">
-                          {level.aa && (
-                            <span className="rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white">AA</span>
-                          )}
-                          {hasAAARequirement && level.aaa && (
-                            <span className="rounded bg-green-700 px-2 py-0.5 text-xs font-medium text-white">AAA</span>
-                          )}
-                          {!level.aa && (
-                            <span className="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white">FAIL</span>
-                          )}
-                        </div>
+                        <div className="relative z-10 mt-2 flex gap-1">{badgeContent}</div>
                       </div>
                     )
                   })}
@@ -2086,6 +2643,21 @@ const renderNumberFilterSection = (
           </div>
         )}
       </div>
+      {apcaOverlay && apcaOverlayPosition && (
+        <ApcaOverlayPanel
+          ref={apcaOverlayRef}
+          position={apcaOverlayPosition}
+          evaluation={apcaOverlay.evaluation}
+          guidance={overlayGuidance}
+          fgColor={apcaOverlay.fgColor}
+          bgColor={apcaOverlay.bgColor}
+          statusLabel={apcaOverlay.statusLabel}
+          closing={apcaOverlayClosing}
+          expanded={apcaOverlayExpanded}
+          onToggleExpand={() => setApcaOverlayExpanded((val) => !val)}
+          onClose={closeApcaOverlay}
+        />
+      )}
 
       <DropToTrash active={isAnyHeaderDragging} onDrop={handleDropOnTrash} variant="floating" />
     </div>
@@ -2137,3 +2709,281 @@ const ConfirmActionButton = ({ variant, description, onConfirm }: ConfirmActionB
     </AlertDialog>
   )
 }
+
+type ApcaOverlayPanelProps = {
+  position: { top: number; left: number; width: number; height: number }
+  evaluation: ApcaContrastEvaluation
+  guidance?: ApcaFontGuidance[]
+  fgColor: string
+  bgColor: string
+  statusLabel: string
+  closing: boolean
+  expanded: boolean
+  onToggleExpand: () => void
+  onClose: () => void
+}
+
+const ApcaOverlayPanel = React.forwardRef<HTMLDivElement, ApcaOverlayPanelProps>(function ApcaOverlayPanel(
+  { position, evaluation, guidance, fgColor, bgColor, statusLabel, closing, expanded, onToggleExpand, onClose },
+  ref,
+) {
+  const [animateIn, setAnimateIn] = useState(false)
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAnimateIn(true)
+  }, [])
+
+  if (typeof document === "undefined") {
+    return null
+  }
+
+  const lcValue = formatLcValue(evaluation.lcAbs)
+
+  const guidanceEntries =
+    guidance?.map((block) => {
+      const rows = block.rows || []
+      const match = rows.find((row) => evaluation.lcAbs >= row.minLc)
+      const fallbackMin = rows[0]?.minLc ?? null
+      const status =
+        match && typeof match.preferredLc === "number" && evaluation.lcAbs >= match.preferredLc ? "Preferred" : "Minimum"
+      return {
+        weightLabel: block.weightLabel,
+        description: block.description,
+        chosenRow: match
+          ? {
+              sizeLabel: match.sizeLabel,
+              status,
+              minLc: match.minLc,
+              preferredLc: match.preferredLc,
+            }
+          : null,
+        rows,
+        fallbackMin,
+      }
+    }) ?? []
+
+  return createPortal(
+    <div className="fixed inset-0 z-40 pointer-events-none">
+      <div
+        ref={ref}
+        className={`pointer-events-auto rounded-2xl border border-border bg-background/95 shadow-2xl backdrop-blur-xl overflow-auto transition-all duration-200 ease-out ${
+          closing ? "opacity-0 scale-95" : animateIn ? "opacity-100 scale-100" : "opacity-0 scale-95"
+        }`}
+        style={{
+          position: "fixed",
+          top: `${position.top}px`,
+          left: `${position.left}px`,
+          width: `${position.width}px`,
+          height: `${position.height}px`,
+        }}
+      >
+        <div className="relative h-full w-full overflow-hidden rounded-2xl">
+          <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-background/80 via-background/90 to-background/95" />
+              <div className="relative h-full w-full">
+                <div className="absolute inset-4 rounded-2xl border border-border/60" />
+                <div className="absolute inset-0 flex items-center justify-center px-6 py-8 overflow-auto">
+                  <div className="relative flex h-full w-full flex-col gap-4 overflow-hidden">
+                    {/* Top controls */}
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-foreground/10 px-4 py-3 shadow-sm backdrop-blur">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={onToggleExpand}
+                        aria-label={expanded ? "Collapse panel" : "Expand panel"}
+                        className="h-9 w-9 rounded-full border border-border/60 bg-background/70 text-foreground hover:bg-foreground/5"
+                      >
+                        <Plus className={`h-5 w-5 transition-transform ${expanded ? "rotate-45" : ""}`} />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={onClose}
+                        aria-label="Close APCA guidance"
+                        className="h-9 w-9 rounded-full border border-border/60 bg-background/70 text-foreground hover:bg-foreground/5"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+
+                <div className="grid flex-1 grid-cols-1 gap-4 md:grid-cols-[200px,1fr]">
+                  {/* Center preview card */}
+                  <div className="flex items-start justify-center">
+                    <div className="relative flex flex-col items-center justify-center rounded-xl border border-border bg-white/95 px-5 py-4 shadow-lg">
+                      <div
+                        className="flex h-28 w-36 flex-col items-center justify-center rounded-lg border border-border shadow-sm"
+                        style={{ backgroundColor: bgColor }}
+                      >
+                        <span className="text-lg font-semibold" style={{ color: fgColor }}>
+                          {`Lc ${lcValue}`}
+                        </span>
+                        <span
+                          className={`mt-2 rounded px-2 py-0.5 text-xs font-semibold ${
+                            statusLabel === "Preferred"
+                              ? "bg-green-600 text-white"
+                              : statusLabel === "Minimum"
+                                ? "bg-amber-500 text-black"
+                                : "bg-red-600 text-white"
+                          }`}
+                        >
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-center text-xs font-medium text-muted-foreground">Text {fgColor}</p>
+                      <p className="text-center text-xs font-medium text-muted-foreground">Background {bgColor}</p>
+                    </div>
+                    </div>
+
+                  {/* Guidance and use-case checklist */}
+                  <div className="flex flex-col gap-3 overflow-auto">
+                    <div className="rounded-lg border border-border/60 bg-background/80 p-3 shadow-sm">
+                      <p className="text-sm font-semibold text-foreground">Use-case checklist (APCA in a Nutshell)</p>
+                      <p className="text-xs text-muted-foreground">
+                        Current Lc {lcValue}. Each row shows what this pair supports based on the published APCA ranges.
+                      </p>
+                      <div className="mt-2 space-y-2 text-[11px]">
+                        {[
+                          {
+                            label: "Body text (14-16px regular)",
+                            min: 75,
+                            preferred: 90,
+                            description: "Columns of fluent reading and dense paragraphs.",
+                          },
+                          {
+                            label: "Large text / key labels (18-24px+)",
+                            min: 60,
+                            preferred: 75,
+                            description: "Headings, important UI labels, larger fluent content.",
+                          },
+                          {
+                            label: "Pictograms & fine icons",
+                            min: 45,
+                            preferred: 60,
+                            description: "Glyphs or icons with fine detail/lines.",
+                          },
+                          {
+                            label: "UI chrome & solid icons",
+                            min: 30,
+                            preferred: 45,
+                            description: "Buttons, borders, solid glyphs, non-text UI.",
+                          },
+                          {
+                            label: "Incidental / decorative",
+                            min: 15,
+                            preferred: 30,
+                            description: "Non-critical/incidental visuals.",
+                          },
+                        ].map((item) => {
+                          const meetsPref = evaluation.lcAbs >= item.preferred
+                          const meetsMin = evaluation.lcAbs >= item.min
+                          const badgeClass = meetsPref
+                            ? "bg-green-600 text-white"
+                            : meetsMin
+                              ? "bg-amber-500 text-black"
+                              : "bg-red-600 text-white"
+                          const badgeLabel = meetsPref
+                            ? "Preferred"
+                            : meetsMin
+                              ? "Minimum"
+                              : `Need Lc ${item.min}`
+                          return (
+                            <div key={item.label} className="rounded-md border border-border/50 bg-background/80 p-2">
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="font-semibold text-foreground">{item.label}</p>
+                                  <p className="text-muted-foreground">{item.description}</p>
+                                </div>
+                                <span className={`rounded px-2 py-0.5 text-[11px] font-semibold ${badgeClass}`}>{badgeLabel}</span>
+                              </div>
+                              <p className="mt-1 text-[11px] text-muted-foreground">
+                                Min {item.min} - Preferred {item.preferred}
+                              </p>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    {expanded ? (
+                      <>
+                        <div className="rounded-lg border border-border/60 bg-background/70 p-3 shadow-sm">
+                          <p className="text-sm font-semibold text-foreground">Minimum readable sizes by weight</p>
+                          <p className="text-xs text-muted-foreground">{`Based on this pair's Lc ${lcValue}. Sizes below need more contrast; larger sizes may exceed \"preferred\" comfort.`}</p>
+                        </div>
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                          {guidanceEntries.map((entry) => (
+                            <div key={entry.weightLabel} className="rounded-lg border border-border/60 bg-foreground/5 p-3 text-xs shadow-sm">
+                              <div className="mb-1 flex items-center justify-between gap-2">
+                                <span className="text-sm font-semibold text-foreground">{entry.weightLabel}</span>
+                                {entry.chosenRow ? (
+                                  <span
+                                    className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                                      entry.chosenRow.status === "Preferred"
+                                        ? "bg-green-600 text-white"
+                                        : "bg-amber-500 text-black"
+                                    }`}
+                                  >
+                                    {entry.chosenRow.status}
+                                  </span>
+                                ) : (
+                                  <span className="rounded bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white">Needs more</span>
+                                )}
+                              </div>
+                              {entry.description && <p className="text-[11px] text-muted-foreground">{entry.description}</p>}
+                              {entry.chosenRow ? (
+                                <div className="mt-2 flex items-center justify-between rounded bg-background/80 px-2 py-1">
+                                  <span className="font-semibold text-foreground">{entry.chosenRow.sizeLabel}</span>
+                                  <span className="text-[11px] text-muted-foreground">Min Lc {entry.chosenRow.minLc}</span>
+                                </div>
+                              ) : (
+                                <p className="mt-2 rounded bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">
+                                  Increase contrast to at least Lc {entry.fallbackMin ?? "-"} for this weight.
+                                </p>
+                              )}
+                              <div className="mt-2 space-y-1 text-[11px]">
+                                {entry.rows.map((row) => {
+                                  const meets = evaluation.lcAbs >= row.minLc
+                                  const meetsPref = typeof row.preferredLc === "number" && evaluation.lcAbs >= row.preferredLc
+                                  return (
+                                    <div key={`${entry.weightLabel}-${row.sizeLabel}`} className="flex items-center justify-between">
+                                      <span className="text-muted-foreground">{row.sizeLabel}</span>
+                                      <span
+                                        className={`rounded px-2 py-0.5 font-semibold ${
+                                          meetsPref
+                                            ? "bg-green-600 text-white"
+                                            : meets
+                                              ? "bg-amber-500 text-black"
+                                              : "bg-muted text-muted-foreground"
+                                        }`}
+                                      >
+                                        {meets ? (meetsPref ? "Pref" : "Min") : `Need ${row.minLc}`}
+                                      </span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="rounded-lg bg-foreground/5 px-3 py-2 text-[11px] text-muted-foreground shadow-sm">
+                          Bronze guidance only. For type-heavy work or specific fonts, verify with the APCA calculator and official
+                          lookup tables.
+                        </div>
+                      </>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-border/60 bg-background/60 p-3 text-xs text-muted-foreground shadow-sm">
+                        {"Detailed weight/size guidance available - use \"Expand\" to view the full table."}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+})
+

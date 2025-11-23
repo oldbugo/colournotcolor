@@ -30,7 +30,6 @@ import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/co
 import {
   composeLabel,
   createSwatch,
-  normalizeHex,
   parseLegacyColor,
   splitLabel,
   swatchFromLegacy,

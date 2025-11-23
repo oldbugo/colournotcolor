@@ -20,6 +20,7 @@ type PaletteManagerProps = {
   editingColor: EditingColor
   onColorChange: (color: string) => void
   lastInteractedColor?: string
+  debugFreezePopup?: boolean
 }
 
 type ColorMode = "hsl" | "hsluv" | "hpluv"
@@ -76,6 +77,7 @@ export function PaletteManager({
   editingColor,
   onColorChange,
   lastInteractedColor: _lastInteractedColor = "#808080",
+  debugFreezePopup = true,
 }: PaletteManagerProps) {
   void _lastInteractedColor
   const [isPickerExpanded, setIsPickerExpanded] = useState(true)
@@ -116,6 +118,7 @@ export function PaletteManager({
 
   const pendingColorRef = useRef<string | null>(null)
   const previousEditingColorRef = useRef<string | null>(null)
+  const frozenEditingColorRef = useRef<EditingColor | null>(null)
   const lastEmittedColorRef = useRef<string | null>(null)
   const lastEmittedChannelsRef = useRef<Hsluv | null>(null)
   const lastEmittedModeRef = useRef<ColorMode>(colorMode)
@@ -300,24 +303,28 @@ export function PaletteManager({
   )
 
   useEffect(() => {
-    if (!editingColor?.swatch) {
+    const activeEditing = editingColor ?? (debugFreezePopup ? frozenEditingColorRef.current : null)
+    if (!activeEditing?.swatch) {
       previousEditingColorRef.current = null
       return
     }
 
-    const colorKey = `${editingColor.swatch.id}-${editingColor.swatch.hex}-${editingColor.swatch.name ?? ""}-${editingColor.swatch.group ?? ""}`
+    const colorKey = `${activeEditing.swatch.id}-${activeEditing.swatch.hex}-${activeEditing.swatch.name ?? ""}-${activeEditing.swatch.group ?? ""}`
     if (previousEditingColorRef.current === colorKey) {
       return
     }
     previousEditingColorRef.current = colorKey
+    if (debugFreezePopup) {
+      frozenEditingColorRef.current = activeEditing
+    }
 
     const applyEditingColor = () => {
-      const hex = editingColor.swatch.hex
-      const name = editingColor.swatch.name ?? ""
+      const hex = activeEditing.swatch.hex
+      const name = activeEditing.swatch.name ?? ""
 
       setCustomName(name)
       const reuseStored =
-        lastEmittedColorRef.current === editingColor.legacyValue &&
+        lastEmittedColorRef.current === activeEditing.legacyValue &&
         lastEmittedModeRef.current === colorMode &&
         lastEmittedChannelsRef.current
       const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex, colorMode)
@@ -343,7 +350,7 @@ export function PaletteManager({
     }
 
     applyEditingColor()
-  }, [colorMode, editingColor])
+  }, [colorMode, editingColor, debugFreezePopup])
 
 
   useEffect(() => {
@@ -551,6 +558,16 @@ export function PaletteManager({
     setIsEditingName(false)
   }
 
+  const sliderValues: Record<PlaneAxis, number> = { h: hue, s: saturation, l: lightness }
+
+  const formatChannelValue = (axis: PlaneAxis, value: number) => value.toFixed(axis === "h" ? 1 : 2)
+
+  const [sliderInputValues, setSliderInputValues] = useState<Record<PlaneAxis, string>>(() => ({
+    h: formatChannelValue("h", sliderValues.h),
+    s: formatChannelValue("s", sliderValues.s),
+    l: formatChannelValue("l", sliderValues.l),
+  }))
+
   const handleSliderInputChange = (axis: PlaneAxis, value: string) => {
     setSliderInputValues((current) => ({
       ...current,
@@ -558,6 +575,7 @@ export function PaletteManager({
     }))
   }
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setSliderInputValues({
       h: formatChannelValue("h", hue),
@@ -565,6 +583,7 @@ export function PaletteManager({
       l: formatChannelValue("l", lightness),
     })
   }, [hue, saturation, lightness])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const commitSliderInputValue = useCallback(
     (axis: PlaneAxis) => {
@@ -800,8 +819,6 @@ export function PaletteManager({
         backgroundRepeat: "no-repeat",
       }
 
-  const sliderValues: Record<PlaneAxis, number> = { h: hue, s: saturation, l: lightness }
-
   const sliderBackgrounds = useMemo(() => {
     const hueStopsNumbers = [0, 60, 120, 180, 240, 300, 360]
     const hueSegments = hueStopsNumbers
@@ -837,16 +854,6 @@ export function PaletteManager({
   }
 
   const sliderLabels: Record<PlaneAxis, string> = { h: "Hue", s: "Saturation", l: "Lightness" }
-
-  function formatChannelValue(axis: PlaneAxis, value: number) {
-    return value.toFixed(axis === "h" ? 1 : 2)
-  }
-
-  const [sliderInputValues, setSliderInputValues] = useState<Record<PlaneAxis, string>>(() => ({
-    h: formatChannelValue("h", sliderValues.h),
-    s: formatChannelValue("s", sliderValues.s),
-    l: formatChannelValue("l", sliderValues.l),
-  }))
 
 
   return (
@@ -987,10 +994,10 @@ export function PaletteManager({
           ref={pickerContentRef}
           className="overflow-hidden transition-all duration-200 ease-out px-0"
           style={{
-            height: isPickerExpanded ? (pickerHeight === null ? "auto" : `${pickerHeight}px`) : "0px",
+            height: isPickerExpanded ? (pickerHeight === null ? "auto" : `${pickerHeight}px`) : debugFreezePopup ? "auto" : "0px",
           }}
         >
-          {editingColor ? (
+          {editingColor || debugFreezePopup ? (
             <div className="space-y-3 pb-2">
               <div className="flex items-center justify-between text-[11px] font-semibold uppercase text-muted-foreground">
                 <span>Color Mode</span>

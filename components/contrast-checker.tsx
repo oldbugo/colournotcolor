@@ -5,9 +5,12 @@ import { ContrastGrid } from "@/components/contrast-grid"
 import { ColorManager } from "@/components/color-manager"
 import type { ColorSwatch } from "@/types/palette"
 import { createSwatch } from "@/lib/color-utils"
+import type { ContrastStandard } from "@/lib/contrast-utils"
 
 type ContrastCheckerProps = {
   palette: ColorPalette
+  contrastStandard: ContrastStandard
+  onContrastStandardChange?: (standard: ContrastStandard) => void
   onUpdatePalette: (updates: Partial<ColorPalette>) => void
   onColorEdit?: (index: number) => void
   editingColor?: EditingColor
@@ -19,6 +22,8 @@ type ContrastCheckerProps = {
 
 export function ContrastChecker({
   palette,
+  contrastStandard,
+  onContrastStandardChange,
   onUpdatePalette,
   onColorEdit,
   editingColor,
@@ -73,6 +78,8 @@ export function ContrastChecker({
         <ContrastGrid
           paletteId={palette.id}
           colors={palette.colors}
+          contrastStandard={contrastStandard}
+          onContrastStandardChange={onContrastStandardChange}
           onReorderColors={handleReorderColors}
           onSwapColors={handleSwapColors}
           onColorEdit={onColorEdit}

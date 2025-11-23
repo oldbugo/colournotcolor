@@ -366,7 +366,7 @@ export function ResizablePanels({
       document.body.style.userSelect = ""
       document.body.style.cursor = ""
     }
-  }, [resizingIndex])
+  }, [resizingIndex, getMinWidthPercent])
 
   const actualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH)
 
