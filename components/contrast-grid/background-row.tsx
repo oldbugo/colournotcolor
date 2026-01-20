@@ -6,6 +6,7 @@ import { DRAG_SETTLE_DURATION_MS, DRAG_SETTLE_EASING } from "@/components/dnd/ti
 import { composeLabel } from "@/lib/color-utils"
 import { calculateContrast, getWCAGLevel } from "@/lib/contrast-utils"
 import { backgroundSlotId, type DropMode } from "@/lib/dnd-utils"
+import { getStatusPillClassName } from "@/lib/status-pill"
 import { useDroppable } from "@dnd-kit/core"
 import { useSortable } from "@dnd-kit/sortable"
 import type { ColorSwatch } from "@/types/palette"
@@ -194,7 +195,7 @@ export function BackgroundRow({
                 <span className="rounded bg-green-700 px-2 py-0.5 text-xs font-medium text-white">AAA</span>
               )}
               {!level.aa && (
-                <span className="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white">FAIL</span>
+                <span className={getStatusPillClassName("fail", "sm")}>Fail</span>
               )}
             </div>
           </div>

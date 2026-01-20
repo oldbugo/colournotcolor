@@ -21,6 +21,7 @@ function PanelHeader({ title, collapsed, onToggle }: PanelHeaderProps) {
       onClick={onToggle}
       title={collapsed ? `Expand ${title}` : `Collapse ${title}`}
       aria-expanded={!collapsed}
+      data-panel-toggle={title}
     >
       {collapsed ? (
         <span className="mx-auto inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted/70 text-muted-foreground transition-all duration-300 group-hover:bg-muted group-hover:text-foreground/90">

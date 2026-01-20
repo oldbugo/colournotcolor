@@ -41,7 +41,8 @@ export type ContrastThresholds = {
   aaa?: number
 }
 
-export type ContrastStandard = "wcag2" | "apca"
+export type ContrastStandard = "wcag2" | "apca-bronze"
+export type ContrastCalculationStandard = "wcag2" | "apca"
 
 export type ApcaThresholds = {
   min: number
@@ -140,17 +141,6 @@ export const CONTRAST_REQUIREMENTS: ContrastRequirement[] = [
     apcaThresholds: { min: 30, preferred: 45 },
   },
   {
-    id: "large-text",
-    label: "Large text",
-    shortLabel: "Large text",
-    description: "Headlines and larger fluent content.",
-    apcaLabel: "Large fluent",
-    apcaShortLabel: "Fluent",
-    apcaDescription: "Display sizes, hero copy, and other larger fluent content.",
-    wcagThresholds: { aa: 3, aaa: 4.5 },
-    apcaThresholds: { min: 60, preferred: 75 },
-  },
-  {
     id: "normal-text",
     label: "Normal text",
     shortLabel: "Body text",
@@ -160,6 +150,17 @@ export const CONTRAST_REQUIREMENTS: ContrastRequirement[] = [
     apcaDescription: "Paragraphs, multiline UI copy, and other fluent reading.",
     wcagThresholds: { aa: 4.5, aaa: 7 },
     apcaThresholds: { min: 75, preferred: 90 },
+  },
+  {
+    id: "large-text",
+    label: "Large text",
+    shortLabel: "Large text",
+    description: "Headlines and larger fluent content.",
+    apcaLabel: "Large fluent",
+    apcaShortLabel: "Fluent",
+    apcaDescription: "Display sizes, hero copy, and other larger fluent content.",
+    wcagThresholds: { aa: 3, aaa: 4.5 },
+    apcaThresholds: { min: 60, preferred: 75 },
   },
 ]
 
@@ -226,7 +227,7 @@ export const APCA_FONT_GUIDANCE: Record<ContrastRequirementId, ApcaFontGuidance[
 }
 
 export function evaluateContrast(
-  standard: ContrastStandard,
+  standard: ContrastCalculationStandard,
   textColor: string,
   backgroundColor: string,
   requirement: ContrastRequirement,

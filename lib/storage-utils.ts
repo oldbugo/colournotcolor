@@ -80,7 +80,10 @@ export const storage = {
   loadContrastStandard: (): ContrastStandard | null => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.CONTRAST_STANDARD)
-      return stored === "wcag2" || stored === "apca" ? stored : null
+      if (stored === "apca" || stored === "both" || stored === "apca-silver") {
+        return "apca-bronze"
+      }
+      return stored === "wcag2" || stored === "apca-bronze" ? stored : null
     } catch {
       return null
     }
