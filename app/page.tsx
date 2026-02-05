@@ -353,6 +353,22 @@ const commitEditingColor = useCallback(
     setContrastStandard("wcag2")
   }
 
+  const handleImportPalette = (payload: { name: string; colors: ColorSwatch[] }) => {
+    const nextName = payload.name.trim() || `Imported palette ${palettes.length + 1}`
+    const newPalette: ColorPalette = {
+      id: Date.now().toString(),
+      name: nextName,
+      colors: payload.colors,
+    }
+    setPalettes((prev) => [...prev, newPalette])
+    setActivePaletteId(newPalette.id)
+    if (payload.colors[0]) {
+      setLastInteractedColor(payload.colors[0].hex)
+    }
+    commitEditingColor(null, true)
+    lastStickyEditingColorRef.current = null
+  }
+
   useEffect(() => {
     if (editingColor) {
       lastStickyEditingColorRef.current = editingColor
@@ -364,9 +380,11 @@ const commitEditingColor = useCallback(
       <Header
         onClearCache={handleClearCache}
         paletteName={activePalette.name}
+        paletteColors={activePalette.colors}
         onUpdatePaletteName={(name) => updatePalette(activePalette.id, { name })}
         onDuplicatePalette={duplicatePalette}
         onDeletePalette={deletePalette}
+        onImportPalette={handleImportPalette}
         collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
         onCollapseGroupsDuringDragChange={setCollapseGroupsDuringGroupDrag}
         contrastStandard={contrastStandard}

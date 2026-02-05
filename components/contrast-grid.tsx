@@ -1,5 +1,7 @@
 "use client"
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import React from "react"
 import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
 import { createPortal } from "react-dom"
@@ -696,7 +698,6 @@ export function ContrastGrid({
     if (overlayCloseTimeoutRef.current) {
       window.clearTimeout(overlayCloseTimeoutRef.current)
     }
-    // eslint-disable-next-line react-hooks/immutability
     overlayCloseTimeoutRef.current = window.setTimeout(() => {
       setContrastOverlay(null)
       setContrastOverlayClosing(false)
@@ -2285,9 +2286,13 @@ const renderNumberFilterSection = (
                   <p className="text-xs text-muted-foreground">{apcaSummaryText}</p>
                 )}
               </div>
-              {contrastStandard === "wcag2" && (
+              {contrastStandard === "wcag2" ? (
                 <div className="text-xs font-medium text-muted-foreground">
                   <p>{wcagThresholdText}</p>
+                </div>
+              ) : (
+                <div className="text-xs font-medium text-muted-foreground">
+                  <p>{apcaThresholdText}</p>
                 </div>
               )}
               <div className="space-y-2 transition-all duration-200">
@@ -2809,11 +2814,11 @@ const renderNumberFilterSection = (
                     const showOverlayToggle = Boolean(wcagEvaluation || apcaEvaluation)
 
                     let valueDisplay: React.ReactNode = "-"
-                    let valueClassName = "relative z-10 text-xl font-bold"
+                    const valueClassName = "relative z-10 text-xl font-bold"
                     let badgeContent: React.ReactNode = (
                       <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">N/A</span>
                     )
-                    let badgeWrapperClass = "relative z-10 mt-2 flex gap-1"
+                    const badgeWrapperClass = "relative z-10 mt-2 flex gap-1"
                     let cellLabel = `Contrast unavailable for ${requirementLabel}, ${standardLabel}`
 
                     if (contrastStandard === "wcag2" && wcagEvaluation?.standard === "wcag2") {
@@ -3142,7 +3147,6 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
   const [cardsExpanded, setCardsExpanded] = useState(false)
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnimateIn(true)
   }, [])
 
@@ -3159,10 +3163,7 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
     }
   }, [expanded])
 
-  if (typeof document === "undefined") {
-    return null
-  }
-
+  const isBrowser = typeof document !== "undefined"
   const showWcag = standard === "wcag2"
   const showApca = isApcaStandard(standard)
 
@@ -3455,7 +3456,11 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
     }
 
     return "Contrast data is unavailable for this pair."
-  }, [activeRequirement, apcaEvaluation, apcaThresholds, showApca, showWcag, standard, wcagRatio])
+  }, [activeRequirement, apcaEvaluation, apcaMaxLc, apcaThresholds, showApca, showWcag, standard, wcagRatio])
+
+  if (!isBrowser) {
+    return null
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-40 pointer-events-none">
