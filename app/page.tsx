@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { ContrastChecker } from "@/components/contrast-checker"
 import { PaletteManager } from "@/components/palette-manager"
+import { PaletteListManager } from "@/components/palette-list-manager"
 import { Header } from "@/components/header"
 import { ResizablePanels } from "@/components/resizable-panels"
 import { storage } from "@/lib/storage-utils"
@@ -170,6 +171,10 @@ const commitEditingColor = useCallback(
       }
 
       if (target.closest("[data-color-picker]")) {
+        return
+      }
+
+      if (target.closest("[data-palette-manager-dropdown]")) {
         return
       }
 
@@ -389,49 +394,59 @@ const commitEditingColor = useCallback(
         onCollapseGroupsDuringDragChange={setCollapseGroupsDuringGroupDrag}
         contrastStandard={contrastStandard}
         onContrastStandardChange={setContrastStandard}
+        paletteManagerDropdownContent={
+          <PaletteListManager
+            palettes={palettes}
+            activePaletteId={activePaletteId}
+            onSelectPalette={setActivePaletteId}
+            onAddPalette={addPalette}
+            onReorderPalettes={reorderPalettes}
+          />
+        }
       />
       <ResizablePanels
-        panel1Title="Palette Manager"
+        panel1Title="Colour Picker"
         panel2Title="Colour Manager"
         panel3Title="Contrast Matrix"
         panel1={
-      <PaletteManager
-        palettes={palettes}
-        activePaletteId={activePaletteId}
-        onSelectPalette={setActivePaletteId}
-        onAddPalette={addPalette}
-        onReorderPalettes={reorderPalettes}
-        editingColor={effectiveEditingColor}
-        onColorChange={handleColorChange}
-        lastInteractedColor={lastInteractedColor}
-      />
-    }
-    panel2={
-      <ContrastChecker
-        palette={activePalette}
-        contrastStandard={contrastStandard}
-        onContrastStandardChange={setContrastStandard}
-        onUpdatePalette={(updates) => updatePalette(activePalette.id, updates)}
-        onColorEdit={handleColorEditFromChild}
-        editingColor={effectiveEditingColor}
-        onColorUpdate={handleColorUpdate}
-        lastInteractedColor={lastInteractedColor}
-        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
-      />
-    }
+          <PaletteManager
+            palettes={palettes}
+            activePaletteId={activePaletteId}
+            onSelectPalette={setActivePaletteId}
+            onAddPalette={addPalette}
+            onReorderPalettes={reorderPalettes}
+            editingColor={effectiveEditingColor}
+            onColorChange={handleColorChange}
+            lastInteractedColor={lastInteractedColor}
+            showPaletteList={false}
+          />
+        }
+        panel2={
+          <ContrastChecker
+            palette={activePalette}
+            contrastStandard={contrastStandard}
+            onContrastStandardChange={setContrastStandard}
+            onUpdatePalette={(updates) => updatePalette(activePalette.id, updates)}
+            onColorEdit={handleColorEditFromChild}
+            editingColor={effectiveEditingColor}
+            onColorUpdate={handleColorUpdate}
+            lastInteractedColor={lastInteractedColor}
+            collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
+          />
+        }
         panel3={
           <ContrastChecker
-        palette={activePalette}
-        contrastStandard={contrastStandard}
-        onContrastStandardChange={setContrastStandard}
-        onUpdatePalette={(updates) => updatePalette(activePalette.id, updates)}
-        onColorEdit={handleColorEditFromChild}
-        editingColor={effectiveEditingColor}
-        onColorUpdate={handleColorUpdate}
-        lastInteractedColor={lastInteractedColor}
-        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
-        showOnlyGrid={true}
-      />
+            palette={activePalette}
+            contrastStandard={contrastStandard}
+            onContrastStandardChange={setContrastStandard}
+            onUpdatePalette={(updates) => updatePalette(activePalette.id, updates)}
+            onColorEdit={handleColorEditFromChild}
+            editingColor={effectiveEditingColor}
+            onColorUpdate={handleColorUpdate}
+            lastInteractedColor={lastInteractedColor}
+            collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
+            showOnlyGrid={true}
+          />
         }
       />
     </div>

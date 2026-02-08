@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Settings, Copy, Trash2, Pencil, Info } from "lucide-react"
+import { Settings, Copy, Trash2, Pencil, Info, Palette } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { Switch } from "@/components/ui/switch"
 import type { ContrastStandard } from "@/lib/contrast-utils"
 import type { ColorSwatch } from "@/types/palette"
@@ -47,6 +47,7 @@ type HeaderProps = {
   onCollapseGroupsDuringDragChange?: (value: boolean) => void
   contrastStandard: ContrastStandard
   onContrastStandardChange: (standard: ContrastStandard) => void
+  paletteManagerDropdownContent?: ReactNode
 }
 
 export function Header({
@@ -61,6 +62,7 @@ export function Header({
   onCollapseGroupsDuringDragChange,
   contrastStandard: _contrastStandard,
   onContrastStandardChange: _onContrastStandardChange,
+  paletteManagerDropdownContent,
 }: HeaderProps) {
   void _contrastStandard
   void _onContrastStandardChange
@@ -272,6 +274,25 @@ export function Header({
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
                   </>
+                )}
+                {paletteManagerDropdownContent && (
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8 cursor-pointer rounded-md border bg-background"
+                        aria-label="Open palette manager"
+                      >
+                        <Palette className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" sideOffset={10} className="w-[min(92vw,960px)] p-0">
+                      <div data-palette-manager-dropdown className="max-h-[75vh] overflow-auto bg-muted">
+                        {paletteManagerDropdownContent}
+                      </div>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 )}
                 <Button
                   variant="outline"

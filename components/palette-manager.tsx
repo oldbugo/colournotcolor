@@ -21,6 +21,7 @@ type PaletteManagerProps = {
   onColorChange: (color: string) => void
   lastInteractedColor?: string
   debugFreezePopup?: boolean
+  showPaletteList?: boolean
 }
 
 type ColorMode = "hsl" | "hsluv" | "hpluv"
@@ -78,6 +79,7 @@ export function PaletteManager({
   onColorChange,
   lastInteractedColor: _lastInteractedColor = "#808080",
   debugFreezePopup = true,
+  showPaletteList = true,
 }: PaletteManagerProps) {
   void _lastInteractedColor
   const [isPickerExpanded, setIsPickerExpanded] = useState(true)
@@ -354,6 +356,9 @@ export function PaletteManager({
 
 
   useEffect(() => {
+    if (!showPaletteList) {
+      return
+    }
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizingPicker || !sidebarRef.current) return
 
@@ -386,10 +391,10 @@ export function PaletteManager({
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [isResizingPicker])
+  }, [isResizingPicker, showPaletteList])
 
   useLayoutEffect(() => {
-    if (!isPickerExpanded || hasCustomPickerHeight) {
+    if (!showPaletteList || !isPickerExpanded || hasCustomPickerHeight) {
       return
     }
     const node = pickerContentRef.current
@@ -405,17 +410,26 @@ export function PaletteManager({
       }
       return next
     })
-  }, [activePaletteId, colorMode, editingColor, hasCustomPickerHeight, isPickerExpanded, planeMode, sidebarWidth])
+  }, [activePaletteId, colorMode, editingColor, hasCustomPickerHeight, isPickerExpanded, planeMode, showPaletteList, sidebarWidth])
 
   useEffect(() => {
+    if (!showPaletteList) {
+      return
+    }
     if (!isResizingPicker && hasCustomPickerHeight && pickerHeightPendingRef.current !== null) {
       writePickerHeightToStorage(activePaletteId, Math.round(pickerHeightPendingRef.current))
       pickerHeightPendingRef.current = null
     }
-  }, [activePaletteId, hasCustomPickerHeight, isResizingPicker])
+  }, [activePaletteId, hasCustomPickerHeight, isResizingPicker, showPaletteList])
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    if (!showPaletteList) {
+      setPickerHeight(null)
+      setHasCustomPickerHeight(false)
+      pickerHeightPendingRef.current = null
+      return
+    }
     const storedHeight = readPickerHeightFromStorage(activePaletteId)
     if (typeof storedHeight === "number" && storedHeight > 0) {
       setPickerHeight(storedHeight)
@@ -425,7 +439,7 @@ export function PaletteManager({
       setHasCustomPickerHeight(false)
     }
     pickerHeightPendingRef.current = null
-  }, [activePaletteId])
+  }, [activePaletteId, showPaletteList])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -854,79 +868,92 @@ export function PaletteManager({
   }
 
   const sliderLabels: Record<PlaneAxis, string> = { h: "Hue", s: "Saturation", l: "Lightness" }
+  const pickerExpanded = showPaletteList ? isPickerExpanded : true
+  const pickerContentHeight = showPaletteList
+    ? pickerExpanded
+      ? (pickerHeight === null ? "auto" : `${pickerHeight}px`)
+      : debugFreezePopup
+        ? "auto"
+        : "0px"
+    : undefined
 
 
   return (
     <div ref={sidebarRef} className="flex flex-col h-full bg-secondary">
-      <div className="flex-1 overflow-auto min-h-0 space-y-3 relative px-6 py-4">
-        <div
-          className="relative -mb-8 z-50 h-8"
-          onDragOver={handleTopZoneDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleTopZoneDrop}
-        >
-          {dragOverIndex === 0 && draggedIndex !== null && draggedIndex !== 0 && (
-            <div className="absolute bottom-[36px] left-0 right-0 h-0.5 bg-blue-500 rounded-full" />
-          )}
+      {showPaletteList && (
+        <div className="flex-1 overflow-auto min-h-0 space-y-3 relative px-6 py-4">
+          <div
+            className="relative -mb-8 z-50 h-8"
+            onDragOver={handleTopZoneDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleTopZoneDrop}
+          >
+            {dragOverIndex === 0 && draggedIndex !== null && draggedIndex !== 0 && (
+              <div className="absolute bottom-[36px] left-0 right-0 h-0.5 bg-blue-500 rounded-full" />
+            )}
+          </div>
+
+          {palettes.map((palette, index) => {
+            const isCustomPalette = palette.id !== "default"
+            const isDragging = draggedIndex === index
+            const isDropTarget = dragOverIndex === index && draggedIndex !== index
+            const showIndicatorAbove =
+              isDropTarget && draggedIndex !== null && draggedIndex > index && !(index === 0 && dragOverIndex === 0)
+            const showIndicatorBelow = isDropTarget && draggedIndex !== null && draggedIndex < index
+
+            return (
+              <div key={palette.id} className="relative border-0">
+                {showIndicatorAbove && (
+                  <div className="absolute -top-[7px] left-0 right-0 h-0.5 bg-blue-500 rounded-full z-50" />
+                )}
+
+                <button
+                  onClick={() => onSelectPalette(palette.id)}
+                  className={cn(
+                    "flex flex-1 flex-col items-start bg-card p-3 text-left transition-all hover:bg-accent w-full relative border-border gap-2 py-3 border rounded-lg",
+                    activePaletteId === palette.id && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
+                    isDragging && "opacity-50 scale-95",
+                    !isCustomPalette && "cursor-pointer",
+                  )}
+                >
+                  {isCustomPalette && (
+                    <div
+                      draggable={true}
+                      onDragStart={(e) => handleDragStart(e, index)}
+                      onDragEnd={handleDragEnd}
+                      onDragOver={(e) => handleDragOver(e, index)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, index)}
+                      className="absolute inset-0 z-10 cursor-grab active:cursor-grabbing border-0"
+                      style={{ backgroundColor: "transparent" }}
+                    />
+                  )}
+
+                  <div className="flex flex-col gap-3 w-full">{renderColorRow(palette.colors)}</div>
+                  <span className="text-xs text-foreground">{palette.name}</span>
+                </button>
+
+                {showIndicatorBelow && (
+                  <div className="absolute -bottom-[7px] left-0 right-0 h-0.5 bg-blue-500 rounded-full z-50" />
+                )}
+              </div>
+            )
+          })}
+          <Button
+            variant="outline"
+            className="w-full bg-transparent cursor-pointer font-semibold border rounded-lg"
+            onClick={onAddPalette}
+          >
+            + New Palette
+          </Button>
         </div>
+      )}
 
-        {palettes.map((palette, index) => {
-          const isCustomPalette = palette.id !== "default"
-          const isDragging = draggedIndex === index
-          const isDropTarget = dragOverIndex === index && draggedIndex !== index
-          const showIndicatorAbove =
-            isDropTarget && draggedIndex !== null && draggedIndex > index && !(index === 0 && dragOverIndex === 0)
-          const showIndicatorBelow = isDropTarget && draggedIndex !== null && draggedIndex < index
-
-          return (
-            <div key={palette.id} className="relative border-0">
-              {showIndicatorAbove && (
-                <div className="absolute -top-[7px] left-0 right-0 h-0.5 bg-blue-500 rounded-full z-50" />
-              )}
-
-              <button
-                onClick={() => onSelectPalette(palette.id)}
-                className={cn(
-                  "flex flex-1 flex-col items-start bg-card p-3 text-left transition-all hover:bg-accent w-full relative border-border gap-2 py-3 border rounded-lg",
-                  activePaletteId === palette.id && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
-                  isDragging && "opacity-50 scale-95",
-                  !isCustomPalette && "cursor-pointer",
-                )}
-              >
-                {isCustomPalette && (
-                  <div
-                    draggable={true}
-                    onDragStart={(e) => handleDragStart(e, index)}
-                    onDragEnd={handleDragEnd}
-                    onDragOver={(e) => handleDragOver(e, index)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, index)}
-                    className="absolute inset-0 z-10 cursor-grab active:cursor-grabbing border-0"
-                    style={{ backgroundColor: "transparent" }}
-                  />
-                )}
-
-                <div className="flex flex-col gap-3 w-full">{renderColorRow(palette.colors)}</div>
-                <span className="text-xs text-foreground">{palette.name}</span>
-              </button>
-
-              {showIndicatorBelow && (
-                <div className="absolute -bottom-[7px] left-0 right-0 h-0.5 bg-blue-500 rounded-full z-50" />
-              )}
-            </div>
-          )
-        })}
-        <Button
-          variant="outline"
-          className="w-full bg-transparent cursor-pointer font-semibold border rounded-lg"
-          onClick={onAddPalette}
-        >
-          + New Palette
-        </Button>
-      </div>
-
-      <div className="flex flex-col px-4 border-t-2 border-border" data-color-picker>
-        {isPickerExpanded && (
+      <div
+        className={cn("flex flex-col", showPaletteList ? "border-t-2 border-border px-4" : "flex-1 min-h-0 px-6 py-4")}
+        data-color-picker
+      >
+        {showPaletteList && pickerExpanded && (
           <div
             className={cn(
               "relative group h-6 w-full cursor-row-resize flex items-center justify-center my-1 transition-colors",
@@ -937,15 +964,12 @@ export function PaletteManager({
               setIsResizingPicker(true)
             }}
           >
-            {/* Thin horizontal line spanning full width */}
             <div
               className={cn(
                 "absolute inset-x-0 top-1/2 -translate-y-1/2 h-px transition-colors",
                 isResizingPicker ? "bg-blue-500" : "bg-border group-hover:bg-blue-500",
               )}
             />
-
-            {/* Double bar indicator in the middle */}
             <div
               className={cn(
                 "pointer-events-none relative flex flex-col gap-1 px-2 py-1 rounded transition-opacity duration-200",
@@ -968,7 +992,7 @@ export function PaletteManager({
           </div>
         )}
 
-        <div className="flex items-center justify-between py-0 px-0 pl-4 my-2">
+        <div className={cn("flex items-center justify-between py-0 px-0", showPaletteList ? "my-2 pl-4" : "mb-3")}>
           <h3 className="text-sm font-semibold">Colour Picker</h3>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2">
@@ -979,22 +1003,29 @@ export function PaletteManager({
                 className="data-[state=checked]:bg-blue-600"
               />
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsPickerExpanded(!isPickerExpanded)}
-              className="h-6 w-6 cursor-pointer"
-            >
-              {isPickerExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
-            </Button>
+            {showPaletteList && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsPickerExpanded(!isPickerExpanded)}
+                className="h-6 w-6 cursor-pointer"
+              >
+                {pickerExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+              </Button>
+            )}
           </div>
         </div>
 
         <div
           ref={pickerContentRef}
-          className="overflow-hidden transition-all duration-200 ease-out px-0"
+          className={cn(
+            "px-0",
+            showPaletteList
+              ? "overflow-hidden transition-all duration-200 ease-out"
+              : "flex-1 overflow-auto pr-1",
+          )}
           style={{
-            height: isPickerExpanded ? (pickerHeight === null ? "auto" : `${pickerHeight}px`) : debugFreezePopup ? "auto" : "0px",
+            height: pickerContentHeight,
           }}
         >
           {editingColor || debugFreezePopup ? (
