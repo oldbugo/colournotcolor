@@ -61,6 +61,14 @@ const SLIDER_EDGE_PADDING_PERCENT = 6
 const APCA_RANGE_MAX = 108
 const APCA_RANGE_EDGE_PADDING_PERCENT = 2
 const FILTER_CONTROL_SIZE = 40 // px
+const FILTER_MENU_MIN_WIDTH = 320
+const FILTER_MENU_MIN_HEIGHT = 240
+const FILTER_MENU_MAX_WIDTH_RATIO = 0.8
+const FILTER_MENU_MAX_HEIGHT_RATIO = 0.7
+const FILTER_MENU_RESIZE_OUTLINE_OFFSET = 12
+const FILTER_MENU_RESIZE_ARC_RADIUS_ADJUST = -6
+const FILTER_MENU_RESIZE_ARC_SIZE = 64
+const FILTER_MENU_RESIZE_ARC_INSET = 64
 const UNGROUPED_LABEL = "Ungrouped"
 const DIGITS_ONLY_PATTERN = /^\d+$/
 const FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
@@ -105,8 +113,6 @@ const POSITION_EPSILON = 0.5
 const APCA_OVERLAY_HEADER_BUFFER = 120
 const SCROLL_DELTA_EPSILON = 0.5
 const MIDDLE_PAN_EVENT = "contrastgrid:middlepan"
-// Temporary debug flag: keep APCA overlay open regardless of outside clicks.
-const DEBUG_KEEP_APCA_OVERLAY_OPEN = false
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
@@ -161,6 +167,43 @@ const BubbleIndicator = ({ left }: { left: number }) => (
     <div className="h-3 w-3 rotate-45 rounded-[2px] border border-border bg-background shadow-[0_2px_4px_rgba(0,0,0,0.16)]" />
   </div>
 )
+
+type ResizeCornerHandleProps = {
+  position: "left" | "right"
+  onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void
+}
+
+const ResizeCornerHandle = ({ position, onPointerDown }: ResizeCornerHandleProps) => {
+  const isLeft = position === "left"
+  const outlineStyle: React.CSSProperties = {
+    bottom: -7,
+    width: FILTER_MENU_RESIZE_ARC_SIZE,
+    height: FILTER_MENU_RESIZE_ARC_SIZE,
+    border: "3px solid currentColor",
+    borderRadius: `calc(var(--radius) + ${FILTER_MENU_RESIZE_OUTLINE_OFFSET + FILTER_MENU_RESIZE_ARC_RADIUS_ADJUST}px)`,
+    clipPath: isLeft
+      ? `inset(${FILTER_MENU_RESIZE_ARC_INSET}% ${FILTER_MENU_RESIZE_ARC_INSET}% 0 0)`
+      : `inset(${FILTER_MENU_RESIZE_ARC_INSET}% 0 0 ${FILTER_MENU_RESIZE_ARC_INSET}%)`,
+  }
+  if (isLeft) {
+    outlineStyle.left = -7
+  } else {
+    outlineStyle.right = -7
+  }
+  return (
+    <div
+      className={`group absolute -bottom-1 ${isLeft ? "-left-1" : "-right-1"} h-12 w-12 text-foreground/50 hover:text-foreground/90 z-10`}
+      style={{ cursor: isLeft ? "nesw-resize" : "nwse-resize" }}
+      onPointerDown={onPointerDown}
+      role="separator"
+    >
+      <div
+        className="pointer-events-none absolute opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+        style={outlineStyle}
+      />
+    </div>
+  )
+}
 
 const getApcaMarkerPosition = (value: number) => {
   if (!Number.isFinite(value)) {
@@ -510,9 +553,13 @@ export function ContrastGrid({
   const [columnNumberFilter, setColumnNumberFilter] = useState<NumberRange | null>(null)
   const [rowNumberInputs, setRowNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
   const [columnNumberInputs, setColumnNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
+  const [focusedNumberInput, setFocusedNumberInput] = useState<HTMLInputElement | null>(null)
   const [isRowFilterMenuOpen, setIsRowFilterMenuOpen] = useState(false)
   const [isColumnFilterMenuOpen, setIsColumnFilterMenuOpen] = useState(false)
   const [isFilterOptionsMenuOpen, setIsFilterOptionsMenuOpen] = useState(false)
+  const [isRowRangeExpanded, setIsRowRangeExpanded] = useState(true)
+  const [isColumnRangeExpanded, setIsColumnRangeExpanded] = useState(true)
+  const [filterMenuSize, setFilterMenuSize] = useState<{ width: number; height: number } | null>(null)
   const [isSwapButtonPressed, setIsSwapButtonPressed] = useState(false)
   const [filterStepIndex, setFilterStepIndex] = useState(1)
   const [filtersInitialized, setFiltersInitialized] = useState(false)
@@ -688,9 +735,6 @@ export function ContrastGrid({
   })
 
   const closeContrastOverlay = useCallback(() => {
-    if (DEBUG_KEEP_APCA_OVERLAY_OPEN) {
-      return
-    }
     if (!contrastOverlay || contrastOverlayClosing) {
       return
     }
@@ -782,9 +826,6 @@ export function ContrastGrid({
 
   useEffect(() => {
     if (!contrastOverlay) {
-      return
-    }
-    if (DEBUG_KEEP_APCA_OVERLAY_OPEN) {
       return
     }
     const handlePointerDown = (event: PointerEvent) => {
@@ -989,6 +1030,8 @@ export function ContrastGrid({
   const rowFilterTriggerRef = useRef<HTMLButtonElement | null>(null)
   const columnFilterTriggerRef = useRef<HTMLButtonElement | null>(null)
   const filterOptionsTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const rowFilterMenuRef = useRef<HTMLDivElement | null>(null)
+  const columnFilterMenuRef = useRef<HTMLDivElement | null>(null)
   const numberFilterStep = FILTER_STEP_VALUES[filterStepIndex] ?? FILTER_STEP_VALUES[0]
 
   const handleFilterStepSliderChange = useCallback((values: number[]) => {
@@ -1232,6 +1275,20 @@ const colorEntries = useMemo<ColorEntry[]>(
     writeFilterStorage(existing)
   }, [filtersInitialized, paletteId, rowNumberFilter, columnNumberFilter, rowFilterIds, columnFilterIds, filterStepIndex])
 
+  useEffect(() => {
+    if (!focusedNumberInput || typeof window === "undefined") {
+      return
+    }
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+    }
+    const options: AddEventListenerOptions = { passive: false }
+    window.addEventListener("wheel", handleWheel, options)
+    return () => {
+      window.removeEventListener("wheel", handleWheel, options)
+    }
+  }, [focusedNumberInput])
+
   const passesNumberFilter = useCallback(
     (entry: ColorEntry, filter: NumberRange | null) => {
       if (!filter || !numericBounds) {
@@ -1290,7 +1347,7 @@ const colorEntries = useMemo<ColorEntry[]>(
       return "Add colors to build a contrast matrix."
     }
     if (!hasRows && !hasColumns) {
-      return "All rows and columns are filtered out."
+      return "All backgrounds and foregrounds are filtered out."
     }
     return ""
   }, [totalColorCount, hasRows, hasColumns])
@@ -1402,18 +1459,68 @@ const colorEntries = useMemo<ColorEntry[]>(
     setIsSwapButtonPressed(false)
   }, [columnFilterIds, rowFilterIds, columnNumberFilter, rowNumberFilter])
 
+  const beginFilterMenuResize = useCallback(
+    (
+      event: React.PointerEvent<HTMLDivElement>,
+      menuRef: React.RefObject<HTMLDivElement | null>,
+      setSize: React.Dispatch<React.SetStateAction<{ width: number; height: number } | null>>,
+      anchor: "bottom-left" | "bottom-right",
+    ) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const menu = menuRef.current
+      if (!menu || typeof window === "undefined") {
+        return
+      }
+
+      const startRect = menu.getBoundingClientRect()
+      const startX = event.clientX
+      const startY = event.clientY
+      const startWidth = startRect.width
+      const startHeight = startRect.height
+      const maxWidth = Math.max(FILTER_MENU_MIN_WIDTH, window.innerWidth * FILTER_MENU_MAX_WIDTH_RATIO)
+      const maxHeight = Math.max(FILTER_MENU_MIN_HEIGHT, window.innerHeight * FILTER_MENU_MAX_HEIGHT_RATIO)
+
+      setSize({ width: startWidth, height: startHeight })
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const deltaX = moveEvent.clientX - startX
+        const deltaY = moveEvent.clientY - startY
+        const widthDelta = anchor === "bottom-left" ? -deltaX : deltaX
+        const nextHeight = clamp(startHeight + deltaY, FILTER_MENU_MIN_HEIGHT, maxHeight)
+        const nextWidth =
+          anchor === "bottom-left"
+            ? clamp(startWidth + widthDelta, FILTER_MENU_MIN_WIDTH, maxWidth)
+            : clamp(startWidth, FILTER_MENU_MIN_WIDTH, maxWidth)
+        setSize({ width: nextWidth, height: nextHeight })
+      }
+
+      const handlePointerUp = () => {
+        window.removeEventListener("pointermove", handlePointerMove)
+        window.removeEventListener("pointerup", handlePointerUp)
+        window.removeEventListener("pointercancel", handlePointerUp)
+      }
+
+      window.addEventListener("pointermove", handlePointerMove)
+      window.addEventListener("pointerup", handlePointerUp)
+      window.addEventListener("pointercancel", handlePointerUp)
+    },
+    [],
+  )
+
 const renderFilterGroups = (
   effectiveSet: Set<string> | null,
   toggleSingle: (id: string) => void,
   toggleGroup: (ids: string[]) => void,
   collapsedSet: Set<string>,
   onToggleCollapse: (key: string) => void,
+  numberFilter: NumberRange | null,
 ) => {
   if (groupedColorEntries.length === 0) {
     return <div className="px-2 py-1 text-xs text-muted-foreground">No colors available</div>
   }
   return (
-    <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+    <div className="space-y-2 pr-1">
       {groupedColorEntries.map((group) => {
         const groupIds = group.entries.map((entry) => entry.id)
         const selectedCount = effectiveSet
@@ -1429,11 +1536,11 @@ const renderFilterGroups = (
         const isCollapsed = collapsedSet.has(group.key)
 
         return (
-          <div key={group.key} className="rounded-md border border-border/40 bg-muted/5 p-2">
+          <div key={group.key} className="rounded-md border border-border/40 bg-muted/5 px-2 py-1">
             <div
               role="button"
               tabIndex={0}
-              className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm font-medium text-foreground hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="flex w-full cursor-pointer items-center justify-between rounded-md px-1.5 py-1 text-xs font-semibold text-foreground hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               onMouseDown={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
@@ -1454,35 +1561,46 @@ const renderFilterGroups = (
                 <span className="text-base leading-none">{isCollapsed ? "+" : "\u2212"}</span>
                 <span className="truncate">{group.label}</span>
               </span>
-              <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                {selectedCount}/{group.entries.length}
-                <button
-                  type="button"
-                  className={`h-3.5 w-3.5 rounded-sm border transition-colors ${indicatorClass}`}
-                  aria-label={isFullySelected ? "Deselect group" : "Select group"}
-                  aria-pressed={isFullySelected ? true : isPartiallySelected ? "mixed" : false}
-                  onMouseDown={(event) => {
+              <button
+                type="button"
+                className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
+                aria-label={isFullySelected ? "Deselect group" : "Select group"}
+                aria-pressed={isFullySelected ? true : isPartiallySelected ? "mixed" : false}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                }}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  toggleGroup(groupIds)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault()
-                    event.stopPropagation()
-                  }}
-                  onClick={(event) => {
-                    event.preventDefault()
-                    event.stopPropagation()
                     toggleGroup(groupIds)
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault()
-                      toggleGroup(groupIds)
-                    }
-                  }}
-                />
-              </span>
+                  }
+                }}
+              >
+                <span>{selectedCount}/{group.entries.length}</span>
+                <span className="flex h-9 w-5 items-center justify-end rounded-full pr-0">
+                  <span className={`h-3 w-5 rounded-full border transition-colors ${indicatorClass}`} aria-hidden="true" />
+                </span>
+              </button>
             </div>
-            {!isCollapsed && (
+            <div
+              className={`overflow-hidden transition-[max-height,opacity] duration-150 ease-out ${
+                isCollapsed ? "max-h-0 opacity-0 pointer-events-none" : "max-h-80 opacity-100"
+              }`}
+              aria-hidden={isCollapsed}
+            >
               <div className="mt-1 space-y-1">
                 {group.entries.map((entry) => {
                   const isSelected = effectiveSet ? effectiveSet.has(entry.id) : true
+                  const passesRange = passesNumberFilter(entry, numberFilter)
+                  const isFilteredByRange = !passesRange
+                  const showFilteredTag = isFilteredByRange
+                  const isMutedByFiltering = isFilteredByRange
                   const labelParts = entry.label.split("/")
                   const displayLabel = labelParts[labelParts.length - 1]?.trim() || entry.label
                   const hexColor = extractHexFromColor(entry.legacy)
@@ -1490,8 +1608,8 @@ const renderFilterGroups = (
                     <button
                       key={entry.id}
                       type="button"
-                      className={`flex w-full items-center justify-between rounded-md px-2 py-1 text-sm ${
-                        isSelected ? "text-foreground" : "text-muted-foreground"
+                      className={`flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1 text-sm ${
+                        isMutedByFiltering ? "text-muted-foreground" : "text-foreground"
                       } hover:bg-muted/30`}
                       onMouseDown={(event) => {
                         event.preventDefault()
@@ -1510,10 +1628,19 @@ const renderFilterGroups = (
                           aria-hidden="true"
                         />
                         <span className="truncate">{displayLabel}</span>
+                        {showFilteredTag && (
+                          <span className="rounded-full border border-muted-foreground/40 bg-muted/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Filtered
+                          </span>
+                        )}
                       </span>
                       <span
                         className={`h-3 w-3 rounded-full border ${
-                          isSelected ? "bg-primary border-primary" : "border-muted-foreground/40"
+                          isSelected
+                            ? isMutedByFiltering
+                              ? "bg-muted-foreground/60 border-muted-foreground/70"
+                              : "bg-foreground border-foreground"
+                            : "border-muted-foreground/40"
                         }`}
                         aria-hidden="true"
                       />
@@ -1521,7 +1648,7 @@ const renderFilterGroups = (
                   )
                 })}
               </div>
-            )}
+            </div>
           </div>
         )
       })}
@@ -1534,15 +1661,36 @@ const renderNumberFilterSection = (
   setFilter: React.Dispatch<React.SetStateAction<NumberRange | null>>,
   inputValues: { min: string; max: string },
   setInputValues: React.Dispatch<React.SetStateAction<{ min: string; max: string }>>,
+  expanded: boolean,
+  onToggleExpanded: () => void,
 ) => {
   const normalizedRange = clampRangeToBounds(filter) ?? (numericBounds ? { ...numericBounds } : null)
+  const isRangeActive = Boolean(
+    numericBounds &&
+      normalizedRange &&
+      (normalizedRange.min !== numericBounds.min || normalizedRange.max !== numericBounds.max),
+  )
   if (!numericBounds || !normalizedRange) {
     return (
       <div className="rounded-md border border-dashed border-muted-foreground/40 px-3 py-2 text-xs text-muted-foreground">
-        Add numeric names (e.g., &ldquo;Red/100&rdquo;) to unlock range filtering.
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            className="flex cursor-pointer items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            onClick={() => onToggleExpanded()}
+          >
+            <span className="text-base leading-none">{expanded ? "\u2212" : "+"}</span>
+            <span>{label}</span>
+          </button>
         </div>
-      )
-    }
+        {expanded && (
+          <div className="mt-2">
+            Add numeric names (e.g., &ldquo;Red/100&rdquo;) to unlock range filtering.
+          </div>
+        )}
+      </div>
+    )
+  }
 
     const sliderValues: [number, number] = [normalizedRange.min, normalizedRange.max]
 
@@ -1585,74 +1733,166 @@ const renderNumberFilterSection = (
       }
     }
 
+    const applyWheelStep = (field: "min" | "max", deltaY: number) => {
+      const direction = deltaY > 0 ? 1 : -1
+      const step = numberFilterStep
+      const otherField = field === "min" ? "max" : "min"
+      const fallback = field === "min" ? sliderValues[0] : sliderValues[1]
+      const otherFallback = otherField === "min" ? sliderValues[0] : sliderValues[1]
+      const currentRaw = inputValues[field].trim()
+      const otherRaw = inputValues[otherField].trim()
+      const currentValue = Number.isFinite(Number(currentRaw)) ? Number(currentRaw) : fallback
+      const otherValue = Number.isFinite(Number(otherRaw)) ? Number(otherRaw) : otherFallback
+      const nextValue = clamp(currentValue + direction * step, numericBounds.min, numericBounds.max)
+      const boundedOther = clamp(otherValue, numericBounds.min, numericBounds.max)
+
+      if (field === "min") {
+        const nextMin = Math.min(nextValue, boundedOther)
+        const nextMax = Math.max(boundedOther, nextMin)
+        const nextRange = clampRangeToBounds({ min: nextMin, max: nextMax })
+        if (nextRange) {
+          setFilter(nextRange)
+          setInputValues({ min: nextRange.min.toString(), max: nextRange.max.toString() })
+        }
+      } else {
+        const nextMax = Math.max(nextValue, boundedOther)
+        const nextMin = Math.min(boundedOther, nextMax)
+        const nextRange = clampRangeToBounds({ min: nextMin, max: nextMax })
+        if (nextRange) {
+          setFilter(nextRange)
+          setInputValues({ min: nextRange.min.toString(), max: nextRange.max.toString() })
+        }
+      }
+    }
+
     return (
-      <div className="space-y-3 rounded-md border border-border/60 bg-muted/20 p-3">
-        <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          <span>{label}</span>
+      <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+        <div
+          className={`flex items-center justify-between text-xs font-semibold uppercase tracking-wide ${
+            isRangeActive ? "text-foreground" : "text-muted-foreground"
+          }`}
+        >
           <button
             type="button"
-            className="text-foreground underline-offset-2 hover:underline"
-            onClick={() => {
-              const defaults = clampRangeToBounds({ ...numericBounds })
-              if (defaults) {
-                setFilter(defaults)
-              }
-            }}
+            className="flex cursor-pointer items-center gap-2"
+            onClick={() => onToggleExpanded()}
           >
-            Reset
+            <span className="text-base leading-none">{expanded ? "\u2212" : "+"}</span>
+            <span>{label}</span>
           </button>
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+              isRangeActive
+                ? "border-foreground/40 bg-foreground/5 text-foreground"
+                : "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 cursor-pointer rounded-full ${
+                isRangeActive ? "bg-foreground" : "bg-muted-foreground/60"
+              }`}
+              aria-hidden="true"
+            />
+            {isRangeActive ? "Active" : "Inactive"}
+          </span>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <label className="text-xs font-medium text-muted-foreground">Min</label>
-          <Input
-            type="number"
-            inputMode="numeric"
-            value={inputValues.min}
-            onChange={(event) => handleInputChange("min", event.currentTarget.value)}
-            onBlur={() => commitInputValue("min")}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                commitInputValue("min")
-              }
-            }}
-            className="h-8"
-          />
-          <label className="text-xs font-medium text-muted-foreground">Max</label>
-          <Input
-            type="number"
-            inputMode="numeric"
-            value={inputValues.max}
-            onChange={(event) => handleInputChange("max", event.currentTarget.value)}
-            onBlur={() => commitInputValue("max")}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                commitInputValue("max")
-              }
-            }}
-            className="h-8"
-          />
-        </div>
-        <div className="px-1">
-          <Slider
-            min={numericBounds.min}
-            max={numericBounds.max}
-            step={numberFilterStep}
-            value={sliderValues}
-            onValueChange={(values) => {
-              if (values.length < 2) return
-              const nextRange = clampRangeToBounds({ min: values[0], max: values[1] })
-              if (nextRange) {
-                setFilter(nextRange)
-              }
-            }}
-          />
-        </div>
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>{sliderValues[0]}</span>
-          <span>{sliderValues[1]}</span>
-        </div>
+        {expanded && (
+          <>
+            <div className="mt-3 flex items-center gap-4 text-sm">
+              <label className="text-xs font-medium text-muted-foreground">Min</label>
+              <Input
+                type="number"
+                inputMode="numeric"
+                step={numberFilterStep}
+                value={inputValues.min}
+                onChange={(event) => handleInputChange("min", event.currentTarget.value)}
+                onFocus={(event) => setFocusedNumberInput(event.currentTarget)}
+                onBlur={(event) => {
+                  commitInputValue("min")
+                  if (focusedNumberInput === event.currentTarget) {
+                    setFocusedNumberInput(null)
+                  }
+                }}
+                onWheel={(event) => {
+                  if (document.activeElement !== event.currentTarget) {
+                    return
+                  }
+                  event.preventDefault()
+                  applyWheelStep("min", event.deltaY)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    commitInputValue("min")
+                  }
+                }}
+                className="h-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              <label className="text-xs font-medium text-muted-foreground">Max</label>
+              <Input
+                type="number"
+                inputMode="numeric"
+                step={numberFilterStep}
+                value={inputValues.max}
+                onChange={(event) => handleInputChange("max", event.currentTarget.value)}
+                onFocus={(event) => setFocusedNumberInput(event.currentTarget)}
+                onBlur={(event) => {
+                  commitInputValue("max")
+                  if (focusedNumberInput === event.currentTarget) {
+                    setFocusedNumberInput(null)
+                  }
+                }}
+                onWheel={(event) => {
+                  if (document.activeElement !== event.currentTarget) {
+                    return
+                  }
+                  event.preventDefault()
+                  applyWheelStep("max", event.deltaY)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    commitInputValue("max")
+                  }
+                }}
+                className="h-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+            </div>
+            <div className="mt-3 px-1">
+              <Slider
+                min={numericBounds.min}
+                max={numericBounds.max}
+                step={numberFilterStep}
+                value={sliderValues}
+                onValueChange={(values) => {
+                  if (values.length < 2) return
+                  const nextRange = clampRangeToBounds({ min: values[0], max: values[1] })
+                  if (nextRange) {
+                    setFilter(nextRange)
+                  }
+                }}
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+              <span>{sliderValues[0]}</span>
+              <span>{sliderValues[1]}</span>
+            </div>
+            <div className="mt-3 flex items-center justify-end">
+              <button
+                type="button"
+                className="cursor-pointer text-xs font-semibold text-foreground underline-offset-2 hover:underline"
+                onClick={() => {
+                  const defaults = clampRangeToBounds({ ...numericBounds })
+                  if (defaults) {
+                    setFilter(defaults)
+                  }
+                }}
+              >
+                Reset
+              </button>
+            </div>
+          </>
+        )}
       </div>
     )
   }
@@ -2388,7 +2628,7 @@ const renderNumberFilterSection = (
               height: FILTER_CONTROL_SIZE,
               width: FILTER_CONTROL_SIZE,
             }}
-            aria-label="Swap row and column filters"
+            aria-label="Swap background and foreground filters"
           >
             <Shuffle className="h-4 w-4" />
           </Button>
@@ -2417,7 +2657,7 @@ const renderNumberFilterSection = (
                   height: FILTER_CONTROL_SIZE,
                 }}
               >
-                Rows: {rowFilterSummary}
+                Background: {rowFilterSummary}
                 <ChevronDown
                   className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
                     isRowFilterMenuOpen ? "rotate-180" : ""
@@ -2425,43 +2665,80 @@ const renderNumberFilterSection = (
                 />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={6} className="w-[420px] space-y-3 max-h-[70vh] overflow-y-auto">
-              {renderNumberFilterSection("Row Number Range", rowNumberFilter, setRowNumberFilter, rowNumberInputs, setRowNumberInputs)}
-              <div className="flex items-center justify-end gap-2 pr-2 text-[11px] font-medium text-muted-foreground">
-                <button
-                  type="button"
-                  className="hover:text-foreground"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    collapseAllGroups()
-                  }}
-                >
-                  Collapse all
-                </button>
-                <span className="text-muted-foreground/50">|</span>
-                <button
-                  type="button"
-                  className="hover:text-foreground"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    expandAllGroups()
-                  }}
-                >
-                  Expand all
-                </button>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={6}
+              ref={rowFilterMenuRef}
+              style={filterMenuSize ? { width: filterMenuSize.width, height: filterMenuSize.height } : undefined}
+              className="relative w-[420px] min-w-[320px] max-w-[80vw] min-h-[240px] max-h-[70vh] overflow-visible border border-border bg-background/95 p-3 shadow-lg backdrop-blur flex flex-col gap-3"
+            >
+              <div className="flex-1 min-h-0 overflow-auto space-y-3 pr-1">
+                {renderNumberFilterSection(
+                  "Range Filter",
+                  rowNumberFilter,
+                  setRowNumberFilter,
+                  rowNumberInputs,
+                  setRowNumberInputs,
+                  isRowRangeExpanded,
+                  () => setIsRowRangeExpanded((prev) => !prev),
+                )}
+                <div className="h-px bg-border/40" />
+                <div className="flex items-center justify-end gap-2 pr-2 text-[11px] font-medium text-muted-foreground">
+                  <button
+                    type="button"
+                    className="cursor-pointer hover:text-foreground"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      collapseAllGroups()
+                    }}
+                  >
+                    Collapse all
+                  </button>
+                  <span className="text-muted-foreground/50">|</span>
+                  <button
+                    type="button"
+                    className="cursor-pointer hover:text-foreground"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      expandAllGroups()
+                    }}
+                  >
+                    Expand all
+                  </button>
+                </div>
+                {renderFilterGroups(
+                  effectiveRowFilterIds,
+                  toggleRowFilterValue,
+                  toggleRowGroupValue,
+                  collapsedGroupKeys,
+                  toggleGroupCollapse,
+                  rowNumberFilter,
+                )}
               </div>
-              <div className="h-px bg-border/40" />
-              {renderFilterGroups(
-                effectiveRowFilterIds,
-                toggleRowFilterValue,
-                toggleRowGroupValue,
-                collapsedGroupKeys,
-                toggleGroupCollapse,
-              )}
               <div className="flex gap-2">
-                <ConfirmActionButton variant="clear" description="This will clear every row from your selection." onConfirm={clearAllRows} />
-                <ConfirmActionButton variant="select" description="This will add every row back into your selection." onConfirm={selectAllRows} />
+                <ConfirmActionButton
+                  variant="clear"
+                  description="This will clear every background from your selection."
+                  onConfirm={clearAllRows}
+                />
+                <ConfirmActionButton
+                  variant="select"
+                  description="This will add every background back into your selection."
+                  onConfirm={selectAllRows}
+                />
               </div>
+              <ResizeCornerHandle
+                position="left"
+                onPointerDown={(event) =>
+                  beginFilterMenuResize(event, rowFilterMenuRef, setFilterMenuSize, "bottom-left")
+                }
+              />
+              <ResizeCornerHandle
+                position="right"
+                onPointerDown={(event) =>
+                  beginFilterMenuResize(event, rowFilterMenuRef, setFilterMenuSize, "bottom-right")
+                }
+              />
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -2489,7 +2766,7 @@ const renderNumberFilterSection = (
                   height: FILTER_CONTROL_SIZE,
                 }}
               >
-                Columns: {columnFilterSummary}
+                Foreground: {columnFilterSummary}
                 <ChevronDown
                   className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
                     isColumnFilterMenuOpen ? "rotate-180" : ""
@@ -2497,57 +2774,80 @@ const renderNumberFilterSection = (
                 />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={6} className="w-[420px] space-y-3 max-h-[70vh] overflow-y-auto">
-              {renderNumberFilterSection(
-                "Column Number Range",
-                columnNumberFilter,
-                setColumnNumberFilter,
-                columnNumberInputs,
-                setColumnNumberInputs,
-              )}
-              <div className="flex items-center justify-end gap-2 pr-2 text-[11px] font-medium text-muted-foreground">
-                <button
-                  type="button"
-                  className="hover:text-foreground"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    collapseAllGroups()
-                  }}
-                >
-                  Collapse all
-                </button>
-                <span className="text-muted-foreground/50">|</span>
-                <button
-                  type="button"
-                  className="hover:text-foreground"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    expandAllGroups()
-                  }}
-                >
-                  Expand all
-                </button>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={6}
+              ref={columnFilterMenuRef}
+              style={filterMenuSize ? { width: filterMenuSize.width, height: filterMenuSize.height } : undefined}
+              className="relative w-[420px] min-w-[320px] max-w-[80vw] min-h-[240px] max-h-[70vh] overflow-visible border border-border bg-background/95 p-3 shadow-lg backdrop-blur flex flex-col gap-3"
+            >
+              <div className="flex-1 min-h-0 overflow-auto space-y-3 pr-1">
+                {renderNumberFilterSection(
+                  "Range Filter",
+                  columnNumberFilter,
+                  setColumnNumberFilter,
+                  columnNumberInputs,
+                  setColumnNumberInputs,
+                  isColumnRangeExpanded,
+                  () => setIsColumnRangeExpanded((prev) => !prev),
+                )}
+                <div className="h-px bg-border/40" />
+                <div className="flex items-center justify-end gap-2 pr-2 text-[11px] font-medium text-muted-foreground">
+                  <button
+                    type="button"
+                    className="cursor-pointer hover:text-foreground"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      collapseAllGroups()
+                    }}
+                  >
+                    Collapse all
+                  </button>
+                  <span className="text-muted-foreground/50">|</span>
+                  <button
+                    type="button"
+                    className="cursor-pointer hover:text-foreground"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      expandAllGroups()
+                    }}
+                  >
+                    Expand all
+                  </button>
+                </div>
+                {renderFilterGroups(
+                  effectiveColumnFilterIds,
+                  toggleColumnFilterValue,
+                  toggleColumnGroupValue,
+                  collapsedGroupKeys,
+                  toggleGroupCollapse,
+                  columnNumberFilter,
+                )}
               </div>
-              <div className="h-px bg-border/40" />
-              {renderFilterGroups(
-                effectiveColumnFilterIds,
-                toggleColumnFilterValue,
-                toggleColumnGroupValue,
-                collapsedGroupKeys,
-                toggleGroupCollapse,
-              )}
               <div className="flex gap-2">
                 <ConfirmActionButton
                   variant="clear"
-                  description="This will clear every column from your selection."
+                  description="This will clear every foreground from your selection."
                   onConfirm={clearAllColumns}
                 />
                 <ConfirmActionButton
                   variant="select"
-                  description="This will add every column back into your selection."
+                  description="This will add every foreground back into your selection."
                   onConfirm={selectAllColumns}
                 />
               </div>
+              <ResizeCornerHandle
+                position="left"
+                onPointerDown={(event) =>
+                  beginFilterMenuResize(event, columnFilterMenuRef, setFilterMenuSize, "bottom-left")
+                }
+              />
+              <ResizeCornerHandle
+                position="right"
+                onPointerDown={(event) =>
+                  beginFilterMenuResize(event, columnFilterMenuRef, setFilterMenuSize, "bottom-right")
+                }
+              />
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -2603,7 +2903,7 @@ const renderNumberFilterSection = (
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                Adjust how much the row and column number sliders move whenever you drag or tap them.
+                Adjust how much the background and foreground number sliders move whenever you drag or tap them.
               </p>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -3285,6 +3585,7 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
   const editingIndex = typeof editingColorIndex === "number" ? editingColorIndex : null
   const isEditingBg = editingIndex !== null && editingIndex === bgBaseIndex
   const isEditingFg = editingIndex !== null && editingIndex === fgBaseIndex
+  const [isRequirementFocusPanelOpen, setIsRequirementFocusPanelOpen] = useState(false)
 
   const handleBgCardClick = () => {
     if (typeof onColorEdit === "function" && typeof bgBaseIndex === "number") {
@@ -3298,9 +3599,24 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
     }
   }
 
+  const handleBgExpandClick = () => {
+    if (typeof onColorEdit === "function" && typeof bgBaseIndex === "number") {
+      onColorEdit(bgBaseIndex)
+    }
+    onToggleExpand()
+  }
+
+  const handleFgExpandClick = () => {
+    if (typeof onColorEdit === "function" && typeof fgBaseIndex === "number") {
+      onColorEdit(fgBaseIndex)
+    }
+    onToggleExpand()
+  }
+
   const displayRequirementLabel = requirementLabel
   const headerStandardLabel = standard === "wcag2" ? "WCAG" : "APCA Bronze"
   const overlayStandardLabel = STANDARD_LABELS[standard]
+
 
   const wcagPass = wcagEvaluation?.level.aa
   const apcaPass = apcaEvaluation?.meetsMinimum
@@ -3482,12 +3798,33 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
         {expanded ? (
           <div className="relative h-full w-full overflow-hidden rounded-2xl">
             <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-background/80 via-background/90 to-background/95" />
-            <div ref={contentRef} className="relative flex w-full max-h-full flex-col gap-6 overflow-auto px-8 py-7">
+            <div ref={contentRef} className="relative flex w-full max-h-full flex-col gap-4 overflow-auto px-8 py-7">
               <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{headerStandardLabel}</p>
-                  <p className="mt-2 text-2xl font-semibold leading-tight text-foreground">{displayRequirementLabel}</p>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsRequirementFocusPanelOpen((prev) => !prev)}
+                  aria-expanded={isRequirementFocusPanelOpen}
+                  className={`inline-flex max-w-full cursor-pointer flex-col border border-border px-4 py-3 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                    isRequirementFocusPanelOpen
+                      ? "border-primary/60 bg-primary/5 text-primary shadow-sm"
+                      : "bg-muted/20 text-foreground hover:border-primary/40"
+                  }`}
+                  style={{
+                    borderRadius: isRequirementFocusPanelOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-6">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{headerStandardLabel}</p>
+                      <p className="mt-2 text-2xl font-semibold leading-tight text-foreground">{displayRequirementLabel}</p>
+                    </div>
+                    <ChevronDown
+                      className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+                        isRequirementFocusPanelOpen ? "rotate-180" : ""
+                      }`}
+                    />
+                  </div>
+                </button>
                 <div className="flex items-center gap-3">
                   <Button
                     variant="ghost"
@@ -3510,70 +3847,72 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
                 </div>
               </div>
 
-              <div className="rounded-xl border border-border/60 bg-background/80 p-4 shadow-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
-                      <div className="flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[11px] font-semibold transition-colors duration-200">
-                        <button
-                          type="button"
-                          onClick={() => onStandardChange?.("wcag2")}
-                          className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
-                            standard === "wcag2" ? "bg-foreground text-background" : "text-muted-foreground"
-                          }`}
-                          aria-pressed={standard === "wcag2"}
-                        >
-                          WCAG
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onStandardChange?.("apca-bronze")}
-                          className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
-                            standard === "apca-bronze" ? "bg-foreground text-background" : "text-muted-foreground"
-                          }`}
-                          aria-pressed={standard === "apca-bronze"}
-                          aria-label="APCA Bronze"
-                        >
-                          APCA Bronze
-                        </button>
-                      </div>
-                    </div>
-                    <div className="mt-3">
-                      <input
-                        type="range"
-                        min={0}
-                        max={Math.max(0, orderedRequirements.length - 1)}
-                        step={1}
-                        value={overlayRequirementIndex}
-                        aria-label={`Set ${overlayStandardLabel} requirement focus`}
-                        aria-valuetext={`${displayRequirementLabel} requirement (${overlayStandardLabel})`}
-                        onChange={(event) => {
-                          const nextIndex = Number(event.currentTarget.value)
-                          const nextRequirement = orderedRequirements[nextIndex]
-                          if (nextRequirement) {
-                            onRequirementChange?.(nextRequirement.id)
-                          }
-                        }}
-                        className="w-full accent-foreground cursor-pointer transition-[transform,filter] duration-200 focus:brightness-110 active:brightness-125 active:scale-[1.01]"
-                      />
-                    </div>
-                    <div className="mt-2 grid w-full grid-cols-3 gap-2 text-xs font-medium text-muted-foreground">
-                      {orderedRequirements.map((option) => {
-                        const isActive = option.id === requirementId
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            onClick={() => onRequirementChange?.(option.id)}
-                            className={`w-full rounded-full px-3 py-1 text-center leading-snug transition-all duration-150 ${
-                              isActive ? "bg-foreground text-background shadow-sm" : "bg-transparent"
-                            }`}
-                          >
-                            {getOverlayRequirementShortLabel(option)}
-                          </button>
-                        )
-                      })}
+              {isRequirementFocusPanelOpen && (
+                <div className="rounded-xl border border-border/60 bg-background/80 p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
+                    <div className="flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[11px] font-semibold transition-colors duration-200">
+                      <button
+                        type="button"
+                        onClick={() => onStandardChange?.("wcag2")}
+                        className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
+                          standard === "wcag2" ? "bg-foreground text-background" : "text-muted-foreground"
+                        }`}
+                        aria-pressed={standard === "wcag2"}
+                      >
+                        WCAG
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onStandardChange?.("apca-bronze")}
+                        className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
+                          standard === "apca-bronze" ? "bg-foreground text-background" : "text-muted-foreground"
+                        }`}
+                        aria-pressed={standard === "apca-bronze"}
+                        aria-label="APCA Bronze"
+                      >
+                        APCA Bronze
+                      </button>
                     </div>
                   </div>
+                  <div className="mt-3">
+                    <input
+                      type="range"
+                      min={0}
+                      max={Math.max(0, orderedRequirements.length - 1)}
+                      step={1}
+                      value={overlayRequirementIndex}
+                      aria-label={`Set ${overlayStandardLabel} requirement focus`}
+                      aria-valuetext={`${displayRequirementLabel} requirement (${overlayStandardLabel})`}
+                      onChange={(event) => {
+                        const nextIndex = Number(event.currentTarget.value)
+                        const nextRequirement = orderedRequirements[nextIndex]
+                        if (nextRequirement) {
+                          onRequirementChange?.(nextRequirement.id)
+                        }
+                      }}
+                      className="w-full accent-foreground cursor-pointer transition-[transform,filter] duration-200 focus:brightness-110 active:brightness-125 active:scale-[1.01]"
+                    />
+                  </div>
+                  <div className="mt-2 grid w-full grid-cols-3 gap-2 text-xs font-medium text-muted-foreground">
+                    {orderedRequirements.map((option) => {
+                      const isActive = option.id === requirementId
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => onRequirementChange?.(option.id)}
+                          className={`w-full rounded-full px-3 py-1 text-center leading-snug transition-all duration-150 ${
+                            isActive ? "bg-foreground text-background shadow-sm" : "bg-transparent"
+                          }`}
+                        >
+                          {getOverlayRequirementShortLabel(option)}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {shouldWrapCards ? (
                 <div className="space-y-4">
@@ -3767,14 +4106,14 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
               <div className="relative w-full max-w-[300px]">
                 <button
                   type="button"
-                  onClick={onToggleExpand}
+                  onClick={handleBgExpandClick}
                   aria-label="Expand contrast details"
                   className="absolute left-2 top-8 h-28 w-24 rounded-2xl border-2 border-black/80 cursor-pointer transition-transform hover:-translate-y-1"
                   style={{ backgroundColor: bgColor }}
                 />
                 <button
                   type="button"
-                  onClick={onToggleExpand}
+                  onClick={handleFgExpandClick}
                   aria-label="Expand contrast details"
                   className="absolute right-2 top-8 h-28 w-24 rounded-2xl border-2 border-black/80 cursor-pointer transition-transform hover:-translate-y-1"
                   style={{ backgroundColor: fgColor }}
