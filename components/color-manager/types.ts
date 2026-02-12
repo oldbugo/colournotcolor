@@ -6,6 +6,6 @@ export type ColorWithName = {
   originalIndex: number
 }
 
-export type ColorFormatMode = "hex" | "hsluv" | "hpluv"
+export type ColorFormatMode = "hex" | "hsluv"
 
 export type DragIndicatorPosition = VerticalIndicatorPosition

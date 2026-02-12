@@ -8,7 +8,7 @@ import { useMemo } from "react"
 import type React from "react"
 
 import type { ColorWithName, ColorFormatMode } from "@/components/color-manager/types"
-import { formatHslString, hexToHpluv, hexToHsluv } from "@/lib/hsluv"
+import { formatHslString, hexToHsluv } from "@/lib/hsluv"
 
 type InsertPosition = "before" | "after"
 type HslMode = Exclude<ColorFormatMode, "hex">
@@ -99,7 +99,7 @@ export function ColorCard({
 
   const formatHexAsHsl = (hexValue: string, kind: HslMode) => {
     try {
-      const tuple = kind === "hsluv" ? hexToHsluv(hexValue) : hexToHpluv(hexValue)
+      const tuple = hexToHsluv(hexValue)
       return formatHslString({ h: tuple[0], s: tuple[1], l: tuple[2] }, kind)
     } catch {
       return ""
@@ -110,14 +110,14 @@ export function ColorCard({
     if (mode === "hex") {
       return color.hex.toUpperCase()
     }
-    return formatHexAsHsl(color.hex, mode as HslMode)
+    return formatHexAsHsl(color.hex, mode)
   }, [color.hex, mode])
 
   const copyValue = useMemo(() => {
     if (mode === "hex") {
       return canonicalHex.replace("#", "").toUpperCase()
     }
-    return formatHexAsHsl(canonicalHex, mode as HslMode)
+    return formatHexAsHsl(canonicalHex, mode)
   }, [canonicalHex, mode])
 
   const handleRef = (node: HTMLDivElement | null) => {

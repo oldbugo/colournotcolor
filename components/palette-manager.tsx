@@ -9,7 +9,17 @@ import type { ColorPalette, EditingColor } from "@/app/page"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
 import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
-import { clampHsluv, hexToHpluv, hexToHsluv, hpluvToHex, hsluvToHex, type Hsluv } from "@/lib/hsluv"
+import {
+  clampHsluv,
+  getHsluvBoundingLines,
+  hexToHsluv,
+  hsluvToHex,
+  luvToHex,
+  luvToHsluv,
+  maxChromaForHsluv,
+  type Hsluv,
+  type HsluvBoundingLine,
+} from "@/lib/hsluv"
 
 type PaletteManagerProps = {
   palettes: ColorPalette[]
@@ -24,19 +34,33 @@ type PaletteManagerProps = {
   showPaletteList?: boolean
 }
 
-type ColorMode = "hsl" | "hsluv" | "hpluv"
+type ColorMode = "hsluv"
 type PlaneAxis = "h" | "s" | "l"
 
-const COLOR_MODE_OPTIONS: Array<{ key: ColorMode; label: string }> = [
-  { key: "hsl", label: "HSL" },
-  { key: "hsluv", label: "HSLuv" },
-  { key: "hpluv", label: "HPLuv" },
-]
-const PLANE_MODE_OPTIONS: Array<{ key: PlaneAxis; label: string }> = [
-  { key: "h", label: "H" },
-  { key: "s", label: "S" },
-  { key: "l", label: "L" },
-]
+type PlanePoint = {
+  x: number
+  y: number
+}
+
+type PickerGeometryIntersection = {
+  line1: number
+  line2: number
+  intersectionPoint: PlanePoint
+  relativeAngle: number
+}
+
+type PickerGeometry = {
+  lines: HsluvBoundingLine[]
+  vertices: PlanePoint[]
+  angles: number[]
+  outerCircleRadius: number
+  innerCircleRadius: number
+}
+
+const HSLUV_PLANE_PADDING_PX = 8
+const HSLUV_TEXTURE_SIZE = 400
+const HSLUV_TEXTURE_BLOCK_SIZE = 8
+const HSLUV_LIGHTNESS_EPSILON = 0.00000001
 
 const PICKER_HEIGHTS_STORAGE_KEY = "palette-picker-heights-v1"
 
@@ -102,8 +126,7 @@ export function PaletteManager({
   const [preservedHue, setPreservedHue] = useState(0)
   const [hexValue, setHexValue] = useState("")
   const [customName, setCustomName] = useState("")
-  const [colorMode, setColorMode] = useState<ColorMode>("hsl")
-  const [planeMode, setPlaneMode] = useState<PlaneAxis>("h")
+  const colorMode: ColorMode = "hsluv"
 
   const [isEditingHex, setIsEditingHex] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
@@ -111,6 +134,7 @@ export function PaletteManager({
   const [tempCustomName, setTempCustomName] = useState("")
 
   const planeRef = useRef<HTMLDivElement>(null)
+  const planeCanvasRef = useRef<HTMLCanvasElement>(null)
   const hueSliderRef = useRef<HTMLDivElement>(null)
   const saturationSliderRef = useRef<HTMLDivElement>(null)
   const lightnessSliderRef = useRef<HTMLDivElement>(null)
@@ -123,7 +147,6 @@ export function PaletteManager({
   const frozenEditingColorRef = useRef<EditingColor | null>(null)
   const lastEmittedColorRef = useRef<string | null>(null)
   const lastEmittedChannelsRef = useRef<Hsluv | null>(null)
-  const lastEmittedModeRef = useRef<ColorMode>(colorMode)
   const throttledColorRef = useRef<string | null>(null)
   const throttleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const LIVE_EMIT_THROTTLE_MS = 32
@@ -132,9 +155,8 @@ export function PaletteManager({
     (colorString: string) => {
       onColorChange(colorString)
       lastEmittedColorRef.current = colorString
-      lastEmittedModeRef.current = colorMode
     },
-    [colorMode, onColorChange],
+    [onColorChange],
   )
 
   const flushThrottledColor = useCallback(() => {
@@ -182,7 +204,7 @@ export function PaletteManager({
       setLightness(clamped.l)
       lastEmittedChannelsRef.current = clamped
 
-      const newHex = channelsToHexByMode(clamped, colorMode).toUpperCase()
+      const newHex = channelsToHexByMode(clamped).toUpperCase()
       setHexValue(newHex)
 
       if (mode === "silent") {
@@ -199,7 +221,7 @@ export function PaletteManager({
         pendingColorRef.current = fullColor
       }
     },
-    [colorMode, customName, liveUpdate, queueColorEmit],
+    [customName, liveUpdate, queueColorEmit],
   )
 
   useEffect(() => {
@@ -240,16 +262,11 @@ export function PaletteManager({
     }
   }, [])
 
-  const activePlaneMode = colorMode === "hsl" ? "h" : planeMode
-
-  const planeAxes = useMemo(
-    () =>
-      activePlaneMode === "h"
-        ? (["s", "l"] as const)
-        : activePlaneMode === "s"
-          ? (["h", "l"] as const)
-          : (["h", "s"] as const),
-    [activePlaneMode],
+  const activePlaneMode: PlaneAxis = "l"
+  const pickerGeometry = useMemo(() => getPickerGeometry(lightness), [lightness])
+  const pickerScale = useMemo(
+    () => getPickerScale(pickerGeometry, HSLUV_TEXTURE_SIZE, HSLUV_TEXTURE_SIZE),
+    [pickerGeometry],
   )
 
   const updatePlanePosition = useCallback(
@@ -263,20 +280,29 @@ export function PaletteManager({
         return
       }
 
-      const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
-      const [axisX, axisY] = planeAxes
-      const ratioX = x / rect.width
-      const ratioY = y / rect.height
+      const scaleForRect = getPickerScale(pickerGeometry, rect.width, rect.height)
+      const selection = mapPlanePointToHsluvSelection(
+        x,
+        y,
+        rect.width,
+        rect.height,
+        lightness,
+        pickerGeometry,
+        scaleForRect,
+        preservedHue,
+      )
+      const nextChannels: Hsluv = {
+        h: selection.h,
+        s: selection.s,
+        l: lightness,
+      }
 
-      nextChannels[axisX] = ratioToValue(axisX, ratioX)
-      nextChannels[axisY] = ratioToValue(axisY, 1 - ratioY)
-
-      if ((axisX === "s" || axisY === "s") && nextChannels.s > 0) {
+      if (nextChannels.s > 0) {
         setPreservedHue(nextChannels.h)
       }
       updateColorFromChannels(nextChannels)
     },
-    [hue, lightness, planeAxes, saturation, updateColorFromChannels],
+    [lightness, pickerGeometry, preservedHue, updateColorFromChannels],
   )
 
   const updateSliderFromEvent = useCallback(
@@ -305,6 +331,10 @@ export function PaletteManager({
   )
 
   useEffect(() => {
+    if (isDraggingPlane || draggingSlider !== null) {
+      return
+    }
+
     const activeEditing = editingColor ?? (debugFreezePopup ? frozenEditingColorRef.current : null)
     if (!activeEditing?.swatch) {
       previousEditingColorRef.current = null
@@ -327,9 +357,8 @@ export function PaletteManager({
       setCustomName(name)
       const reuseStored =
         lastEmittedColorRef.current === activeEditing.legacyValue &&
-        lastEmittedModeRef.current === colorMode &&
         lastEmittedChannelsRef.current
-      const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex, colorMode)
+      const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex)
       setHue(channels.h)
       setSaturation(channels.s)
       setLightness(channels.l)
@@ -352,7 +381,7 @@ export function PaletteManager({
     }
 
     applyEditingColor()
-  }, [colorMode, editingColor, debugFreezePopup])
+  }, [draggingSlider, editingColor, debugFreezePopup, isDraggingPlane])
 
 
   useEffect(() => {
@@ -410,7 +439,7 @@ export function PaletteManager({
       }
       return next
     })
-  }, [activePaletteId, colorMode, editingColor, hasCustomPickerHeight, isPickerExpanded, planeMode, showPaletteList, sidebarWidth])
+  }, [activePaletteId, editingColor, hasCustomPickerHeight, isPickerExpanded, showPaletteList, sidebarWidth])
 
   useEffect(() => {
     if (!showPaletteList) {
@@ -521,7 +550,7 @@ export function PaletteManager({
   const handleHexSave = () => {
     const hex = tempHexValue.startsWith("#") ? tempHexValue : `#${tempHexValue}`
     if (/^#[0-9A-F]{6}$/i.test(hex)) {
-      const channels = hexToChannelsByMode(hex, colorMode)
+      const channels = hexToChannelsByMode(hex)
       if (channels.s > 0) {
         setPreservedHue(channels.h)
       }
@@ -633,39 +662,12 @@ export function PaletteManager({
     [hue, saturation, lightness, updateColorFromChannels],
   )
 
-  const handlePlaneModeChange = (mode: PlaneAxis) => {
-    if (colorMode === "hsl") {
-      return
-    }
-    setPlaneMode(mode)
-  }
-
-  const handleColorModeChange = (mode: ColorMode) => {
-    if (mode === colorMode) {
-      return
-    }
-    setColorMode(mode)
-    if (mode === "hsl") {
-      setPlaneMode("h")
-    }
-    if (!hexValue) {
-      return
-    }
-    const channels = hexToChannelsByMode(hexValue, mode)
-    setHue(channels.h)
-    setSaturation(channels.s)
-    setLightness(channels.l)
-    if (channels.s > 0) {
-      setPreservedHue(channels.h)
-    }
-  }
-
   const handleEyedropper = async () => {
     try {
       const eyeDropper = new window.EyeDropper()
       const result = await eyeDropper.open()
       const hex = result.sRGBHex.toUpperCase()
-      const channels = hexToChannelsByMode(hex, colorMode)
+      const channels = hexToChannelsByMode(hex)
       if (channels.s > 0) {
         setPreservedHue(channels.h)
       }
@@ -765,42 +767,120 @@ export function PaletteManager({
   }
 
   const displayHue = saturation === 0 ? preservedHue : hue
+  const isExtremeLightness =
+    lightness <= HSLUV_LIGHTNESS_EPSILON || lightness >= 100 - HSLUV_LIGHTNESS_EPSILON
 
   const currentColorHex = useMemo(
-    () => channelsToHexByMode({ h: hue, s: saturation, l: lightness }, colorMode),
-    [colorMode, hue, saturation, lightness],
+    () => channelsToHexByMode({ h: hue, s: saturation, l: lightness }),
+    [hue, saturation, lightness],
   )
 
-  const getChannelValue = (axis: PlaneAxis) => (axis === "h" ? hue : axis === "s" ? saturation : lightness)
-
-  const planeCursorX = valueToRatio(planeAxes[0], getChannelValue(planeAxes[0])) * 100
-  const planeCursorY = (1 - valueToRatio(planeAxes[1], getChannelValue(planeAxes[1]))) * 100
-
-  const [planeTextureUrl, setPlaneTextureUrl] = useState<string | null>(null)
+  const planeSelection = useMemo(
+    () =>
+      mapHsluvSelectionToPlanePoint(
+        saturation > 0 ? hue : preservedHue,
+        saturation,
+        lightness,
+        pickerGeometry,
+        pickerScale,
+        HSLUV_TEXTURE_SIZE,
+        HSLUV_TEXTURE_SIZE,
+      ),
+    [hue, lightness, pickerGeometry, pickerScale, preservedHue, saturation],
+  )
+  const planeCursorX = planeSelection.xPercent
+  const planeCursorY = planeSelection.yPercent
+  const planeOverlay = useMemo(() => {
+    if (pickerGeometry.vertices.length === 0 || pickerGeometry.outerCircleRadius <= 0) {
+      return null
+    }
+    const points = pickerGeometry.vertices
+      .map((point) => toPixelCoordinate(point, HSLUV_TEXTURE_SIZE, HSLUV_TEXTURE_SIZE, pickerScale))
+      .map((point) => `${(point.x / HSLUV_TEXTURE_SIZE) * 100},${(point.y / HSLUV_TEXTURE_SIZE) * 100}`)
+      .join(" ")
+    const innerRadiusPercent = (pickerScale * pickerGeometry.innerCircleRadius * 100) / HSLUV_TEXTURE_SIZE
+    const outerRadiusPercent = (pickerScale * pickerGeometry.outerCircleRadius * 100) / HSLUV_TEXTURE_SIZE
+    return {
+      points,
+      innerRadiusPercent,
+      outerRadiusPercent,
+    }
+  }, [pickerGeometry, pickerScale])
+  const overlayStroke = lightness > 70 ? "rgba(0,0,0,0.7)" : "rgba(255,255,255,0.9)"
+  const outerCircleStroke = "#000000"
+  const selectedHueForSafety = saturation > 0 ? hue : preservedHue
+  const selectedChroma = useMemo(() => {
+    const maxChroma = maxChromaForHsluv(selectedHueForSafety, lightness)
+    return (maxChroma * Math.max(0, Math.min(100, saturation))) / 100
+  }, [lightness, saturation, selectedHueForSafety])
+  const isChromaSafe = !isExtremeLightness && selectedChroma <= pickerGeometry.innerCircleRadius + 0.0001
+  const chromaSafetyText = isExtremeLightness
+    ? "N/A at L 0/100"
+    : isChromaSafe
+      ? "Chroma safe"
+      : "Outside safe range"
 
   useEffect(() => {
-    let cancelled = false
-    if (typeof document === "undefined") {
+    if (typeof window === "undefined") {
+      return undefined
+    }
+    const canvas = planeCanvasRef.current
+    const planeNode = planeRef.current
+    if (!canvas || !planeNode) {
       return undefined
     }
 
-    const computeTexture = () => {
-      const texture = generatePlaneTexture(colorMode, activePlaneMode, { h: hue, s: saturation, l: lightness })
-      if (!cancelled) {
-        setPlaneTextureUrl(texture)
+    let cancelled = false
+    const drawTexture = () => {
+      if (cancelled) {
+        return
+      }
+
+      const rect = planeNode.getBoundingClientRect()
+      const cssWidth = Math.max(1, Math.round(rect.width))
+      const cssHeight = Math.max(1, Math.round(rect.height))
+      const dpr = window.devicePixelRatio || 1
+      const pixelWidth = Math.max(1, Math.round(cssWidth * dpr))
+      const pixelHeight = Math.max(1, Math.round(cssHeight * dpr))
+
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth
+        canvas.height = pixelHeight
+      }
+      canvas.style.width = `${cssWidth}px`
+      canvas.style.height = `${cssHeight}px`
+
+      const context = canvas.getContext("2d")
+      if (!context) {
+        return
+      }
+
+      if (isExtremeLightness) {
+        context.clearRect(0, 0, canvas.width, canvas.height)
+        return
+      }
+
+      const textureCanvas = generatePlaneTexture(
+        colorMode,
+        activePlaneMode,
+        { h: 0, s: 0, l: lightness },
+        pickerGeometry,
+        pixelWidth,
+        pixelHeight,
+      )
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      if (textureCanvas) {
+        context.drawImage(textureCanvas, 0, 0)
       }
     }
 
-    if (typeof window !== "undefined") {
-      window.requestAnimationFrame(computeTexture)
-    } else {
-      computeTexture()
-    }
+    const frameId = window.requestAnimationFrame(drawTexture)
 
     return () => {
       cancelled = true
+      window.cancelAnimationFrame(frameId)
     }
-  }, [activePlaneMode, colorMode, hue, saturation, lightness])
+  }, [activePlaneMode, colorMode, isExtremeLightness, lightness, pickerGeometry, sidebarWidth])
 
   useEffect(() => {
     return () => {
@@ -814,49 +894,30 @@ export function PaletteManager({
     }
   }, [flushThrottledColor, liveUpdate])
 
-  const fallbackPlaneGradient =
-    activePlaneMode === "h"
-      ? `linear-gradient(to bottom, transparent, black), linear-gradient(to right, white, hsl(${displayHue}, 100%, 50%))`
-      : activePlaneMode === "s"
-        ? `linear-gradient(to bottom, black, white), linear-gradient(to right, #ff0000, #00ffff)`
-        : `linear-gradient(to bottom, rgba(0,0,0,0.6), transparent), linear-gradient(to right, white, hsl(${displayHue}, 100%, 50%))`
-
-  const planeBackgroundStyle = planeTextureUrl
-    ? {
-        backgroundImage: `url(${planeTextureUrl}), ${fallbackPlaneGradient}`,
-        backgroundSize: "100% 100%, 100% 100%",
-        backgroundRepeat: "no-repeat, no-repeat",
-      }
-    : {
-        backgroundImage: fallbackPlaneGradient,
-        backgroundSize: "100% 100%",
-        backgroundRepeat: "no-repeat",
-      }
-
   const sliderBackgrounds = useMemo(() => {
     const hueStopsNumbers = [0, 60, 120, 180, 240, 300, 360]
     const hueSegments = hueStopsNumbers
       .map((stop, index) => {
-        const color = channelsToHexByMode({ h: stop, s: 100, l: 50 }, colorMode)
+        const color = channelsToHexByMode({ h: stop, s: 100, l: 50 })
         const percentage = (index / (hueStopsNumbers.length - 1)) * 100
         return `${color} ${percentage}%`
       })
       .join(", ")
 
-    const saturationStart = channelsToHexByMode({ h: hue, s: 0, l: lightness }, colorMode)
-    const saturationEnd = channelsToHexByMode({ h: hue, s: 100, l: lightness }, colorMode)
-    const lightnessStart = channelsToHexByMode({ h: hue, s: saturation, l: 0 }, colorMode)
-    const lightnessEnd = channelsToHexByMode({ h: hue, s: saturation, l: 100 }, colorMode)
+    const saturationStart = channelsToHexByMode({ h: hue, s: 0, l: lightness })
+    const saturationEnd = channelsToHexByMode({ h: hue, s: 100, l: lightness })
+    const lightnessStart = channelsToHexByMode({ h: hue, s: saturation, l: 0 })
+    const lightnessEnd = channelsToHexByMode({ h: hue, s: saturation, l: 100 })
 
     return {
       h: `linear-gradient(to right, ${hueSegments})`,
       s: `linear-gradient(to right, ${saturationStart}, ${saturationEnd})`,
       l: `linear-gradient(to right, ${lightnessStart}, ${lightnessEnd})`,
     }
-  }, [colorMode, hue, lightness, saturation])
+  }, [hue, lightness, saturation])
 
   const sliderHandleColors: Record<PlaneAxis, string> = {
-    h: channelsToHexByMode({ h: displayHue, s: 100, l: 50 }, colorMode),
+    h: channelsToHexByMode({ h: displayHue, s: 100, l: 50 }),
     s: currentColorHex,
     l: `hsl(0 0% ${Math.max(0, Math.min(100, lightness))}%)`,
   }
@@ -1031,65 +1092,59 @@ export function PaletteManager({
           {editingColor || debugFreezePopup ? (
             <div className="space-y-3 pb-2">
               <div className="flex items-center justify-between text-[11px] font-semibold uppercase text-muted-foreground">
-                <span>Color Mode</span>
-                <div className="flex gap-1">
-                  {COLOR_MODE_OPTIONS.map(({ key, label }) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => handleColorModeChange(key)}
-                      className={cn(
-                        "rounded px-2 py-0.5 text-[10px] tracking-wide transition",
-                        colorMode === key
-                          ? "bg-foreground text-background"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <span>Color Space</span>
+                <span className="rounded bg-foreground px-2 py-0.5 text-[10px] tracking-wide text-background">HSLuv</span>
               </div>
-
-              {colorMode !== "hsl" && (
-                <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold uppercase text-muted-foreground">
-                  <span>Plane</span>
-                  <div className="flex gap-1">
-                    {PLANE_MODE_OPTIONS.map(({ key, label }) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => handlePlaneModeChange(key)}
-                        className={cn(
-                          "rounded px-2 py-0.5 text-[10px] tracking-wide transition",
-                          planeMode === key
-                            ? "bg-foreground text-background"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               <div
                 ref={planeRef}
-                className="relative w-full h-40 rounded-lg cursor-crosshair overflow-hidden border border-border"
-                style={planeBackgroundStyle}
-                onMouseDown={handlePlaneMouseDown}
+                className={cn(
+                  "relative mx-auto w-full max-w-80 aspect-square rounded-lg overflow-hidden border border-border bg-muted/50",
+                  isExtremeLightness ? "cursor-default" : "cursor-crosshair",
+                )}
+                onMouseDown={isExtremeLightness ? undefined : handlePlaneMouseDown}
               >
-                <div
-                  className="absolute w-4 h-4 border border-white rounded-full shadow-lg pointer-events-none"
-                  style={{
-                    left: `calc(${planeCursorX}% - 8px)`,
-                    top: `calc(${planeCursorY}% - 8px)`,
-                    backgroundColor: currentColorHex,
-                    boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
-                    willChange: "transform",
-                  }}
-                />
+                <canvas ref={planeCanvasRef} className="absolute inset-0 h-full w-full pointer-events-none" aria-hidden />
+                {!isExtremeLightness && planeOverlay && (
+                  <svg
+                    className="pointer-events-none absolute inset-0 h-full w-full"
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                    aria-hidden
+                  >
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r={planeOverlay.outerRadiusPercent.toString()}
+                      fill="none"
+                      stroke={outerCircleStroke}
+                      strokeWidth="0.35"
+                      strokeOpacity="1"
+                    />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r={planeOverlay.innerRadiusPercent.toString()}
+                      fill="none"
+                      stroke={overlayStroke}
+                      strokeWidth="0.45"
+                      strokeOpacity="0.65"
+                    />
+                    <circle cx="50" cy="50" r="0.7" fill={overlayStroke} />
+                  </svg>
+                )}
+                {!isExtremeLightness && (
+                  <div
+                    className="absolute w-3 h-3 border border-white rounded-full shadow-lg pointer-events-none"
+                    style={{
+                      left: `calc(${planeCursorX}% - 6px)`,
+                      top: `calc(${planeCursorY}% - 6px)`,
+                      backgroundColor: currentColorHex,
+                      boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
+                      willChange: "transform",
+                    }}
+                  />
+                )}
               </div>
 
               <div className="space-y-3">
@@ -1099,7 +1154,7 @@ export function PaletteManager({
                       <span>{sliderLabels[axis]}</span>
                       <span className="font-mono text-[11px] text-muted-foreground">
                         {axis === "h"
-                          ? `${formatChannelValue(axis, sliderValues[axis])}°`
+                          ? `${formatChannelValue(axis, sliderValues[axis])} deg`
                           : `${formatChannelValue(axis, sliderValues[axis])}%`}
                       </span>
                     </div>
@@ -1221,6 +1276,63 @@ export function PaletteManager({
                   </Button>
                 )}
               </div>
+              <div className="flex items-center justify-between rounded-md border border-input bg-background px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "h-2.5 w-2.5 rounded-full",
+                      isExtremeLightness
+                        ? "bg-muted-foreground/60"
+                        : isChromaSafe
+                          ? "bg-emerald-500"
+                          : "bg-amber-500",
+                    )}
+                  />
+                  <span className="text-xs font-medium text-foreground">Inner Circle</span>
+                </div>
+                <span
+                  className={cn(
+                    "text-xs font-semibold",
+                    isExtremeLightness
+                      ? "text-muted-foreground"
+                      : isChromaSafe
+                        ? "text-emerald-700"
+                        : "text-amber-700",
+                  )}
+                >
+                  {chromaSafetyText}
+                </span>
+              </div>
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                HSLuv color space by{" "}
+                <a
+                  href="https://github.com/boronine"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  Alexei Boronine
+                </a>{" "}
+                and contributors. Source:{" "}
+                <a
+                  href="https://www.hsluv.org/"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  hsluv.org
+                </a>{" "}
+                /{" "}
+                <a
+                  href="https://github.com/hsluv/hsluv"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  github.com/hsluv/hsluv
+                </a>
+                .
+              </p>
 
             </div>
           ) : (
@@ -1234,151 +1346,307 @@ export function PaletteManager({
   )
 }
 
-function hexToChannelsByMode(hex: string, mode: ColorMode): Hsluv {
-  if (mode === "hsl") {
-    const { h, s, l } = hexToHSL(hex)
-    return clampHsluv({ h, s, l })
-  }
-  const [h, s, l] = mode === "hsluv" ? hexToHsluv(hex) : hexToHpluv(hex)
+function hexToChannelsByMode(hex: string): Hsluv {
+  const [h, s, l] = hexToHsluv(hex)
   return clampHsluv({ h, s, l })
 }
 
-function channelsToHexByMode(channels: Hsluv, mode: ColorMode): string {
+function channelsToHexByMode(channels: Hsluv): string {
   const clamped = clampHsluv(channels)
-  if (mode === "hsl") {
-    return hslToHex(clamped.h, clamped.s, clamped.l).toUpperCase()
-  }
-  return (mode === "hsluv"
-    ? hsluvToHex(clamped.h, clamped.s, clamped.l)
-    : hpluvToHex(clamped.h, clamped.s, clamped.l)
-  ).toUpperCase()
+  return hsluvToHex(clamped.h, clamped.s, clamped.l).toUpperCase()
 }
 
 const ratioToValue = (axis: PlaneAxis, ratio: number) => (axis === "h" ? ratio * 360 : ratio * 100)
 const valueToRatio = (axis: PlaneAxis, value: number) => (axis === "h" ? value / 360 : value / 100)
 
-function generatePlaneTexture(mode: ColorMode, plane: PlaneAxis, base: Hsluv): string | null {
+function generatePlaneTexture(
+  mode: ColorMode,
+  plane: PlaneAxis,
+  base: Hsluv,
+  geometry: PickerGeometry,
+  width: number,
+  height: number,
+): HTMLCanvasElement | null {
   if (typeof document === "undefined") {
     return null
   }
 
   const canvas = document.createElement("canvas")
-  const size = 64
-  canvas.width = size
-  canvas.height = size
+  canvas.width = width
+  canvas.height = height
   const ctx = canvas.getContext("2d")
   if (!ctx) {
     return null
   }
 
-  const axes = plane === "h" ? (["s", "l"] as const) : plane === "s" ? (["h", "l"] as const) : (["h", "s"] as const)
-  const imageData = ctx.createImageData(size, size)
-  const data = imageData.data
+  if (mode !== "hsluv" || plane !== "l") {
+    return null
+  }
 
-  for (let y = 0; y < size; y += 1) {
-    const ratioY = 1 - y / (size - 1)
-    const axisYValue = ratioToValue(axes[1], ratioY)
-    for (let x = 0; x < size; x += 1) {
-      const ratioX = x / (size - 1)
-      const axisXValue = ratioToValue(axes[0], ratioX)
-      const next: Hsluv = { ...base }
-      next[axes[0]] = axisXValue
-      next[axes[1]] = axisYValue
-      const hex = channelsToHexByMode(next, mode)
-      const r = Number.parseInt(hex.slice(1, 3), 16)
-      const g = Number.parseInt(hex.slice(3, 5), 16)
-      const b = Number.parseInt(hex.slice(5, 7), 16)
-      const idx = (y * size + x) * 4
-      data[idx] = r
-      data[idx + 1] = g
-      data[idx + 2] = b
-      data[idx + 3] = 255
+  if (base.l <= 0.00000001 || base.l >= 99.9999999 || geometry.vertices.length === 0) {
+    return null
+  }
+
+  const scale = getPickerScale(geometry, width, height)
+  const shapePoints = geometry.vertices.map((point) => toPixelCoordinate(point, width, height, scale))
+  const xs = shapePoints.map((point) => point.x)
+  const ys = shapePoints.map((point) => point.y)
+  const xmin = Math.floor(Math.min(...xs) / HSLUV_TEXTURE_BLOCK_SIZE)
+  const ymin = Math.floor(Math.min(...ys) / HSLUV_TEXTURE_BLOCK_SIZE)
+  const xmax = Math.ceil(Math.max(...xs) / HSLUV_TEXTURE_BLOCK_SIZE)
+  const ymax = Math.ceil(Math.max(...ys) / HSLUV_TEXTURE_BLOCK_SIZE)
+
+  ctx.clearRect(0, 0, width, height)
+  ctx.globalCompositeOperation = "source-over"
+
+  for (let blockX = xmin; blockX < xmax; blockX += 1) {
+    for (let blockY = ymin; blockY < ymax; blockY += 1) {
+      const px = blockX * HSLUV_TEXTURE_BLOCK_SIZE
+      const py = blockY * HSLUV_TEXTURE_BLOCK_SIZE
+      const point = fromPixelCoordinate(
+        px + HSLUV_TEXTURE_BLOCK_SIZE / 2,
+        py + HSLUV_TEXTURE_BLOCK_SIZE / 2,
+        width,
+        height,
+        scale,
+      )
+      const clamped = closestPoint(geometry, point)
+      const hex = luvToHex(base.l, clamped.x, clamped.y)
+      ctx.fillStyle = hex
+      ctx.fillRect(px, py, HSLUV_TEXTURE_BLOCK_SIZE, HSLUV_TEXTURE_BLOCK_SIZE)
     }
   }
 
-  ctx.putImageData(imageData, 0, 0)
-  return canvas.toDataURL()
+  ctx.globalCompositeOperation = "destination-in"
+  ctx.beginPath()
+  ctx.moveTo(shapePoints[0].x, shapePoints[0].y)
+  for (let i = 1; i < shapePoints.length; i += 1) {
+    ctx.lineTo(shapePoints[i].x, shapePoints[i].y)
+  }
+  ctx.closePath()
+  ctx.fill()
+  ctx.globalCompositeOperation = "source-over"
+
+  return canvas
 }
 
-function hexToHSL(hex: string): { h: number; s: number; l: number } {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
-  if (!result) return { h: 0, s: 0, l: 0 }
+function normalizeHueDegrees(value: number): number {
+  const wrapped = value % 360
+  return wrapped < 0 ? wrapped + 360 : wrapped
+}
 
-  const r = Number.parseInt(result[1], 16) / 255
-  const g = Number.parseInt(result[2], 16) / 255
-  const b = Number.parseInt(result[3], 16) / 255
+function normalizeAngleRadians(angle: number): number {
+  const fullRotation = 2 * Math.PI
+  return ((angle % fullRotation) + fullRotation) % fullRotation
+}
 
-  const max = Math.max(r, g, b)
-  const min = Math.min(r, g, b)
-  let h = 0
-  let s = 0
-  const l = (max + min) / 2
+function intersectLineLine(a: HsluvBoundingLine, b: HsluvBoundingLine): PlanePoint {
+  const x = (a.intercept - b.intercept) / (b.slope - a.slope)
+  const y = a.slope * x + a.intercept
+  return { x, y }
+}
 
-  if (max !== min) {
-    const d = max - min
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+function distanceFromOrigin(point: PlanePoint): number {
+  return Math.sqrt(point.x * point.x + point.y * point.y)
+}
 
-    switch (max) {
-      case r:
-        h = ((g - b) / d + (g < b ? 6 : 0)) / 6
-        break
-      case g:
-        h = ((b - r) / d + 2) / 6
-        break
-      case b:
-        h = ((r - g) / d + 4) / 6
-        break
+function distanceLineFromOrigin(line: HsluvBoundingLine): number {
+  return Math.abs(line.intercept) / Math.sqrt(line.slope * line.slope + 1)
+}
+
+function angleFromOrigin(point: PlanePoint): number {
+  return Math.atan2(point.y, point.x)
+}
+
+function perpendicularThroughPoint(line: HsluvBoundingLine, point: PlanePoint): HsluvBoundingLine {
+  const slope = -1 / line.slope
+  const intercept = point.y - slope * point.x
+  return { slope, intercept }
+}
+
+function lengthOfRayUntilIntersect(theta: number, line: HsluvBoundingLine): number {
+  return line.intercept / (Math.sin(theta) - line.slope * Math.cos(theta))
+}
+
+function getPickerGeometry(lightness: number): PickerGeometry {
+  if (lightness <= 0.00000001 || lightness >= 99.9999999) {
+    return {
+      lines: [],
+      vertices: [],
+      angles: [],
+      outerCircleRadius: 0,
+      innerCircleRadius: 0,
+    }
+  }
+
+  const lines = getHsluvBoundingLines(lightness)
+  let closestIndex = 0
+  let closestLineDistance: number | null = null
+  for (let i = 0; i < lines.length; i += 1) {
+    const distance = distanceLineFromOrigin(lines[i])
+    if (closestLineDistance === null || distance < closestLineDistance) {
+      closestLineDistance = distance
+      closestIndex = i
+    }
+  }
+
+  const closestLine = lines[closestIndex]
+  const perpendicularLine: HsluvBoundingLine = { slope: -1 / closestLine.slope, intercept: 0 }
+  const startingAngle = angleFromOrigin(intersectLineLine(closestLine, perpendicularLine))
+
+  const intersections: PickerGeometryIntersection[] = []
+  for (let i1 = 0; i1 < lines.length - 1; i1 += 1) {
+    for (let i2 = i1 + 1; i2 < lines.length; i2 += 1) {
+      const point = intersectLineLine(lines[i1], lines[i2])
+      const angle = angleFromOrigin(point)
+      intersections.push({
+        line1: i1,
+        line2: i2,
+        intersectionPoint: point,
+        relativeAngle: normalizeAngleRadians(angle - startingAngle),
+      })
+    }
+  }
+
+  intersections.sort((a, b) => a.relativeAngle - b.relativeAngle)
+
+  const orderedLines: HsluvBoundingLine[] = []
+  const orderedVertices: PlanePoint[] = []
+  const orderedAngles: number[] = []
+  let outerCircleRadius = 0
+  let currentIndex = closestIndex
+  for (let i = 0; i < intersections.length; i += 1) {
+    const intersection = intersections[i]
+    let nextIndex: number | null = null
+    if (intersection.line1 === currentIndex) {
+      nextIndex = intersection.line2
+    } else if (intersection.line2 === currentIndex) {
+      nextIndex = intersection.line1
+    }
+    if (nextIndex !== null) {
+      currentIndex = nextIndex
+      orderedLines.push(lines[nextIndex])
+      orderedVertices.push(intersection.intersectionPoint)
+      orderedAngles.push(angleFromOrigin(intersection.intersectionPoint))
+      outerCircleRadius = Math.max(outerCircleRadius, distanceFromOrigin(intersection.intersectionPoint))
     }
   }
 
   return {
-    h: h * 360,
-    s: s * 100,
-    l: l * 100,
+    lines: orderedLines,
+    vertices: orderedVertices,
+    angles: orderedAngles,
+    outerCircleRadius,
+    innerCircleRadius: closestLineDistance ?? 0,
   }
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-  s /= 100
-  l /= 100
-
-  const c = (1 - Math.abs(2 * l - 1)) * s
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
-  const m = l - c / 2
-  let r = 0
-  let g = 0
-  let b = 0
-
-  if (0 <= h && h < 60) {
-    r = c
-    g = x
-    b = 0
-  } else if (60 <= h && h < 120) {
-    r = x
-    g = c
-    b = 0
-  } else if (120 <= h && h < 180) {
-    r = 0
-    g = c
-    b = x
-  } else if (180 <= h && h < 240) {
-    r = 0
-    g = x
-    b = c
-  } else if (240 <= h && h < 300) {
-    r = x
-    g = 0
-    b = c
-  } else if (300 <= h && h < 360) {
-    r = c
-    g = 0
-    b = x
+function getPickerScale(geometry: PickerGeometry, width: number, height: number): number {
+  const radiusPixels = Math.max(1, Math.min(width, height) / 2 - HSLUV_PLANE_PADDING_PX)
+  if (geometry.outerCircleRadius <= 0) {
+    return 1
   }
-
-  const toHex = (n: number) => {
-    const hex = Math.round((n + m) * 255).toString(16)
-    return hex.length === 1 ? "0" + hex : hex
-  }
-
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+  return radiusPixels / geometry.outerCircleRadius
 }
+
+function mapHsluvSelectionToPlanePoint(
+  hue: number,
+  saturation: number,
+  lightness: number,
+  geometry: PickerGeometry,
+  scale: number,
+  width: number,
+  height: number,
+): { xPercent: number; yPercent: number } {
+  if (geometry.vertices.length === 0 || geometry.outerCircleRadius <= 0) {
+    return { xPercent: 50, yPercent: 50 }
+  }
+
+  const chromaLimit = maxChromaForHsluv(hue, lightness)
+  const chroma = chromaLimit <= 0 ? 0 : (Math.max(0, Math.min(100, saturation)) / 100) * chromaLimit
+  const hrad = (normalizeHueDegrees(hue) / 360) * 2 * Math.PI
+  const point = toPixelCoordinate(
+    { x: chroma * Math.cos(hrad), y: chroma * Math.sin(hrad) },
+    width,
+    height,
+    scale,
+  )
+
+  const xPercent = (point.x / width) * 100
+  const yPercent = (point.y / height) * 100
+  return {
+    xPercent: Math.max(0, Math.min(100, xPercent)),
+    yPercent: Math.max(0, Math.min(100, yPercent)),
+  }
+}
+
+function mapPlanePointToHsluvSelection(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  lightness: number,
+  geometry: PickerGeometry,
+  scale: number,
+  preservedHue: number,
+): { h: number; s: number } {
+  if (geometry.vertices.length === 0) {
+    return { h: normalizeHueDegrees(preservedHue), s: 0 }
+  }
+
+  const pointer = fromPixelCoordinate(x, y, width, height, scale)
+  const clampedPoint = closestPoint(geometry, pointer)
+  const [computedHue, computedSaturation] = luvToHsluv(lightness, clampedPoint.x, clampedPoint.y)
+  const saturation = Math.max(0, Math.min(100, computedSaturation))
+  const hue = saturation <= 0.0001 ? normalizeHueDegrees(preservedHue) : normalizeHueDegrees(computedHue)
+
+  return { h: hue, s: saturation }
+}
+
+function closestPoint(geometry: PickerGeometry, point: PlanePoint): PlanePoint {
+  const angle = angleFromOrigin(point)
+  let smallestRelativeAngle = Math.PI * 2
+  let index1 = 0
+  for (let i = 0; i < geometry.vertices.length; i += 1) {
+    const relativeAngle = normalizeAngleRadians(geometry.angles[i] - angle)
+    if (relativeAngle < smallestRelativeAngle) {
+      smallestRelativeAngle = relativeAngle
+      index1 = i
+    }
+  }
+  const index2 = (index1 - 1 + geometry.vertices.length) % geometry.vertices.length
+  const closestLine = geometry.lines[index2]
+  if (distanceFromOrigin(point) < lengthOfRayUntilIntersect(angle, closestLine)) {
+    return point
+  }
+
+  const perpendicularLine = perpendicularThroughPoint(closestLine, point)
+  const intersectionPoint = intersectLineLine(closestLine, perpendicularLine)
+  const bound1 = geometry.vertices[index1]
+  const bound2 = geometry.vertices[index2]
+  const upperBound = bound1.x > bound2.x ? bound1 : bound2
+  const lowerBound = bound1.x > bound2.x ? bound2 : bound1
+
+  if (intersectionPoint.x > upperBound.x) {
+    return upperBound
+  }
+  if (intersectionPoint.x < lowerBound.x) {
+    return lowerBound
+  }
+  return intersectionPoint
+}
+
+function toPixelCoordinate(point: PlanePoint, width: number, height: number, scale: number): PlanePoint {
+  return {
+    x: point.x * scale + width / 2,
+    y: height / 2 - point.y * scale,
+  }
+}
+
+function fromPixelCoordinate(x: number, y: number, width: number, height: number, scale: number): PlanePoint {
+  return {
+    x: (x - width / 2) / scale,
+    y: (height / 2 - y) / scale,
+  }
+}
+

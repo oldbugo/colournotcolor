@@ -130,12 +130,6 @@ const commitEditingColor = useCallback(
   }, [contrastStandard])
 
   useEffect(() => {
-    // Debug trace for any editingColor change (including resets to null).
-    // eslint-disable-next-line no-console
-    console.log("[editingColor changed]", { editingColor, stack: new Error().stack })
-  }, [editingColor])
-
-  useEffect(() => {
     if (typeof window === "undefined") return
     const handlePanToggle = (event: Event) => {
       const detail = (event as CustomEvent<boolean>).detail
@@ -303,9 +297,6 @@ const commitEditingColor = useCallback(
 
   const handleColorEditFromChild = useCallback(
     (index: number) => {
-      // Debug trace to identify callers that trigger popup changes.
-      // eslint-disable-next-line no-console
-      console.log("[onColorEdit]", { index, source: "child", stack: new Error().stack })
       handleColorEdit(index)
     },
     [handleColorEdit],

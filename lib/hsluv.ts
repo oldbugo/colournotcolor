@@ -4,8 +4,13 @@ export type Hsluv = {
   l: number
 }
 
+export type HsluvBoundingLine = {
+  slope: number
+  intercept: number
+}
+
 type Tuple = [number, number, number]
-type Mode = "hsluv" | "hpluv"
+type Mode = "hsluv"
 
 const DEFAULT_DECIMALS = 2
 const HUE_MAX = 360
@@ -39,10 +44,6 @@ class HsluvCore {
   hsluv_h = 0
   hsluv_s = 0
   hsluv_l = 0
-
-  hpluv_h = 0
-  hpluv_p = 0
-  hpluv_l = 0
 
   r0s = 0
   r0i = 0
@@ -231,16 +232,6 @@ class HsluvCore {
     this.b1i = ((s2b - 769860) * l) / (s3b + 126452)
   }
 
-  calcMaxChromaHpluv(): number {
-    const r0 = HsluvCore.distanceFromOrigin(this.r0s, this.r0i)
-    const r1 = HsluvCore.distanceFromOrigin(this.r1s, this.r1i)
-    const g0 = HsluvCore.distanceFromOrigin(this.g0s, this.g0i)
-    const g1 = HsluvCore.distanceFromOrigin(this.g1s, this.g1i)
-    const b0 = HsluvCore.distanceFromOrigin(this.b0s, this.b0i)
-    const b1 = HsluvCore.distanceFromOrigin(this.b1s, this.b1i)
-    return Math.min(r0, r1, g0, g1, b0, b1)
-  }
-
   calcMaxChromaHsluv(h: number): number {
     const hueRad = (h / 360) * Math.PI * 2
     const r0 = HsluvCore.distanceFromOriginAngle(this.r0s, this.r0i, hueRad)
@@ -284,47 +275,8 @@ class HsluvCore {
     this.hsluv_h = this.lch_h
   }
 
-  hpluvToLch() {
-    if (this.hpluv_l > 99.9999999) {
-      this.lch_l = 100
-      this.lch_c = 0
-    } else if (this.hpluv_l < 0.00000001) {
-      this.lch_l = 0
-      this.lch_c = 0
-    } else {
-      this.lch_l = this.hpluv_l
-      this.calculateBoundingLines(this.hpluv_l)
-      const max = this.calcMaxChromaHpluv()
-      this.lch_c = max === 0 ? 0 : (max / 100) * this.hpluv_p
-    }
-    this.lch_h = this.hpluv_h
-  }
-
-  lchToHpluv() {
-    if (this.lch_l > 99.9999999) {
-      this.hpluv_p = 0
-      this.hpluv_l = 100
-    } else if (this.lch_l < 0.00000001) {
-      this.hpluv_p = 0
-      this.hpluv_l = 0
-    } else {
-      this.calculateBoundingLines(this.lch_l)
-      const max = this.calcMaxChromaHpluv()
-      this.hpluv_p = max === 0 ? 0 : (this.lch_c / max) * 100
-      this.hpluv_l = this.lch_l
-    }
-    this.hpluv_h = this.lch_h
-  }
-
   hsluvToRgb() {
     this.hsluvToLch()
-    this.lchToLuv()
-    this.luvToXyz()
-    this.xyzToRgb()
-  }
-
-  hpluvToRgb() {
-    this.hpluvToLch()
     this.lchToLuv()
     this.luvToXyz()
     this.xyzToRgb()
@@ -335,35 +287,16 @@ class HsluvCore {
     this.rgbToHex()
   }
 
-  hpluvToHex() {
-    this.hpluvToRgb()
-    this.rgbToHex()
-  }
-
   rgbToHsluv() {
     this.rgbToXyz()
     this.xyzToLuv()
     this.luvToLch()
-    this.lchToHpluv()
     this.lchToHsluv()
-  }
-
-  rgbToHpluv() {
-    this.rgbToXyz()
-    this.xyzToLuv()
-    this.luvToLch()
-    this.lchToHpluv()
-    this.lchToHpluv()
   }
 
   hexToHsluv() {
     this.hexToRgb()
     this.rgbToHsluv()
-  }
-
-  hexToHpluv() {
-    this.hexToRgb()
-    this.rgbToHpluv()
   }
 }
 
@@ -431,45 +364,54 @@ export function hexToHsluv(hex: string): Tuple {
   return [core.hsluv_h, core.hsluv_s, core.hsluv_l]
 }
 
-export function hpluvToRgb(h: number, s: number, l: number): Tuple {
-  const normalized = clampHsluv({ h, s, l })
+export function maxChromaForHsluv(h: number, l: number): number {
+  const normalized = clampHsluv({ h, s: 100, l })
+  if (normalized.l <= 0.00000001 || normalized.l >= 99.9999999) {
+    return 0
+  }
   const core = new HsluvCore()
-  core.hpluv_h = normalized.h
-  core.hpluv_p = normalized.s
-  core.hpluv_l = normalized.l
-  core.hpluvToRgb()
-  return rgbTupleFromCore(core)
+  core.calculateBoundingLines(normalized.l)
+  return core.calcMaxChromaHsluv(normalized.h)
 }
 
-export function rgbToHpluv(r: number, g: number, b: number): Tuple {
+export function getHsluvBoundingLines(l: number): HsluvBoundingLine[] {
+  const normalizedLightness = clampPercent(l)
   const core = new HsluvCore()
-  core.rgb_r = clampRgbInput(r)
-  core.rgb_g = clampRgbInput(g)
-  core.rgb_b = clampRgbInput(b)
-  core.rgbToHpluv()
-  return [core.hpluv_h, core.hpluv_p, core.hpluv_l]
+  core.calculateBoundingLines(normalizedLightness)
+  return [
+    { slope: core.r0s, intercept: core.r0i },
+    { slope: core.r1s, intercept: core.r1i },
+    { slope: core.g0s, intercept: core.g0i },
+    { slope: core.g1s, intercept: core.g1i },
+    { slope: core.b0s, intercept: core.b0i },
+    { slope: core.b1s, intercept: core.b1i },
+  ]
 }
 
-export function hpluvToHex(h: number, s: number, l: number): string {
-  const normalized = clampHsluv({ h, s, l })
+export function luvToHsluv(l: number, u: number, v: number): Tuple {
   const core = new HsluvCore()
-  core.hpluv_h = normalized.h
-  core.hpluv_p = normalized.s
-  core.hpluv_l = normalized.l
-  core.hpluvToHex()
+  core.luv_l = clampPercent(l)
+  core.luv_u = u
+  core.luv_v = v
+  core.luvToLch()
+  core.lchToHsluv()
+  return [core.hsluv_h, core.hsluv_s, core.hsluv_l]
+}
+
+export function luvToHex(l: number, u: number, v: number): string {
+  const core = new HsluvCore()
+  core.luv_l = clampPercent(l)
+  core.luv_u = u
+  core.luv_v = v
+  core.luvToXyz()
+  core.xyzToRgb()
+  core.rgbToHex()
   return core.hex.toUpperCase()
-}
-
-export function hexToHpluv(hex: string): Tuple {
-  const core = new HsluvCore()
-  core.hex = `#${normalizeHexInput(hex).toLowerCase()}`
-  core.hexToHpluv()
-  return [core.hpluv_h, core.hpluv_p, core.hpluv_l]
 }
 
 const parseModeString = (input: string): { mode: Mode | null; body: string } => {
   const trimmed = input.trim()
-  const match = trimmed.match(/^(hsluv|hpluv)\((.*)\)$/i)
+  const match = trimmed.match(/^(hsluv)\((.*)\)$/i)
   if (match) {
     return { mode: match[1].toLowerCase() as Mode, body: match[2].trim() }
   }
