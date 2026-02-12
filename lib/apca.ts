@@ -1,13 +1,16 @@
-const STRC = 2.4
-const NTX = 0.57
-const RTX = 0.62
-const NBG = 0.56
-const RBG = 0.65
-const BCLIP = 1.414
-const BTHRSH = 0.022
-const WSCALE = 1.14
-const WOFFSET = 0.027
-const WCLAMP = 0.1
+const MAIN_TRC = 2.4
+const NORM_BG = 0.56
+const NORM_TXT = 0.57
+const REV_TXT = 0.62
+const REV_BG = 0.65
+const BLK_THRS = 0.022
+const BLK_CLMP = 1.414
+const SCALE_BOW = 1.14
+const SCALE_WOB = 1.14
+const LOW_BOW_OFFSET = 0.027
+const LOW_WOB_OFFSET = 0.027
+const DELTA_Y_MIN = 0.0005
+const LOW_CLIP = 0.1
 
 const R_COEFF = 0.2126729
 const G_COEFF = 0.7151522
@@ -15,9 +18,26 @@ const B_COEFF = 0.072175
 
 type RGB = { r: number; g: number; b: number }
 
+const normalizeHex = (hex: string): string | null => {
+  const normalized = hex.trim().replace(/^#/, "")
+
+  if (/^[\da-f]{3}$/i.test(normalized)) {
+    return normalized
+      .split("")
+      .map((value) => value + value)
+      .join("")
+  }
+
+  if (/^[\da-f]{6}$/i.test(normalized)) {
+    return normalized
+  }
+
+  return null
+}
+
 const parseHex = (hex: string): RGB | null => {
-  const normalized = hex.startsWith("#") ? hex.slice(1) : hex
-  if (normalized.length !== 6) {
+  const normalized = normalizeHex(hex)
+  if (!normalized) {
     return null
   }
 
@@ -32,51 +52,37 @@ const parseHex = (hex: string): RGB | null => {
   return { r, g, b }
 }
 
-const softClamp = (value: number): number => {
-  if (value <= 0) {
-    return 0
-  }
-  if (value < BTHRSH) {
-    return value + Math.pow(BTHRSH - value, BCLIP)
-  }
-  return value
-}
+const srgbToY = ({ r, g, b }: RGB): number =>
+  R_COEFF * Math.pow(r / 255, MAIN_TRC) + G_COEFF * Math.pow(g / 255, MAIN_TRC) + B_COEFF * Math.pow(b / 255, MAIN_TRC)
 
-const srgbToYs = (hex: string): number | null => {
-  const rgb = parseHex(hex)
-  if (!rgb) {
-    return null
-  }
-
-  const rLinear = Math.pow(rgb.r / 255, STRC)
-  const gLinear = Math.pow(rgb.g / 255, STRC)
-  const bLinear = Math.pow(rgb.b / 255, STRC)
-
-  const ys = rLinear * R_COEFF + gLinear * G_COEFF + bLinear * B_COEFF
-  return softClamp(ys)
-}
+const softClampNearBlack = (value: number): number =>
+  value > BLK_THRS ? value : value + Math.pow(BLK_THRS - value, BLK_CLMP)
 
 export function calculateApca(textHex: string, backgroundHex: string): number | null {
-  const textYs = srgbToYs(textHex)
-  const backgroundYs = srgbToYs(backgroundHex)
+  const textRgb = parseHex(textHex)
+  const backgroundRgb = parseHex(backgroundHex)
 
-  if (textYs === null || backgroundYs === null) {
+  if (!textRgb || !backgroundRgb) {
     return null
   }
 
-  if (textYs === backgroundYs) {
+  const textY = softClampNearBlack(srgbToY(textRgb))
+  const backgroundY = softClampNearBlack(srgbToY(backgroundRgb))
+
+  if (Math.abs(backgroundY - textY) < DELTA_Y_MIN) {
     return 0
   }
 
-  const sapc =
-    backgroundYs > textYs
-      ? (Math.pow(backgroundYs, NBG) - Math.pow(textYs, NTX)) * WSCALE
-      : (Math.pow(backgroundYs, RBG) - Math.pow(textYs, RTX)) * WSCALE
+  let sapc = 0
+  let outputContrast = 0
 
-  if (Math.abs(sapc) < WCLAMP) {
-    return 0
+  if (backgroundY > textY) {
+    sapc = (Math.pow(backgroundY, NORM_BG) - Math.pow(textY, NORM_TXT)) * SCALE_BOW
+    outputContrast = sapc < LOW_CLIP ? 0 : sapc - LOW_BOW_OFFSET
+  } else {
+    sapc = (Math.pow(backgroundY, REV_BG) - Math.pow(textY, REV_TXT)) * SCALE_WOB
+    outputContrast = sapc > -LOW_CLIP ? 0 : sapc + LOW_WOB_OFFSET
   }
 
-  const adjusted = sapc > 0 ? sapc - WOFFSET : sapc + WOFFSET
-  return adjusted * 100
+  return outputContrast * 100
 }
