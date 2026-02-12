@@ -34,7 +34,7 @@ type PaletteManagerProps = {
   showPaletteList?: boolean
 }
 
-type ColorMode = "hsluv"
+type ColorMode = "hsl" | "hsluv"
 type PlaneAxis = "h" | "s" | "l"
 
 type PlanePoint = {
@@ -61,6 +61,10 @@ const HSLUV_PLANE_PADDING_PX = 8
 const HSLUV_TEXTURE_SIZE = 400
 const HSLUV_TEXTURE_BLOCK_SIZE = 8
 const HSLUV_LIGHTNESS_EPSILON = 0.00000001
+const COLOR_MODE_OPTIONS: Array<{ key: ColorMode; label: string }> = [
+  { key: "hsl", label: "HSL" },
+  { key: "hsluv", label: "HSLuv" },
+]
 
 const PICKER_HEIGHTS_STORAGE_KEY = "palette-picker-heights-v1"
 
@@ -126,7 +130,7 @@ export function PaletteManager({
   const [preservedHue, setPreservedHue] = useState(0)
   const [hexValue, setHexValue] = useState("")
   const [customName, setCustomName] = useState("")
-  const colorMode: ColorMode = "hsluv"
+  const [colorMode, setColorMode] = useState<ColorMode>("hsl")
 
   const [isEditingHex, setIsEditingHex] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
@@ -147,6 +151,7 @@ export function PaletteManager({
   const frozenEditingColorRef = useRef<EditingColor | null>(null)
   const lastEmittedColorRef = useRef<string | null>(null)
   const lastEmittedChannelsRef = useRef<Hsluv | null>(null)
+  const lastEmittedModeRef = useRef<ColorMode>(colorMode)
   const throttledColorRef = useRef<string | null>(null)
   const throttleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const LIVE_EMIT_THROTTLE_MS = 32
@@ -155,8 +160,9 @@ export function PaletteManager({
     (colorString: string) => {
       onColorChange(colorString)
       lastEmittedColorRef.current = colorString
+      lastEmittedModeRef.current = colorMode
     },
-    [onColorChange],
+    [colorMode, onColorChange],
   )
 
   const flushThrottledColor = useCallback(() => {
@@ -204,7 +210,7 @@ export function PaletteManager({
       setLightness(clamped.l)
       lastEmittedChannelsRef.current = clamped
 
-      const newHex = channelsToHexByMode(clamped).toUpperCase()
+      const newHex = channelsToHexByMode(clamped, colorMode).toUpperCase()
       setHexValue(newHex)
 
       if (mode === "silent") {
@@ -221,7 +227,7 @@ export function PaletteManager({
         pendingColorRef.current = fullColor
       }
     },
-    [customName, liveUpdate, queueColorEmit],
+    [colorMode, customName, liveUpdate, queueColorEmit],
   )
 
   useEffect(() => {
@@ -262,8 +268,14 @@ export function PaletteManager({
     }
   }, [])
 
-  const activePlaneMode: PlaneAxis = "l"
-  const pickerGeometry = useMemo(() => getPickerGeometry(lightness), [lightness])
+  const activePlaneMode: PlaneAxis = colorMode === "hsl" ? "h" : "l"
+  const pickerGeometry = useMemo(
+    () =>
+      colorMode === "hsl"
+        ? { lines: [], vertices: [], angles: [], outerCircleRadius: 0, innerCircleRadius: 0 }
+        : getPickerGeometry(lightness),
+    [colorMode, lightness],
+  )
   const pickerScale = useMemo(
     () => getPickerScale(pickerGeometry, HSLUV_TEXTURE_SIZE, HSLUV_TEXTURE_SIZE),
     [pickerGeometry],
@@ -277,6 +289,21 @@ export function PaletteManager({
       const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
       const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height))
       if (rect.width === 0 || rect.height === 0) {
+        return
+      }
+
+      if (colorMode === "hsl") {
+        const ratioX = x / rect.width
+        const ratioY = y / rect.height
+        const nextChannels: Hsluv = {
+          h: hue,
+          s: ratioToValue("s", ratioX),
+          l: ratioToValue("l", 1 - ratioY),
+        }
+        if (nextChannels.s > 0) {
+          setPreservedHue(nextChannels.h)
+        }
+        updateColorFromChannels(nextChannels)
         return
       }
 
@@ -302,7 +329,7 @@ export function PaletteManager({
       }
       updateColorFromChannels(nextChannels)
     },
-    [lightness, pickerGeometry, preservedHue, updateColorFromChannels],
+    [colorMode, hue, lightness, pickerGeometry, preservedHue, updateColorFromChannels],
   )
 
   const updateSliderFromEvent = useCallback(
@@ -357,8 +384,9 @@ export function PaletteManager({
       setCustomName(name)
       const reuseStored =
         lastEmittedColorRef.current === activeEditing.legacyValue &&
+        lastEmittedModeRef.current === colorMode &&
         lastEmittedChannelsRef.current
-      const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex)
+      const channels = reuseStored ? lastEmittedChannelsRef.current! : hexToChannelsByMode(hex, colorMode)
       setHue(channels.h)
       setSaturation(channels.s)
       setLightness(channels.l)
@@ -381,7 +409,7 @@ export function PaletteManager({
     }
 
     applyEditingColor()
-  }, [draggingSlider, editingColor, debugFreezePopup, isDraggingPlane])
+  }, [colorMode, draggingSlider, editingColor, debugFreezePopup, isDraggingPlane])
 
 
   useEffect(() => {
@@ -439,7 +467,7 @@ export function PaletteManager({
       }
       return next
     })
-  }, [activePaletteId, editingColor, hasCustomPickerHeight, isPickerExpanded, showPaletteList, sidebarWidth])
+  }, [activePaletteId, colorMode, editingColor, hasCustomPickerHeight, isPickerExpanded, showPaletteList, sidebarWidth])
 
   useEffect(() => {
     if (!showPaletteList) {
@@ -550,7 +578,7 @@ export function PaletteManager({
   const handleHexSave = () => {
     const hex = tempHexValue.startsWith("#") ? tempHexValue : `#${tempHexValue}`
     if (/^#[0-9A-F]{6}$/i.test(hex)) {
-      const channels = hexToChannelsByMode(hex)
+      const channels = hexToChannelsByMode(hex, colorMode)
       if (channels.s > 0) {
         setPreservedHue(channels.h)
       }
@@ -667,13 +695,30 @@ export function PaletteManager({
       const eyeDropper = new window.EyeDropper()
       const result = await eyeDropper.open()
       const hex = result.sRGBHex.toUpperCase()
-      const channels = hexToChannelsByMode(hex)
+      const channels = hexToChannelsByMode(hex, colorMode)
       if (channels.s > 0) {
         setPreservedHue(channels.h)
       }
       updateColorFromChannels(channels, "immediate")
     } catch {
       // User cancelled
+    }
+  }
+
+  const handleColorModeChange = (nextMode: ColorMode) => {
+    if (nextMode === colorMode) {
+      return
+    }
+    setColorMode(nextMode)
+    if (!hexValue) {
+      return
+    }
+    const channels = hexToChannelsByMode(hexValue, nextMode)
+    setHue(channels.h)
+    setSaturation(channels.s)
+    setLightness(channels.l)
+    if (channels.s > 0) {
+      setPreservedHue(channels.h)
     }
   }
 
@@ -768,16 +813,23 @@ export function PaletteManager({
 
   const displayHue = saturation === 0 ? preservedHue : hue
   const isExtremeLightness =
-    lightness <= HSLUV_LIGHTNESS_EPSILON || lightness >= 100 - HSLUV_LIGHTNESS_EPSILON
+    colorMode === "hsluv" &&
+    (lightness <= HSLUV_LIGHTNESS_EPSILON || lightness >= 100 - HSLUV_LIGHTNESS_EPSILON)
 
   const currentColorHex = useMemo(
-    () => channelsToHexByMode({ h: hue, s: saturation, l: lightness }),
-    [hue, saturation, lightness],
+    () => channelsToHexByMode({ h: hue, s: saturation, l: lightness }, colorMode),
+    [colorMode, hue, saturation, lightness],
   )
 
   const planeSelection = useMemo(
-    () =>
-      mapHsluvSelectionToPlanePoint(
+    () => {
+      if (colorMode === "hsl") {
+        return {
+          xPercent: Math.max(0, Math.min(100, saturation)),
+          yPercent: Math.max(0, Math.min(100, 100 - lightness)),
+        }
+      }
+      return mapHsluvSelectionToPlanePoint(
         saturation > 0 ? hue : preservedHue,
         saturation,
         lightness,
@@ -785,12 +837,16 @@ export function PaletteManager({
         pickerScale,
         HSLUV_TEXTURE_SIZE,
         HSLUV_TEXTURE_SIZE,
-      ),
-    [hue, lightness, pickerGeometry, pickerScale, preservedHue, saturation],
+      )
+    },
+    [colorMode, hue, lightness, pickerGeometry, pickerScale, preservedHue, saturation],
   )
   const planeCursorX = planeSelection.xPercent
   const planeCursorY = planeSelection.yPercent
   const planeOverlay = useMemo(() => {
+    if (colorMode === "hsl") {
+      return null
+    }
     if (pickerGeometry.vertices.length === 0 || pickerGeometry.outerCircleRadius <= 0) {
       return null
     }
@@ -805,7 +861,7 @@ export function PaletteManager({
       innerRadiusPercent,
       outerRadiusPercent,
     }
-  }, [pickerGeometry, pickerScale])
+  }, [colorMode, pickerGeometry, pickerScale])
   const overlayStroke = lightness > 70 ? "rgba(0,0,0,0.7)" : "rgba(255,255,255,0.9)"
   const outerCircleStroke = "#000000"
   const selectedHueForSafety = saturation > 0 ? hue : preservedHue
@@ -860,17 +916,22 @@ export function PaletteManager({
         return
       }
 
-      const textureCanvas = generatePlaneTexture(
-        colorMode,
-        activePlaneMode,
-        { h: 0, s: 0, l: lightness },
-        pickerGeometry,
-        pixelWidth,
-        pixelHeight,
-      )
       context.clearRect(0, 0, canvas.width, canvas.height)
-      if (textureCanvas) {
-        context.drawImage(textureCanvas, 0, 0)
+      if (colorMode === "hsl") {
+        const gradientHue = saturation === 0 ? preservedHue : hue
+        drawHslPlaneTexture(context, pixelWidth, pixelHeight, gradientHue)
+      } else {
+        const textureCanvas = generatePlaneTexture(
+          colorMode,
+          activePlaneMode,
+          { h: 0, s: 0, l: lightness },
+          pickerGeometry,
+          pixelWidth,
+          pixelHeight,
+        )
+        if (textureCanvas) {
+          context.drawImage(textureCanvas, 0, 0)
+        }
       }
     }
 
@@ -880,7 +941,7 @@ export function PaletteManager({
       cancelled = true
       window.cancelAnimationFrame(frameId)
     }
-  }, [activePlaneMode, colorMode, isExtremeLightness, lightness, pickerGeometry, sidebarWidth])
+  }, [activePlaneMode, colorMode, hue, isExtremeLightness, lightness, pickerGeometry, preservedHue, sidebarWidth, saturation])
 
   useEffect(() => {
     return () => {
@@ -898,26 +959,26 @@ export function PaletteManager({
     const hueStopsNumbers = [0, 60, 120, 180, 240, 300, 360]
     const hueSegments = hueStopsNumbers
       .map((stop, index) => {
-        const color = channelsToHexByMode({ h: stop, s: 100, l: 50 })
+        const color = channelsToHexByMode({ h: stop, s: 100, l: 50 }, colorMode)
         const percentage = (index / (hueStopsNumbers.length - 1)) * 100
         return `${color} ${percentage}%`
       })
       .join(", ")
 
-    const saturationStart = channelsToHexByMode({ h: hue, s: 0, l: lightness })
-    const saturationEnd = channelsToHexByMode({ h: hue, s: 100, l: lightness })
-    const lightnessStart = channelsToHexByMode({ h: hue, s: saturation, l: 0 })
-    const lightnessEnd = channelsToHexByMode({ h: hue, s: saturation, l: 100 })
+    const saturationStart = channelsToHexByMode({ h: hue, s: 0, l: lightness }, colorMode)
+    const saturationEnd = channelsToHexByMode({ h: hue, s: 100, l: lightness }, colorMode)
+    const lightnessStart = channelsToHexByMode({ h: hue, s: saturation, l: 0 }, colorMode)
+    const lightnessEnd = channelsToHexByMode({ h: hue, s: saturation, l: 100 }, colorMode)
 
     return {
       h: `linear-gradient(to right, ${hueSegments})`,
       s: `linear-gradient(to right, ${saturationStart}, ${saturationEnd})`,
       l: `linear-gradient(to right, ${lightnessStart}, ${lightnessEnd})`,
     }
-  }, [hue, lightness, saturation])
+  }, [colorMode, hue, lightness, saturation])
 
   const sliderHandleColors: Record<PlaneAxis, string> = {
-    h: channelsToHexByMode({ h: displayHue, s: 100, l: 50 }),
+    h: channelsToHexByMode({ h: displayHue, s: 100, l: 50 }, colorMode),
     s: currentColorHex,
     l: `hsl(0 0% ${Math.max(0, Math.min(100, lightness))}%)`,
   }
@@ -1093,7 +1154,23 @@ export function PaletteManager({
             <div className="space-y-3 pb-2">
               <div className="flex items-center justify-between text-[11px] font-semibold uppercase text-muted-foreground">
                 <span>Color Space</span>
-                <span className="rounded bg-foreground px-2 py-0.5 text-[10px] tracking-wide text-background">HSLuv</span>
+                <div className="flex gap-1">
+                  {COLOR_MODE_OPTIONS.map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => handleColorModeChange(key)}
+                      className={cn(
+                        "rounded px-2 py-0.5 text-[10px] tracking-wide transition",
+                        colorMode === key
+                          ? "bg-foreground text-background"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div
@@ -1276,63 +1353,67 @@ export function PaletteManager({
                   </Button>
                 )}
               </div>
-              <div className="flex items-center justify-between rounded-md border border-input bg-background px-3 py-2">
-                <div className="flex items-center gap-2">
+              {colorMode === "hsluv" && (
+                <div className="flex items-center justify-between rounded-md border border-input bg-background px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "h-2.5 w-2.5 rounded-full",
+                        isExtremeLightness
+                          ? "bg-muted-foreground/60"
+                          : isChromaSafe
+                            ? "bg-emerald-500"
+                            : "bg-amber-500",
+                      )}
+                    />
+                    <span className="text-xs font-medium text-foreground">Inner Circle</span>
+                  </div>
                   <span
                     className={cn(
-                      "h-2.5 w-2.5 rounded-full",
+                      "text-xs font-semibold",
                       isExtremeLightness
-                        ? "bg-muted-foreground/60"
+                        ? "text-muted-foreground"
                         : isChromaSafe
-                          ? "bg-emerald-500"
-                          : "bg-amber-500",
+                          ? "text-emerald-700"
+                          : "text-amber-700",
                     )}
-                  />
-                  <span className="text-xs font-medium text-foreground">Inner Circle</span>
+                  >
+                    {chromaSafetyText}
+                  </span>
                 </div>
-                <span
-                  className={cn(
-                    "text-xs font-semibold",
-                    isExtremeLightness
-                      ? "text-muted-foreground"
-                      : isChromaSafe
-                        ? "text-emerald-700"
-                        : "text-amber-700",
-                  )}
-                >
-                  {chromaSafetyText}
-                </span>
-              </div>
-              <p className="text-[10px] leading-relaxed text-muted-foreground">
-                HSLuv color space by{" "}
-                <a
-                  href="https://github.com/boronine"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="underline underline-offset-2 hover:text-foreground"
-                >
-                  Alexei Boronine
-                </a>{" "}
-                and contributors. Source:{" "}
-                <a
-                  href="https://www.hsluv.org/"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="underline underline-offset-2 hover:text-foreground"
-                >
-                  hsluv.org
-                </a>{" "}
-                /{" "}
-                <a
-                  href="https://github.com/hsluv/hsluv"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="underline underline-offset-2 hover:text-foreground"
-                >
-                  github.com/hsluv/hsluv
-                </a>
-                .
-              </p>
+              )}
+              {colorMode === "hsluv" && (
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                  HSLuv color space by{" "}
+                  <a
+                    href="https://github.com/boronine"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    Alexei Boronine
+                  </a>{" "}
+                  and contributors. Source:{" "}
+                  <a
+                    href="https://www.hsluv.org/"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    hsluv.org
+                  </a>{" "}
+                  /{" "}
+                  <a
+                    href="https://github.com/hsluv/hsluv"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    github.com/hsluv/hsluv
+                  </a>
+                  .
+                </p>
+              )}
 
             </div>
           ) : (
@@ -1346,18 +1427,40 @@ export function PaletteManager({
   )
 }
 
-function hexToChannelsByMode(hex: string): Hsluv {
+function hexToChannelsByMode(hex: string, mode: ColorMode): Hsluv {
+  if (mode === "hsl") {
+    const { h, s, l } = hexToHSL(hex)
+    return clampHsluv({ h, s, l })
+  }
   const [h, s, l] = hexToHsluv(hex)
   return clampHsluv({ h, s, l })
 }
 
-function channelsToHexByMode(channels: Hsluv): string {
+function channelsToHexByMode(channels: Hsluv, mode: ColorMode): string {
   const clamped = clampHsluv(channels)
+  if (mode === "hsl") {
+    return hslToHex(clamped.h, clamped.s, clamped.l).toUpperCase()
+  }
   return hsluvToHex(clamped.h, clamped.s, clamped.l).toUpperCase()
 }
 
 const ratioToValue = (axis: PlaneAxis, ratio: number) => (axis === "h" ? ratio * 360 : ratio * 100)
 const valueToRatio = (axis: PlaneAxis, value: number) => (axis === "h" ? value / 360 : value / 100)
+
+function drawHslPlaneTexture(ctx: CanvasRenderingContext2D, width: number, height: number, hue: number) {
+  const normalizedHue = ((hue % 360) + 360) % 360
+  const saturationGradient = ctx.createLinearGradient(0, 0, width, 0)
+  saturationGradient.addColorStop(0, "#ffffff")
+  saturationGradient.addColorStop(1, `hsl(${normalizedHue}, 100%, 50%)`)
+  ctx.fillStyle = saturationGradient
+  ctx.fillRect(0, 0, width, height)
+
+  const lightnessGradient = ctx.createLinearGradient(0, 0, 0, height)
+  lightnessGradient.addColorStop(0, "rgba(0,0,0,0)")
+  lightnessGradient.addColorStop(1, "rgba(0,0,0,1)")
+  ctx.fillStyle = lightnessGradient
+  ctx.fillRect(0, 0, width, height)
+}
 
 function generatePlaneTexture(
   mode: ColorMode,
@@ -1428,6 +1531,85 @@ function generatePlaneTexture(
   ctx.globalCompositeOperation = "source-over"
 
   return canvas
+}
+
+function hexToHSL(hex: string): { h: number; s: number; l: number } {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+  if (!result) return { h: 0, s: 0, l: 0 }
+
+  const r = Number.parseInt(result[1], 16) / 255
+  const g = Number.parseInt(result[2], 16) / 255
+  const b = Number.parseInt(result[3], 16) / 255
+
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+
+  if (max === min) {
+    return { h: 0, s: 0, l: l * 100 }
+  }
+
+  const d = max - min
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+  let h = 0
+  switch (max) {
+    case r:
+      h = (g - b) / d + (g < b ? 6 : 0)
+      break
+    case g:
+      h = (b - r) / d + 2
+      break
+    default:
+      h = (r - g) / d + 4
+      break
+  }
+
+  return {
+    h: (h / 6) * 360,
+    s: s * 100,
+    l: l * 100,
+  }
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const normalizedHue = ((h % 360) + 360) % 360
+  const normalizedS = Math.max(0, Math.min(100, s)) / 100
+  const normalizedL = Math.max(0, Math.min(100, l)) / 100
+
+  const c = (1 - Math.abs(2 * normalizedL - 1)) * normalizedS
+  const x = c * (1 - Math.abs(((normalizedHue / 60) % 2) - 1))
+  const m = normalizedL - c / 2
+  let r = 0
+  let g = 0
+  let b = 0
+
+  if (normalizedHue < 60) {
+    r = c
+    g = x
+  } else if (normalizedHue < 120) {
+    r = x
+    g = c
+  } else if (normalizedHue < 180) {
+    g = c
+    b = x
+  } else if (normalizedHue < 240) {
+    g = x
+    b = c
+  } else if (normalizedHue < 300) {
+    r = x
+    b = c
+  } else {
+    r = c
+    b = x
+  }
+
+  const toHex = (n: number) => {
+    const channel = Math.round((n + m) * 255)
+    const hex = channel.toString(16)
+    return hex.length === 1 ? `0${hex}` : hex
+  }
+
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
 }
 
 function normalizeHueDegrees(value: number): number {
