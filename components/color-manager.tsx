@@ -21,6 +21,7 @@ import {
   CARD_SIZE_TOKENS,
   CARD_GRID_GAP,
   CARD_MAX_GRID_COLUMNS,
+  SEGMENTED_TOGGLE_CLASSNAMES,
 } from "@/lib/design-tokens"
 import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
@@ -2088,15 +2089,17 @@ const GROUP_SNAP_HOLD_MS = 160
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Value</span>
-          <div className="inline-flex rounded-full border border-border bg-muted/40 p-1">
+          <div className={SEGMENTED_TOGGLE_CLASSNAMES.container}>
             {(["hex", "hsluv"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => setCardValueMode(mode)}
                 className={cn(
-                  "px-3 py-0.5 text-[11px] font-semibold uppercase tracking-wide transition rounded-full",
-                  cardValueMode === mode ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  SEGMENTED_TOGGLE_CLASSNAMES.option,
+                  cardValueMode === mode
+                    ? SEGMENTED_TOGGLE_CLASSNAMES.optionActive
+                    : SEGMENTED_TOGGLE_CLASSNAMES.optionInactive,
                 )}
               >
                 {mode.toUpperCase()}

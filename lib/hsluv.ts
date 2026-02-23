@@ -14,12 +14,20 @@ type Mode = "hsluv"
 
 const DEFAULT_DECIMALS = 2
 const HUE_MAX = 360
+const HUE_EPSILON = 0.0000001
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 const clampPercent = (value: number): number => clamp(value, 0, 100)
 const clampHue = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
   const wrapped = value % HUE_MAX
-  return wrapped < 0 ? wrapped + HUE_MAX : wrapped
+  const normalized = wrapped < 0 ? wrapped + HUE_MAX : wrapped
+  if (Math.abs(normalized) < HUE_EPSILON && value > 0) {
+    return HUE_MAX
+  }
+  return normalized
 }
 
 class HsluvCore {

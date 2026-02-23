@@ -99,7 +99,11 @@ export function ResizablePanels({
   const pendingMouseEventRef = useRef<MouseEvent | null>(null)
 
   const COLLAPSED_WIDTH = 56
-  const MIN_PANEL_WIDTH_PX = 400
+  const MIN_PANEL_WIDTH_PX = 300
+  const MAX_PANEL_1_WIDTH_PX = 520
+  const DIVIDER_COUNT = 2
+  // Divider uses `w-5` (20px) and `-mx-2` (8px each side), so net footprint is ~4px each.
+  const DIVIDER_EFFECTIVE_WIDTH_PX = 4
   const MIN_PANEL_WIDTH_PERCENT_FALLBACK = 15
   const WIDTH_EPSILON = 0.1
   const HEADER_MOVE_THRESHOLD = 6
@@ -113,6 +117,13 @@ export function ResizablePanels({
     },
     [],
   )
+
+  const getMaxPanel1WidthPercent = useCallback((width: number | null) => {
+    if (!width || width <= 0) {
+      return 100
+    }
+    return Math.min(100, (MAX_PANEL_1_WIDTH_PX / width) * 100)
+  }, [])
 
   const redistributeWidths = useCallback(
     (currentWidths: [number, number, number], collapsedState: [boolean, boolean, boolean], minPercent: number) => {
@@ -259,7 +270,7 @@ export function ResizablePanels({
       canMove,
       collapsedAtStart,
       startActualWidths: canMove
-        ? computeActualWidths(widthsRef.current, collapsedAtStart, measuredWidth, COLLAPSED_WIDTH)
+        ? computeActualWidths(widthsRef.current, collapsedAtStart, measuredWidth, COLLAPSED_WIDTH, MAX_PANEL_1_WIDTH_PX)
         : null,
     }
 
@@ -286,10 +297,14 @@ export function ResizablePanels({
 
       const collapsedWidthPercent = (COLLAPSED_WIDTH / width) * 100
       const minWidthPercent = getMinWidthPercent(width)
+      const maxPanel1Percent = getMaxPanel1WidthPercent(width)
       const fixedMiddleWidth = interaction.startActualWidths[1]
       const minLeft = interaction.collapsedAtStart[0] ? collapsedWidthPercent : minWidthPercent
       const minRight = interaction.collapsedAtStart[2] ? collapsedWidthPercent : minWidthPercent
-      const maxLeft = 100 - fixedMiddleWidth - minRight
+      const maxLeftByLayout = 100 - fixedMiddleWidth - minRight
+      const maxLeft = interaction.collapsedAtStart[0]
+        ? maxLeftByLayout
+        : Math.min(maxLeftByLayout, maxPanel1Percent)
       const nextLeft = Math.max(minLeft, Math.min(interaction.startActualWidths[0] + (deltaX / width) * 100, maxLeft))
       const nextRight = 100 - fixedMiddleWidth - nextLeft
 
@@ -365,12 +380,14 @@ export function ResizablePanels({
         collapsedRef.current,
         containerWidthRef.current,
         COLLAPSED_WIDTH,
+        MAX_PANEL_1_WIDTH_PX,
       )
       const collapsedWidthPercent =
         containerWidthRef.current && containerWidthRef.current > 0
           ? (COLLAPSED_WIDTH / containerWidthRef.current) * 100
           : MIN_PANEL_WIDTH_PERCENT_FALLBACK
       const minWidthPercent = getMinWidthPercent(containerWidthRef.current)
+      const maxPanel1Percent = getMaxPanel1WidthPercent(containerWidthRef.current)
       const panelMinimums = collapsedRef.current.map((isCollapsed) =>
         isCollapsed ? collapsedWidthPercent : minWidthPercent,
       ) as [number, number, number]
@@ -385,7 +402,8 @@ export function ResizablePanels({
           const panel2Width = currentActualWidths[1]
           const availableForPanels13 = 100 - panel2Width
 
-          const desiredPanel1Width = Math.max(minWidthPercent, Math.min(percentage, availableForPanels13 - minWidthPercent))
+          const maxPanel1 = Math.min(availableForPanels13 - minWidthPercent, maxPanel1Percent)
+          const desiredPanel1Width = Math.max(minWidthPercent, Math.min(percentage, maxPanel1))
           const desiredPanel3Width = availableForPanels13 - desiredPanel1Width
 
           nextWidths[0] = desiredPanel1Width
@@ -394,7 +412,7 @@ export function ResizablePanels({
           const minPanel1 = panelMinimums[0]
           const minPanel2 = panelMinimums[1]
           const minPanel3 = panelMinimums[2]
-          const maxPanel1 = 100 - (minPanel2 + minPanel3)
+          const maxPanel1 = Math.min(100 - (minPanel2 + minPanel3), maxPanel1Percent)
           const clampedTarget = Math.max(minPanel1, Math.min(percentage, maxPanel1))
           const remaining = 100 - clampedTarget
           const currentPanel3 = currentActualWidths[2]
@@ -484,9 +502,12 @@ export function ResizablePanels({
       document.body.style.userSelect = ""
       document.body.style.cursor = ""
     }
-  }, [resizingIndex, getMinWidthPercent])
+  }, [resizingIndex, getMinWidthPercent, getMaxPanel1WidthPercent])
 
-  const actualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH)
+  const actualWidths = computeActualWidths(widths, collapsed, containerWidth, COLLAPSED_WIDTH, MAX_PANEL_1_WIDTH_PX)
+  const minimumLayoutWidthPx =
+    collapsed.reduce((sum, isCollapsed) => sum + (isCollapsed ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX), 0) +
+    DIVIDER_COUNT * DIVIDER_EFFECTIVE_WIDTH_PX
 
   const transitionClass =
     resizingIndex !== null
@@ -496,11 +517,20 @@ export function ResizablePanels({
         : "transition-all duration-75"
 
   return (
-    <div ref={containerRef} className="relative flex flex-1 overflow-hidden">
+    <div className="relative flex flex-1 overflow-x-auto overflow-y-hidden">
+      <div
+        ref={containerRef}
+        className="relative flex min-h-0 w-full"
+        style={{
+          minWidth: `${minimumLayoutWidthPx}px`,
+        }}
+      >
       <div
         className={`overflow-hidden bg-muted ${transitionClass} flex flex-col`}
         style={{
           width: `${actualWidths[0]}%`,
+          minWidth: `${collapsed[0] ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX}px`,
+          maxWidth: `${collapsed[0] ? COLLAPSED_WIDTH : MAX_PANEL_1_WIDTH_PX}px`,
         }}
       >
         <PanelHeader
@@ -569,6 +599,7 @@ export function ResizablePanels({
         className={`overflow-hidden ${transitionClass} flex flex-col bg-muted`}
         style={{
           width: `${actualWidths[1]}%`,
+          minWidth: `${collapsed[1] ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX}px`,
         }}
       >
         <PanelHeader
@@ -637,6 +668,7 @@ export function ResizablePanels({
         className={`overflow-hidden ${transitionClass} flex flex-col bg-muted`}
         style={{
           width: `${actualWidths[2]}%`,
+          minWidth: `${collapsed[2] ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX}px`,
         }}
       >
         <PanelHeader
@@ -661,6 +693,7 @@ export function ResizablePanels({
           <div className="flex-1 overflow-auto">{panel3}</div>
         )}
       </div>
+      </div>
     </div>
   )
 }
@@ -670,6 +703,7 @@ function computeActualWidths(
   collapsed: [boolean, boolean, boolean],
   containerWidth: number | null,
   collapsedWidthPx: number,
+  maxPanel1WidthPx?: number,
 ): [number, number, number] {
   if (!containerWidth || containerWidth <= 0) {
     return widths
@@ -687,10 +721,35 @@ function computeActualWidths(
   const availableSpace = 100 - collapsedSpace
   const expandedWidthsSum = widths.reduce((sum, w, i) => (collapsed[i] ? sum : sum + w), 0)
 
-  return widths.map((w, i) => {
+  const next = widths.map((w, i) => {
     if (collapsed[i]) {
       return collapsedWidthPercent
     }
     return expandedWidthsSum === 0 ? availableSpace / numExpanded : (w / expandedWidthsSum) * availableSpace
   }) as [number, number, number]
+
+  if (collapsed[0] || !maxPanel1WidthPx || maxPanel1WidthPx <= 0 || containerWidth <= 0) {
+    return next
+  }
+
+  const maxPanel1Percent = (maxPanel1WidthPx / containerWidth) * 100
+  if (next[0] <= maxPanel1Percent) {
+    return next
+  }
+
+  const receivingIndices = ([1, 2] as const).filter((index) => !collapsed[index])
+  if (receivingIndices.length === 0) {
+    return next
+  }
+
+  const overflow = next[0] - maxPanel1Percent
+  next[0] = maxPanel1Percent
+
+  const receivingTotal = receivingIndices.reduce((sum, index) => sum + next[index], 0)
+  receivingIndices.forEach((index) => {
+    const share = receivingTotal > 0 ? next[index] / receivingTotal : 1 / receivingIndices.length
+    next[index] += overflow * share
+  })
+
+  return next
 }

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import type { ColorPalette, EditingColor } from "@/app/page"
+import { SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
 import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
@@ -672,7 +673,10 @@ export function PaletteManager({
           return revertState
         }
 
-        const normalized = axis === "h" ? ((parsed % 360) + 360) % 360 : Math.max(0, Math.min(100, parsed))
+        const normalized =
+          axis === "h"
+            ? normalizeHueInputDegrees(parsed)
+            : Math.max(0, Math.min(100, parsed))
         const nextChannels: Hsluv = { h: hue, s: saturation, l: lightness }
         nextChannels[axis] = normalized
         if (axis === "h") {
@@ -1114,115 +1118,117 @@ export function PaletteManager({
           </div>
         )}
 
-        <div className={cn("flex items-center justify-between py-0 px-0", showPaletteList ? "my-2 pl-4" : "mb-3")}>
-          <h3 className="text-sm font-semibold">Colour Picker</h3>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Live</span>
-              <Switch
-                checked={liveUpdate}
-                onCheckedChange={setLiveUpdate}
-                className="data-[state=checked]:bg-blue-600"
-              />
-            </div>
-            {showPaletteList && (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setIsPickerExpanded(!isPickerExpanded)}
-                className="h-6 w-6 cursor-pointer"
-              >
-                {pickerExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
-              </Button>
-            )}
-          </div>
-        </div>
-
         <div
           ref={pickerContentRef}
           className={cn(
             "px-0",
             showPaletteList
               ? "overflow-hidden transition-all duration-200 ease-out"
-              : "flex-1 overflow-auto pr-1",
+              : "flex-1 overflow-y-auto overflow-x-visible",
           )}
           style={{
             height: pickerContentHeight,
           }}
         >
-          {editingColor || debugFreezePopup ? (
-            <div className="space-y-3 pb-2">
-              <div className="flex items-center justify-between text-[11px] font-semibold uppercase text-muted-foreground">
-                <span>Color Space</span>
-                <div className="flex gap-1">
+          <div className="space-y-3 px-2.5 pb-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Colour space
+                </span>
+                <div className={SEGMENTED_TOGGLE_CLASSNAMES.container}>
                   {COLOR_MODE_OPTIONS.map(({ key, label }) => (
                     <button
                       key={key}
                       type="button"
                       onClick={() => handleColorModeChange(key)}
                       className={cn(
-                        "rounded px-2 py-0.5 text-[10px] tracking-wide transition",
+                        SEGMENTED_TOGGLE_CLASSNAMES.option,
                         colorMode === key
-                          ? "bg-foreground text-background"
-                          : "text-muted-foreground hover:text-foreground",
+                          ? SEGMENTED_TOGGLE_CLASSNAMES.optionActive
+                          : SEGMENTED_TOGGLE_CLASSNAMES.optionInactive,
                       )}
+                      aria-pressed={colorMode === key}
                     >
                       {label}
                     </button>
                   ))}
                 </div>
               </div>
-
-              <div
-                ref={planeRef}
-                className={cn(
-                  "relative mx-auto w-full max-w-80 aspect-square rounded-lg overflow-hidden border border-border bg-muted/50",
-                  isExtremeLightness ? "cursor-default" : "cursor-crosshair",
-                )}
-                onMouseDown={isExtremeLightness ? undefined : handlePlaneMouseDown}
-              >
-                <canvas ref={planeCanvasRef} className="absolute inset-0 h-full w-full pointer-events-none" aria-hidden />
-                {!isExtremeLightness && planeOverlay && (
-                  <svg
-                    className="pointer-events-none absolute inset-0 h-full w-full"
-                    viewBox="0 0 100 100"
-                    preserveAspectRatio="none"
-                    aria-hidden
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Live</span>
+                <Switch
+                  checked={liveUpdate}
+                  onCheckedChange={setLiveUpdate}
+                  className="data-[state=checked]:bg-blue-600"
+                />
+                {showPaletteList && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setIsPickerExpanded(!isPickerExpanded)}
+                    className="h-6 w-6 cursor-pointer"
                   >
-                    <circle
-                      cx="50"
-                      cy="50"
-                      r={planeOverlay.outerRadiusPercent.toString()}
-                      fill="none"
-                      stroke={outerCircleStroke}
-                      strokeWidth="0.35"
-                      strokeOpacity="1"
-                    />
-                    <circle
-                      cx="50"
-                      cy="50"
-                      r={planeOverlay.innerRadiusPercent.toString()}
-                      fill="none"
-                      stroke={overlayStroke}
-                      strokeWidth="0.45"
-                      strokeOpacity="0.65"
-                    />
-                    <circle cx="50" cy="50" r="0.7" fill={overlayStroke} />
-                  </svg>
-                )}
-                {!isExtremeLightness && (
-                  <div
-                    className="absolute w-3 h-3 border border-white rounded-full shadow-lg pointer-events-none"
-                    style={{
-                      left: `calc(${planeCursorX}% - 6px)`,
-                      top: `calc(${planeCursorY}% - 6px)`,
-                      backgroundColor: currentColorHex,
-                      boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
-                      willChange: "transform",
-                    }}
-                  />
+                    {pickerExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+                  </Button>
                 )}
               </div>
+            </div>
+
+            {editingColor || debugFreezePopup ? (
+              <>
+                <div
+                  ref={planeRef}
+                  className={cn(
+                    "relative mx-auto w-full aspect-square overflow-visible",
+                    isExtremeLightness ? "cursor-default" : "cursor-crosshair",
+                  )}
+                  onMouseDown={isExtremeLightness ? undefined : handlePlaneMouseDown}
+                >
+                  <div className="absolute inset-0 rounded-lg overflow-hidden border border-border bg-muted/50">
+                    <canvas ref={planeCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden />
+                    {!isExtremeLightness && planeOverlay && (
+                      <svg
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        viewBox="0 0 100 100"
+                        preserveAspectRatio="none"
+                        aria-hidden
+                      >
+                        <circle
+                          cx="50"
+                          cy="50"
+                          r={planeOverlay.outerRadiusPercent.toString()}
+                          fill="none"
+                          stroke={outerCircleStroke}
+                          strokeWidth="0.35"
+                          strokeOpacity="1"
+                        />
+                        <circle
+                          cx="50"
+                          cy="50"
+                          r={planeOverlay.innerRadiusPercent.toString()}
+                          fill="none"
+                          stroke={overlayStroke}
+                          strokeWidth="0.45"
+                          strokeOpacity="0.65"
+                        />
+                        <circle cx="50" cy="50" r="0.7" fill={overlayStroke} />
+                      </svg>
+                    )}
+                  </div>
+                  {!isExtremeLightness && (
+                    <div
+                      className="pointer-events-none absolute z-10 h-3 w-3 rounded-full border border-white shadow-lg"
+                      style={{
+                        left: `calc(${planeCursorX}% - 6px)`,
+                        top: `calc(${planeCursorY}% - 6px)`,
+                        backgroundColor: currentColorHex,
+                        boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
+                        willChange: "transform",
+                      }}
+                    />
+                  )}
+                </div>
 
               <div className="space-y-3">
                 {(["h", "s", "l"] as const).map((axis) => (
@@ -1235,22 +1241,24 @@ export function PaletteManager({
                           : `${formatChannelValue(axis, sliderValues[axis])}%`}
                       </span>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <div
-                        ref={axis === "h" ? hueSliderRef : axis === "s" ? saturationSliderRef : lightnessSliderRef}
-                        className="relative w-full h-3 rounded-full cursor-pointer"
-                        style={{ background: sliderBackgrounds[axis] }}
-                        onMouseDown={(event) => handleSliderMouseDown(axis, event)}
-                      >
+                    <div className="flex items-center gap-3 overflow-visible">
+                      <div className="flex-1">
                         <div
-                          className="absolute w-4 h-4 border border-white rounded-full shadow-lg pointer-events-none -top-0.5"
-                          style={{
-                            left: `calc(${sliderPercents[axis]}% - 8px)`,
-                            backgroundColor: sliderHandleColors[axis],
-                            boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
-                            willChange: "transform",
-                          }}
-                        />
+                          ref={axis === "h" ? hueSliderRef : axis === "s" ? saturationSliderRef : lightnessSliderRef}
+                          className="relative h-3 w-full cursor-pointer rounded-full overflow-visible"
+                          style={{ background: sliderBackgrounds[axis] }}
+                          onMouseDown={(event) => handleSliderMouseDown(axis, event)}
+                        >
+                          <div
+                            className="pointer-events-none absolute -top-0.5 h-4 w-4 rounded-full border border-white shadow-lg"
+                            style={{
+                              left: `calc(${sliderPercents[axis]}% - 8px)`,
+                              backgroundColor: sliderHandleColors[axis],
+                              boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
+                              willChange: "transform",
+                            }}
+                          />
+                        </div>
                       </div>
                       <Input
                         type="number"
@@ -1414,13 +1422,13 @@ export function PaletteManager({
                   .
                 </p>
               )}
-
-            </div>
-          ) : (
-            <div className="flex items-center justify-center text-center text-xs text-muted-foreground p-4">
-              Click on a color hex value to start editing
-            </div>
-          )}
+              </>
+            ) : (
+              <div className="flex items-center justify-center p-4 text-center text-xs text-muted-foreground">
+                Click on a color hex value to start editing
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1449,17 +1457,16 @@ const valueToRatio = (axis: PlaneAxis, value: number) => (axis === "h" ? value /
 
 function drawHslPlaneTexture(ctx: CanvasRenderingContext2D, width: number, height: number, hue: number) {
   const normalizedHue = ((hue % 360) + 360) % 360
-  const saturationGradient = ctx.createLinearGradient(0, 0, width, 0)
-  saturationGradient.addColorStop(0, "#ffffff")
-  saturationGradient.addColorStop(1, `hsl(${normalizedHue}, 100%, 50%)`)
-  ctx.fillStyle = saturationGradient
-  ctx.fillRect(0, 0, width, height)
-
-  const lightnessGradient = ctx.createLinearGradient(0, 0, 0, height)
-  lightnessGradient.addColorStop(0, "rgba(0,0,0,0)")
-  lightnessGradient.addColorStop(1, "rgba(0,0,0,1)")
-  ctx.fillStyle = lightnessGradient
-  ctx.fillRect(0, 0, width, height)
+  const rowCount = Math.max(1, Math.round(height))
+  for (let y = 0; y < rowCount; y += 1) {
+    const ratioY = rowCount === 1 ? 0 : y / (rowCount - 1)
+    const lightness = (1 - ratioY) * 100
+    const rowGradient = ctx.createLinearGradient(0, y, width, y)
+    rowGradient.addColorStop(0, `hsl(${normalizedHue}, 0%, ${lightness}%)`)
+    rowGradient.addColorStop(1, `hsl(${normalizedHue}, 100%, ${lightness}%)`)
+    ctx.fillStyle = rowGradient
+    ctx.fillRect(0, y, width, 1)
+  }
 }
 
 function generatePlaneTexture(
@@ -1615,6 +1622,18 @@ function hslToHex(h: number, s: number, l: number): string {
 function normalizeHueDegrees(value: number): number {
   const wrapped = value % 360
   return wrapped < 0 ? wrapped + 360 : wrapped
+}
+
+function normalizeHueInputDegrees(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+  const wrapped = value % 360
+  const normalized = wrapped < 0 ? wrapped + 360 : wrapped
+  if (Math.abs(normalized) < 0.0000001 && value > 0) {
+    return 360
+  }
+  return normalized
 }
 
 function normalizeAngleRadians(angle: number): number {

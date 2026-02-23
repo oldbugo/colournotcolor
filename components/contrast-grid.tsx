@@ -43,7 +43,7 @@ import type {
 import type { ColorSwatch } from "@/types/palette"
 import type { EditingColor } from "@/app/page"
 import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
-import { CARD_CONTROL_RADII } from "@/lib/design-tokens"
+import { CARD_CONTROL_RADII, SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { getStatusPillBaseClassName, getStatusPillClassName, getStatusPillTone } from "@/lib/status-pill"
 import { DragHandle } from "@/components/ui/drag-handle"
 import { DropToTrash } from "@/components/dnd/drop-to-trash"
@@ -2492,12 +2492,14 @@ const renderNumberFilterSection = (
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
-                  <div className="flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[11px] font-semibold transition-colors duration-200">
+                  <div className={SEGMENTED_TOGGLE_CLASSNAMES.container}>
                     <button
                       type="button"
                       onClick={() => onContrastStandardChange?.("wcag2")}
-                      className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
-                        contrastStandard === "wcag2" ? "bg-foreground text-background" : "text-muted-foreground"
+                      className={`${SEGMENTED_TOGGLE_CLASSNAMES.option} ${
+                        contrastStandard === "wcag2"
+                          ? SEGMENTED_TOGGLE_CLASSNAMES.optionActive
+                          : SEGMENTED_TOGGLE_CLASSNAMES.optionInactive
                       }`}
                       aria-pressed={contrastStandard === "wcag2"}
                     >
@@ -2506,8 +2508,10 @@ const renderNumberFilterSection = (
                     <button
                       type="button"
                       onClick={() => onContrastStandardChange?.("apca-bronze")}
-                      className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
-                        contrastStandard === "apca-bronze" ? "bg-foreground text-background" : "text-muted-foreground"
+                      className={`${SEGMENTED_TOGGLE_CLASSNAMES.option} ${
+                        contrastStandard === "apca-bronze"
+                          ? SEGMENTED_TOGGLE_CLASSNAMES.optionActive
+                          : SEGMENTED_TOGGLE_CLASSNAMES.optionInactive
                       }`}
                       aria-pressed={contrastStandard === "apca-bronze"}
                       aria-label="APCA Bronze"
@@ -3851,12 +3855,14 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
                 <div className="rounded-xl border border-border/60 bg-background/80 p-4 shadow-sm">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Requirement focus</p>
-                    <div className="flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[11px] font-semibold transition-colors duration-200">
+                    <div className={SEGMENTED_TOGGLE_CLASSNAMES.container}>
                       <button
                         type="button"
                         onClick={() => onStandardChange?.("wcag2")}
-                        className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
-                          standard === "wcag2" ? "bg-foreground text-background" : "text-muted-foreground"
+                        className={`${SEGMENTED_TOGGLE_CLASSNAMES.option} ${
+                          standard === "wcag2"
+                            ? SEGMENTED_TOGGLE_CLASSNAMES.optionActive
+                            : SEGMENTED_TOGGLE_CLASSNAMES.optionInactive
                         }`}
                         aria-pressed={standard === "wcag2"}
                       >
@@ -3865,8 +3871,10 @@ const ContrastOverlayPanel = React.forwardRef<HTMLDivElement, ContrastOverlayPan
                       <button
                         type="button"
                         onClick={() => onStandardChange?.("apca-bronze")}
-                        className={`cursor-pointer rounded-full px-2 py-0.5 transition-all duration-150 active:scale-95 ${
-                          standard === "apca-bronze" ? "bg-foreground text-background" : "text-muted-foreground"
+                        className={`${SEGMENTED_TOGGLE_CLASSNAMES.option} ${
+                          standard === "apca-bronze"
+                            ? SEGMENTED_TOGGLE_CLASSNAMES.optionActive
+                            : SEGMENTED_TOGGLE_CLASSNAMES.optionInactive
                         }`}
                         aria-pressed={standard === "apca-bronze"}
                         aria-label="APCA Bronze"

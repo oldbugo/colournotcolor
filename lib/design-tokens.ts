@@ -54,3 +54,17 @@ export const CARD_CONTROL_RADII = {
   elevated: "1rem",
 }
 
+/**
+ * Shared segmented-toggle styles.
+ *
+ * Use these class tokens for any two-or-more-option pill toggle so spacing and
+ * selected-state styling stay consistent across the app.
+ */
+export const SEGMENTED_TOGGLE_CLASSNAMES = {
+  container:
+    "inline-flex items-center rounded-full border border-border bg-muted/40 p-1 transition-colors duration-200",
+  option: "cursor-pointer rounded-full px-3 py-0.5 text-[11px] font-semibold uppercase tracking-wide transition",
+  optionActive: "bg-primary text-primary-foreground shadow-sm",
+  optionInactive: "text-muted-foreground hover:text-foreground",
+} as const
+
