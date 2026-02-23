@@ -526,7 +526,7 @@ export function ResizablePanels({
         }}
       >
       <div
-        className={`overflow-hidden bg-muted ${transitionClass} flex flex-col`}
+        className={`overflow-hidden bg-background ${transitionClass} flex flex-col`}
         style={{
           width: `${actualWidths[0]}%`,
           minWidth: `${collapsed[0] ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX}px`,
@@ -596,7 +596,7 @@ export function ResizablePanels({
       </div>
 
       <div
-        className={`overflow-hidden ${transitionClass} flex flex-col bg-muted`}
+        className={`overflow-hidden ${transitionClass} flex flex-col bg-background`}
         style={{
           width: `${actualWidths[1]}%`,
           minWidth: `${collapsed[1] ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX}px`,
@@ -609,7 +609,7 @@ export function ResizablePanels({
           onHeaderMouseDown={(event) => startHeaderInteraction(1, event)}
         />
         {collapsed[1] ? (
-          <div className="mx-auto flex flex-1 items-start justify-start bg-muted px-0 py-4 font-mono">
+          <div className="mx-auto flex flex-1 items-start justify-start bg-background px-0 py-4 font-mono">
             <span
               className="font-mono whitespace-nowrap text-2xl font-extralight leading-5 tracking-[0.2em] transition-all duration-300"
               style={{
@@ -665,7 +665,7 @@ export function ResizablePanels({
       </div>
 
       <div
-        className={`overflow-hidden ${transitionClass} flex flex-col bg-muted`}
+        className={`overflow-hidden ${transitionClass} flex flex-col bg-background`}
         style={{
           width: `${actualWidths[2]}%`,
           minWidth: `${collapsed[2] ? COLLAPSED_WIDTH : MIN_PANEL_WIDTH_PX}px`,
@@ -678,7 +678,7 @@ export function ResizablePanels({
           onHeaderMouseDown={(event) => startHeaderInteraction(2, event)}
         />
         {collapsed[2] ? (
-          <div className="mx-auto flex flex-1 items-start justify-start bg-muted px-0 py-4">
+          <div className="mx-auto flex flex-1 items-start justify-start bg-background px-0 py-4">
             <span
               className="font-mono whitespace-nowrap text-2xl font-extralight tracking-[0.2em] transition-all duration-300"
               style={{

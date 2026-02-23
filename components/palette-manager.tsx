@@ -1005,7 +1005,7 @@ export function PaletteManager({
 
 
   return (
-    <div ref={sidebarRef} className="flex flex-col h-full bg-secondary">
+    <div ref={sidebarRef} className="flex h-full flex-col bg-background">
       {showPaletteList && (
         <div className="flex-1 overflow-auto min-h-0 space-y-3 relative px-6 py-4">
           <div
@@ -1076,7 +1076,7 @@ export function PaletteManager({
       )}
 
       <div
-        className={cn("flex flex-col", showPaletteList ? "border-t-2 border-border px-4" : "flex-1 min-h-0 px-6 py-4")}
+        className={cn("flex flex-col", showPaletteList ? "border-t-2 border-border px-4" : "flex-1 min-h-0 px-1.5 py-4")}
         data-color-picker
       >
         {showPaletteList && pickerExpanded && (
@@ -1218,10 +1218,10 @@ export function PaletteManager({
                   </div>
                   {!isExtremeLightness && (
                     <div
-                      className="pointer-events-none absolute z-10 h-3 w-3 rounded-full border border-white shadow-lg"
+                      className="pointer-events-none absolute z-20 h-4 w-4 rounded-full border border-white shadow-lg"
                       style={{
-                        left: `calc(${planeCursorX}% - 6px)`,
-                        top: `calc(${planeCursorY}% - 6px)`,
+                        left: `clamp(-8px, calc(${planeCursorX}% - 8px), calc(100% - 9px))`,
+                        top: `clamp(-7px, calc(${planeCursorY}% - 8px), calc(100% - 8px))`,
                         backgroundColor: currentColorHex,
                         boxShadow: "0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)",
                         willChange: "transform",
@@ -1250,7 +1250,7 @@ export function PaletteManager({
                           onMouseDown={(event) => handleSliderMouseDown(axis, event)}
                         >
                           <div
-                            className="pointer-events-none absolute -top-0.5 h-4 w-4 rounded-full border border-white shadow-lg"
+                            className="pointer-events-none absolute -top-0.5 z-20 h-4 w-4 rounded-full border border-white shadow-lg"
                             style={{
                               left: `calc(${sliderPercents[axis]}% - 8px)`,
                               backgroundColor: sliderHandleColors[axis],

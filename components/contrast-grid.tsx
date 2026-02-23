@@ -2387,7 +2387,7 @@ const renderNumberFilterSection = (
   const isAnyHeaderDragging = draggedFgIndex !== null || draggedBgIndex !== null
 
   return (
-    <div className="bg-background overflow-visible rounded-md p-4">
+    <div className="overflow-visible pb-4 pl-4 pt-4 pr-0">
       <style jsx>{`
         @keyframes zoomOut {
           from {
@@ -2934,7 +2934,7 @@ const renderNumberFilterSection = (
 
       <div
         ref={contrastScrollRef}
-        className="contrast-scroll-area overflow-auto px-4 py-4"
+        className="contrast-scroll-area overflow-auto pb-4 pl-4 pr-0 pt-4"
         style={{ cursor: isMiddlePanning ? "grabbing" : undefined }}
       >
         {isMatrixEmpty ? (

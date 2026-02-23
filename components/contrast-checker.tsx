@@ -74,7 +74,7 @@ export function ContrastChecker({
 
   if (showOnlyGrid) {
     return (
-      <div className="p-4">
+      <div className="p-0">
         <ContrastGrid
           paletteId={palette.id}
           colors={palette.colors}
@@ -92,23 +92,21 @@ export function ContrastChecker({
   }
 
   return (
-    <div className="p-4 space-y-6">
-      <ColorManager
-        label="Palette"
-        colors={palette.colors}
-        onAddColor={(swatch) => {
-          const colors = [...palette.colors, swatch]
-          onUpdatePalette({ colors })
-          onColorEdit?.(colors.length - 1)
-        }}
-        onRemoveColor={handleRemoveColor}
-        onUpdateColor={handleUpdateColor}
-        onBatchUpdateColors={handleBatchUpdateColors}
-        onColorEdit={onColorEdit}
-        activeEditingIndex={editingColor?.index ?? null}
-        lastInteractedColor={lastInteractedColor}
-        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
-      />
-    </div>
+    <ColorManager
+      label="Palette"
+      colors={palette.colors}
+      onAddColor={(swatch) => {
+        const colors = [...palette.colors, swatch]
+        onUpdatePalette({ colors })
+        onColorEdit?.(colors.length - 1)
+      }}
+      onRemoveColor={handleRemoveColor}
+      onUpdateColor={handleUpdateColor}
+      onBatchUpdateColors={handleBatchUpdateColors}
+      onColorEdit={onColorEdit}
+      activeEditingIndex={editingColor?.index ?? null}
+      lastInteractedColor={lastInteractedColor}
+      collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
+    />
   )
 }
