@@ -7,6 +7,8 @@ const STORAGE_KEYS = {
   ACTIVE_PALETTE_ID: "color-checker-active-palette",
   LAYOUT_PREFERENCES: "color-checker-layout-preferences",
   CONTRAST_STANDARD: "color-checker-contrast-standard",
+  PALETTE_PICKER_HEIGHTS: "palette-picker-heights-v1",
+  CONTRAST_GRID_FILTERS: "contrast-grid-number-filters-v1",
 } as const
 
 export type StoredPalette = {
@@ -26,6 +28,71 @@ type RawStoredPalette = StoredPalette | StoredPaletteV1
 
 type LayoutPreferences = {
   [paletteId: string]: boolean
+}
+
+export type NumberRange = {
+  min: number
+  max: number
+}
+
+export type StoredContrastFilters = {
+  rowRange: NumberRange | null
+  columnRange: NumberRange | null
+  rowIds: string[] | null
+  columnIds: string[] | null
+  filterStepIndex: number | null
+}
+
+const isNumberRange = (value: unknown): value is NumberRange => {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  return (
+    typeof (value as NumberRange).min === "number" && typeof (value as NumberRange).max === "number"
+  )
+}
+
+const normalizeStoredContrastFilters = (value: unknown): StoredContrastFilters => {
+  if (!value || typeof value !== "object") {
+    return {
+      rowRange: null,
+      columnRange: null,
+      rowIds: null,
+      columnIds: null,
+      filterStepIndex: null,
+    }
+  }
+
+  const candidate = value as Partial<Record<string, unknown>>
+  const rowRangeCandidate = (candidate.rowRange ?? candidate.rows) as NumberRange | null
+  const columnRangeCandidate = (candidate.columnRange ?? candidate.columns) as NumberRange | null
+
+  const rowIds = Array.isArray(candidate.rowIds)
+    ? candidate.rowIds.filter((id): id is string => typeof id === "string")
+    : null
+  const columnIds = Array.isArray(candidate.columnIds)
+    ? candidate.columnIds.filter((id): id is string => typeof id === "string")
+    : null
+
+  return {
+    rowRange: isNumberRange(rowRangeCandidate) ? rowRangeCandidate : null,
+    columnRange: isNumberRange(columnRangeCandidate) ? columnRangeCandidate : null,
+    rowIds,
+    columnIds,
+    filterStepIndex: typeof candidate.filterStepIndex === "number" ? candidate.filterStepIndex : null,
+  }
+}
+
+const readContrastFilterMap = (): Record<string, StoredContrastFilters> => {
+  if (typeof window === "undefined") {
+    return {}
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.CONTRAST_GRID_FILTERS)
+    return raw ? (JSON.parse(raw) as Record<string, StoredContrastFilters>) : {}
+  } catch {
+    return {}
+  }
 }
 
 const ensureSwatch = (value: ColorSwatch | string): ColorSwatch => {
@@ -146,6 +213,52 @@ export const storage = {
     }
   },
 
+  loadPickerHeight: (paletteId: string): number | null => {
+    if (typeof window === "undefined") {
+      return null
+    }
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEYS.PALETTE_PICKER_HEIGHTS)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const value = parsed?.[paletteId]
+      return typeof value === "number" ? value : null
+    } catch {
+      return null
+    }
+  },
+
+  savePickerHeight: (paletteId: string, height: number) => {
+    if (typeof window === "undefined") {
+      return
+    }
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEYS.PALETTE_PICKER_HEIGHTS)
+      const parsed = raw ? ((JSON.parse(raw) as Record<string, unknown>) ?? {}) : {}
+      parsed[paletteId] = height
+      window.localStorage.setItem(STORAGE_KEYS.PALETTE_PICKER_HEIGHTS, JSON.stringify(parsed))
+    } catch {
+      // Swallow storage errors
+    }
+  },
+
+  loadContrastFilters: (paletteId: string): StoredContrastFilters => {
+    return normalizeStoredContrastFilters(readContrastFilterMap()[paletteId])
+  },
+
+  saveContrastFilters: (paletteId: string, filters: StoredContrastFilters) => {
+    if (typeof window === "undefined") {
+      return
+    }
+    try {
+      const existing = readContrastFilterMap()
+      existing[paletteId] = filters
+      window.localStorage.setItem(STORAGE_KEYS.CONTRAST_GRID_FILTERS, JSON.stringify(existing))
+    } catch {
+      // Swallow storage errors
+    }
+  },
+
   // Clear all stored data (including the contrast standard preference for a complete reset)
   clearAll: () => {
     try {
@@ -153,6 +266,8 @@ export const storage = {
       localStorage.removeItem(STORAGE_KEYS.ACTIVE_PALETTE_ID)
       localStorage.removeItem(STORAGE_KEYS.LAYOUT_PREFERENCES)
       localStorage.removeItem(STORAGE_KEYS.CONTRAST_STANDARD)
+      localStorage.removeItem(STORAGE_KEYS.PALETTE_PICKER_HEIGHTS)
+      localStorage.removeItem(STORAGE_KEYS.CONTRAST_GRID_FILTERS)
     } catch {
       // Swallow storage errors
     }

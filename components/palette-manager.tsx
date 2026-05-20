@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import type { ColorPalette, EditingColor } from "@/types/palette"
+import { storage } from "@/lib/storage-utils"
 import { SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
@@ -66,40 +67,9 @@ const COLOR_MODE_OPTIONS: Array<{ key: ColorMode; label: string }> = [
   { key: "hsluv", label: "HSLuv" },
 ]
 
-const PICKER_HEIGHTS_STORAGE_KEY = "palette-picker-heights-v1"
-
 const subscribeToStaticCapability = () => () => {}
 const getEyedropperSnapshot = () => typeof window !== "undefined" && "EyeDropper" in window
 const getServerEyedropperSnapshot = () => false
-
-function readPickerHeightFromStorage(paletteId: string): number | null {
-  if (typeof window === "undefined") {
-    return null
-  }
-  try {
-    const raw = window.localStorage.getItem(PICKER_HEIGHTS_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const value = parsed?.[paletteId]
-    return typeof value === "number" ? value : null
-  } catch {
-    return null
-  }
-}
-
-function writePickerHeightToStorage(paletteId: string, height: number) {
-  if (typeof window === "undefined") {
-    return
-  }
-  try {
-    const raw = window.localStorage.getItem(PICKER_HEIGHTS_STORAGE_KEY)
-    const parsed = raw ? ((JSON.parse(raw) as Record<string, unknown>) ?? {}) : {}
-    parsed[paletteId] = height
-    window.localStorage.setItem(PICKER_HEIGHTS_STORAGE_KEY, JSON.stringify(parsed))
-  } catch {
-    // ignore persistence errors
-  }
-}
 
 export function PaletteManager({
   palettes,
@@ -479,7 +449,7 @@ export function PaletteManager({
       return
     }
     if (!isResizingPicker && hasCustomPickerHeight && pickerHeightPendingRef.current !== null) {
-      writePickerHeightToStorage(activePaletteId, Math.round(pickerHeightPendingRef.current))
+      storage.savePickerHeight(activePaletteId, Math.round(pickerHeightPendingRef.current))
       pickerHeightPendingRef.current = null
     }
   }, [activePaletteId, hasCustomPickerHeight, isResizingPicker, showPaletteList])
@@ -492,7 +462,7 @@ export function PaletteManager({
       pickerHeightPendingRef.current = null
       return
     }
-    const storedHeight = readPickerHeightFromStorage(activePaletteId)
+    const storedHeight = storage.loadPickerHeight(activePaletteId)
     if (typeof storedHeight === "number" && storedHeight > 0) {
       setPickerHeight(storedHeight)
       setHasCustomPickerHeight(true)

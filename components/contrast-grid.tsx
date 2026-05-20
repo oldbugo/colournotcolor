@@ -41,6 +41,7 @@ import type {
 } from "@/lib/contrast-utils"
 import type { ColorSwatch, EditingColor } from "@/types/palette"
 import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
+import { storage, type NumberRange, type StoredContrastFilters } from "@/lib/storage-utils"
 import { CARD_CONTROL_RADII, SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { getStatusPillBaseClassName, getStatusPillClassName, getStatusPillTone } from "@/lib/status-pill"
 import { DragHandle } from "@/components/ui/drag-handle"
@@ -69,7 +70,6 @@ const FILTER_MENU_RESIZE_ARC_SIZE = 64
 const FILTER_MENU_RESIZE_ARC_INSET = 64
 const UNGROUPED_LABEL = "Ungrouped"
 const DIGITS_ONLY_PATTERN = /^\d+$/
-const FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
 const FILTER_STEP_VALUES = [1, 10, 100, 1000] as const
 const FILTER_STEP_MAX_INDEX = FILTER_STEP_VALUES.length - 1
 const ROW_LABEL_WIDTH = 164
@@ -504,81 +504,7 @@ type GroupedColorEntry = {
   entries: ColorEntry[]
 }
 
-type NumberRange = {
-  min: number
-  max: number
-}
-
-type StoredFilterState = {
-  rowRange: NumberRange | null
-  columnRange: NumberRange | null
-  rowIds: string[] | null
-  columnIds: string[] | null
-  filterStepIndex: number | null
-}
-
-const readFilterStorage = (): Record<string, StoredFilterState> => {
-  if (typeof window === "undefined") {
-    return {}
-  }
-  try {
-    const raw = window.localStorage.getItem(FILTER_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as Record<string, StoredFilterState>) : {}
-  } catch {
-    return {}
-  }
-}
-
-const writeFilterStorage = (value: Record<string, StoredFilterState>) => {
-  if (typeof window === "undefined") {
-    return
-  }
-  try {
-    window.localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(value))
-  } catch {
-    // ignore
-  }
-}
-
-const isNumberRange = (value: unknown): value is NumberRange => {
-  if (!value || typeof value !== "object") {
-    return false
-  }
-  return typeof (value as NumberRange).min === "number" && typeof (value as NumberRange).max === "number"
-}
-
-const normalizeStoredFilterState = (value: unknown): StoredFilterState => {
-  if (!value || typeof value !== "object") {
-    return {
-      rowRange: null,
-      columnRange: null,
-      rowIds: null,
-      columnIds: null,
-      filterStepIndex: null,
-    }
-  }
-
-  const candidate = value as Partial<Record<string, unknown>>
-  const rowRangeCandidate = (candidate.rowRange ?? candidate.rows) as NumberRange | null
-  const columnRangeCandidate = (candidate.columnRange ?? candidate.columns) as NumberRange | null
-
-  const rowIds = Array.isArray(candidate.rowIds)
-    ? candidate.rowIds.filter((id): id is string => typeof id === "string")
-    : null
-  const columnIds = Array.isArray(candidate.columnIds)
-    ? candidate.columnIds.filter((id): id is string => typeof id === "string")
-    : null
-
-  return {
-    rowRange: isNumberRange(rowRangeCandidate) ? rowRangeCandidate : null,
-    columnRange: isNumberRange(columnRangeCandidate) ? columnRangeCandidate : null,
-    rowIds,
-    columnIds,
-    filterStepIndex: typeof candidate.filterStepIndex === "number" ? candidate.filterStepIndex : null,
-  }
-}
-
-const serializeFilterIds = (ids: Set<string> | null) => {
+const serializeFilterIds = (ids: Set<string> | null): string[] | null => {
   if (ids === null) {
     return null
   }
@@ -1379,7 +1305,7 @@ const colorEntries = useMemo<ColorEntry[]>(
   )
   useEffect(() => {
     setFiltersInitialized(false)
-    const stored = normalizeStoredFilterState(readFilterStorage()[paletteId])
+    const stored = storage.loadContrastFilters(paletteId)
     setRowNumberFilter(stored.rowRange ?? null)
     setColumnNumberFilter(stored.columnRange ?? null)
     setRowFilterIds(stored.rowIds === null ? null : new Set<string>(stored.rowIds))
@@ -1476,15 +1402,14 @@ const colorEntries = useMemo<ColorEntry[]>(
     if (!filtersInitialized) {
       return
     }
-    const existing = readFilterStorage()
-    existing[paletteId] = {
+    const filters: StoredContrastFilters = {
       rowRange: rowNumberFilter,
       columnRange: columnNumberFilter,
       rowIds: serializeFilterIds(rowFilterIds),
       columnIds: serializeFilterIds(columnFilterIds),
       filterStepIndex,
     }
-    writeFilterStorage(existing)
+    storage.saveContrastFilters(paletteId, filters)
   }, [filtersInitialized, paletteId, rowNumberFilter, columnNumberFilter, rowFilterIds, columnFilterIds, filterStepIndex])
 
   useEffect(() => {
