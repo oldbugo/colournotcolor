@@ -31,10 +31,7 @@ import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/co
 import {
   composeLabel,
   createSwatch,
-  parseLegacyColor,
   splitLabel,
-  swatchFromLegacy,
-  swatchToLegacy,
   updateSwatch,
 } from "@/lib/color-utils"
 import { cn } from "@/lib/utils"
@@ -102,54 +99,38 @@ function schedulePostEffect(callback: () => void) {
   }
 }
 
-function groupColorsByCategory(colors: string[]): Map<string, ColorWithName[]> {
+const UNGROUPED_LABEL = "Ungrouped"
+
+function effectiveGroupLabel(swatch: ColorSwatch): string {
+  const group = swatch.group?.trim()
+  return group && group.length > 0 ? group : UNGROUPED_LABEL
+}
+
+function groupSwatchesByCategory(swatches: ColorSwatch[]): Map<string, ColorWithName[]> {
   const groups = new Map<string, ColorWithName[]>()
+  // Merge groups case-insensitively while preserving the first-seen casing.
   const groupCasing = new Map<string, string>()
 
-  colors.forEach((color, originalIndex) => {
-    const parts = color.split("#")
-    const customName = parts.length > 1 ? parts[0] : ""
-    const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
+  swatches.forEach((swatch, originalIndex) => {
+    const rawGroup = effectiveGroupLabel(swatch)
+    const key = rawGroup.toLowerCase()
 
-    let category = "Ungrouped"
-    let categoryKey = "ungrouped"
-
-    if (customName && customName.includes("/")) {
-      const categoryPart = customName.split("/")[0]
-      category = categoryPart
-      categoryKey = categoryPart.toLowerCase()
-
-      if (!groupCasing.has(categoryKey)) {
-        groupCasing.set(categoryKey, category)
-      } else {
-        category = groupCasing.get(categoryKey)!
-      }
+    let label = rawGroup
+    if (groupCasing.has(key)) {
+      label = groupCasing.get(key)!
+    } else {
+      groupCasing.set(key, rawGroup)
     }
 
-    if (!groups.has(category)) {
-      groups.set(category, [])
+    if (!groups.has(label)) {
+      groups.set(label, [])
     }
-    groups.get(category)!.push({ name: customName || hex, hex, originalIndex })
+
+    const displayName = composeLabel(swatch.name, swatch.group, swatch.hex) || swatch.hex
+    groups.get(label)!.push({ name: displayName, hex: swatch.hex, originalIndex })
   })
 
   return groups
-}
-
-function updateColorGroup(color: string, newGroup: string): string {
-  const parts = color.split("#")
-  const customName = parts.length > 1 ? parts[0] : ""
-  const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-
-  let baseName = customName
-  if (customName.includes("/")) {
-    baseName = customName.split("/").slice(1).join("/")
-  }
-
-  if (newGroup === "ungrouped") {
-    return hex
-  }
-
-  return baseName ? `${newGroup}/${baseName}${hex}` : `${newGroup}/${hex.replace("#", "")}${hex}`
 }
 
 export function ColorManager({
@@ -165,11 +146,7 @@ export function ColorManager({
   collapseGroupsDuringGroupDrag,
 }: ColorManagerProps) {
   void _label
-  const colors = useMemo(() => swatches.map((swatch) => swatchToLegacy(swatch)), [swatches])
   const getSwatchAt = (index: number): ColorSwatch | undefined => swatches[index]
-  const toSwatch = (value: string, index?: number) =>
-    swatchFromLegacy(value, typeof index === "number" ? getSwatchAt(index)?.id : undefined)
-  const toSwatchArray = (values: string[]) => values.map((value, index) => toSwatch(value, index))
 
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingName, setEditingName] = useState("")
@@ -853,7 +830,7 @@ const GROUP_SNAP_HOLD_MS = 160
   const [removingGroups, setRemovingGroups] = useState<Set<string>>(new Set())
   const prevGroupsRef = useRef<Set<string>>(new Set())
 
-  const groupedColors = groupColorsByCategory(colors)
+  const groupedColors = groupSwatchesByCategory(swatches)
   const groupCount = groupedColors.size
 
   useEffect(() => {
@@ -991,7 +968,7 @@ const GROUP_SNAP_HOLD_MS = 160
     }
   }, [editingIndex, editMode])
 
-  const handleEditName = (index: number, currentColor: string, mode: "button" | "doubleClick" = "button") => {
+  const handleEditName = (index: number, mode: "button" | "doubleClick" = "button") => {
     onColorEdit?.(-1)
 
     const swatch = getSwatchAt(index)
@@ -1003,8 +980,8 @@ const GROUP_SNAP_HOLD_MS = 160
     setNameError(null)
   }
 
-  const handleClickName = (index: number, currentColor: string) => {
-    handleEditName(index, currentColor, "button")
+  const handleClickName = (index: number) => {
+    handleEditName(index, "button")
   }
 
   const handleNameChange = (value: string, index: number) => {
@@ -1053,21 +1030,14 @@ const GROUP_SNAP_HOLD_MS = 160
   const handleSaveGroupName = (oldName: string) => {
     if (newGroupName.trim() && newGroupName !== oldName) {
       const oldNameLower = oldName.toLowerCase()
-
-      const updatedColors = colors.map((color) => {
-        const parts = color.split("#")
-        const customName = parts.length > 1 ? parts[0] : ""
-
-        if (customName.toLowerCase().startsWith(oldNameLower + "/")) {
-          const nameParts = customName.split("/")
-          nameParts[0] = newGroupName
-          const hex = parts.length > 1 ? parts[1] : parts[0].replace("#", "")
-          return `${nameParts.join("/")}#${hex}`
+      const updatedSwatches = swatches.map((swatch) => {
+        const currentGroup = swatch.group?.trim() ?? ""
+        if (currentGroup.toLowerCase() === oldNameLower) {
+          return updateSwatch(swatch, { group: newGroupName })
         }
-        return color
+        return swatch
       })
-
-      onBatchUpdateColors(toSwatchArray(updatedColors))
+      onBatchUpdateColors(updatedSwatches)
     }
     setEditingGroupName(null)
   }
@@ -1136,69 +1106,45 @@ const GROUP_SNAP_HOLD_MS = 160
     updateDragPointerFromEvent(e)
     e.preventDefault()
     if (draggedIndex !== null && dragOverIndex !== null && dragMode === "swap") {
-      const draggedColor = colors[draggedIndex]
-      const targetColor = colors[dragOverIndex]
+      const draggedSwatch = swatches[draggedIndex]
+      const targetSwatch = swatches[dragOverIndex]
 
-      const draggedParts = draggedColor.split("#")
-      const draggedCustomName = draggedParts.length > 1 ? draggedParts[0] : ""
-      const targetParts = targetColor.split("#")
-      const targetCustomName = targetParts.length > 1 ? targetParts[0] : ""
+      const draggedGroup = draggedSwatch.group
+      const targetGroup = targetSwatch.group
+      const isCrossGroupMove = draggedGroup !== targetGroup
 
-      const draggedGroup = draggedCustomName.includes("/") ? draggedCustomName.split("/")[0] : "ungrouped"
-      const targetGroup = targetCustomName.includes("/") ? targetCustomName.split("/")[0] : "ungrouped"
-
-      let updatedDraggedColor = draggedColor
-      let updatedTargetColor = targetColor
-
-      if (draggedGroup !== targetGroup) {
-        updatedDraggedColor = updateColorGroup(draggedColor, targetGroup)
+      const newSwatches = [...swatches]
+      if (isCrossGroupMove) {
+        // Items swap into each other's groups so the visual buckets keep the same positions.
+        newSwatches[draggedIndex] = updateSwatch(targetSwatch, { group: draggedGroup })
+        newSwatches[dragOverIndex] = updateSwatch(draggedSwatch, { group: targetGroup })
+      } else {
+        newSwatches[draggedIndex] = targetSwatch
+        newSwatches[dragOverIndex] = draggedSwatch
       }
 
-      const targetGroupForDragged = draggedGroup
-      if (draggedGroup !== targetGroup) {
-        updatedTargetColor = updateColorGroup(targetColor, targetGroupForDragged)
-      }
-
-      const newColors = [...colors]
-      newColors[draggedIndex] = updatedTargetColor
-      newColors[dragOverIndex] = updatedDraggedColor
-
-      onBatchUpdateColors(toSwatchArray(newColors))
+      onBatchUpdateColors(newSwatches)
       setDroppedAtIndex(dragOverIndex)
       setJustDropped(true)
-      const isCrossGroupMove = draggedGroup !== targetGroup
-      triggerCardSnapIllusion(draggedIndex, dragOverIndex, targetGroup, { isCrossGroup: isCrossGroupMove })
+      const destinationGroupLabel = targetGroup ?? UNGROUPED_LABEL.toLowerCase()
+      triggerCardSnapIllusion(draggedIndex, dragOverIndex, destinationGroupLabel, { isCrossGroup: isCrossGroupMove })
     } else if (
       draggedIndex !== null &&
       dragOverIndex !== null &&
       dragMode === "insert" &&
       insertPosition
     ) {
-      const newColors = [...colors]
-      const draggedColor = colors[draggedIndex]
-      const targetColor = colors[dragOverIndex]
-
-      const draggedParts = draggedColor.split("#")
-      const draggedCustomName = draggedParts.length > 1 ? draggedParts[0] : ""
-
-      const targetParts = targetColor.split("#")
-      const targetCustomName = targetParts.length > 1 ? targetParts[0] : ""
-
-      const draggedGroup = draggedCustomName.includes("/") ? draggedCustomName.split("/")[0] : "ungrouped"
-      const targetGroup = targetCustomName.includes("/") ? targetCustomName.split("/")[0] : "ungrouped"
-
-      let colorToInsert = draggedColor
-      if (draggedGroup !== targetGroup) {
-        colorToInsert = updateColorGroup(draggedColor, targetGroup)
-      }
-
-      newColors.splice(draggedIndex, 1)
+      const draggedSwatch = swatches[draggedIndex]
+      const targetSwatch = swatches[dragOverIndex]
+      const draggedGroup = draggedSwatch.group
+      const targetGroup = targetSwatch.group
+      const isCrossGroupMove = draggedGroup !== targetGroup
 
       const targetIndex = computeInsertTargetIndex({
         draggedIndex,
         dragOverIndex,
         insertPosition,
-        length: colors.length,
+        length: swatches.length,
       })
 
       if (targetIndex === null) {
@@ -1214,12 +1160,19 @@ const GROUP_SNAP_HOLD_MS = 160
         return
       }
 
-      newColors.splice(targetIndex, 0, colorToInsert)
-      onBatchUpdateColors(toSwatchArray(newColors))
+      const swatchToInsert = isCrossGroupMove
+        ? updateSwatch(draggedSwatch, { group: targetGroup })
+        : draggedSwatch
+
+      const newSwatches = [...swatches]
+      newSwatches.splice(draggedIndex, 1)
+      newSwatches.splice(targetIndex, 0, swatchToInsert)
+
+      onBatchUpdateColors(newSwatches)
       setDroppedAtIndex(targetIndex)
       setJustDropped(true)
-      const isCrossGroupMove = draggedGroup !== targetGroup
-      triggerCardSnapIllusion(draggedIndex, targetIndex, targetGroup, { isCrossGroup: isCrossGroupMove })
+      const destinationGroupLabel = targetGroup ?? UNGROUPED_LABEL.toLowerCase()
+      triggerCardSnapIllusion(draggedIndex, targetIndex, destinationGroupLabel, { isCrossGroup: isCrossGroupMove })
     }
     setDraggedIndex(null)
     setDragOverIndex(null)
@@ -1727,17 +1680,17 @@ const GROUP_SNAP_HOLD_MS = 160
       return
     }
 
-    const newColors: string[] = []
+    const newSwatches: ColorSwatch[] = []
     newOrder.forEach((groupName) => {
       const items = groupedColors.get(groupName)
       if (!items) return
       const sortedItems = [...items].sort((a, b) => a.originalIndex - b.originalIndex)
       sortedItems.forEach((item) => {
-        newColors.push(colors[item.originalIndex])
+        newSwatches.push(swatches[item.originalIndex])
       })
     })
 
-    onBatchUpdateColors(toSwatchArray(newColors))
+    onBatchUpdateColors(newSwatches)
     queueGroupScrollAnchor(draggedGroup, true)
     requestGroupSnapPostExpansion(draggedGroup, { force: true, align: "top" })
     resetGroupDragState()
@@ -1800,10 +1753,8 @@ const GROUP_SNAP_HOLD_MS = 160
 
   const handleAddNewGroup = () => {
     const groupName = getNextGroupName()
-    const parsedDefault = parseLegacyColor(lastInteractedColor ?? "#808080")
-    const { name: parsedName } = splitLabel(parsedDefault.label)
-    const defaultHex = parsedDefault.hex
-    const defaultName = parsedName || defaultHex.replace("#", "")
+    const defaultHex = lastInteractedColor ?? "#808080"
+    const defaultName = defaultHex.replace("#", "")
     const newSwatch = createSwatch({ hex: defaultHex, name: defaultName, group: groupName })
 
     setPendingNewGroupSwatchId(newSwatch.id)
@@ -1847,14 +1798,16 @@ const GROUP_SNAP_HOLD_MS = 160
     e.stopPropagation()
 
     if (draggedIndex !== null) {
-      const draggedColor = colors[draggedIndex]
-      const parts = draggedColor.split("#")
-      const hex = "#" + (parts.length > 1 ? parts[1] : parts[0].replace("#", ""))
-
-      const groupName = getNextGroupName()
-      const newColor = `${groupName}/${hex.replace("#", "")}${hex}`
-      onUpdateColor(draggedIndex, toSwatch(newColor, draggedIndex))
-      triggerCardSnapIllusion(draggedIndex, draggedIndex, groupName, { isCrossGroup: true })
+      const draggedSwatch = swatches[draggedIndex]
+      if (draggedSwatch) {
+        const groupName = getNextGroupName()
+        const replacedName = draggedSwatch.hex.replace("#", "")
+        onUpdateColor(
+          draggedIndex,
+          updateSwatch(draggedSwatch, { name: replacedName, group: groupName }),
+        )
+        triggerCardSnapIllusion(draggedIndex, draggedIndex, groupName, { isCrossGroup: true })
+      }
     }
 
     clearTimeoutRef(betweenZoneLeaveTimeoutRef)
@@ -2126,7 +2079,7 @@ const GROUP_SNAP_HOLD_MS = 160
             groupNameTextClass={groupNameTextClass}
             isEditing={editingGroupName === groupName}
             editingValue={editingGroupName === groupName ? newGroupName : groupName}
-            isUngrouped={groupName === "Ungrouped"}
+            isUngrouped={groupName === UNGROUPED_LABEL}
             onChangeEditingValue={(value) => {
               if (editingGroupName === groupName) {
                 setNewGroupName(value)
@@ -2163,11 +2116,14 @@ const GROUP_SNAP_HOLD_MS = 160
               aria-label="Add color card"
               className="group relative flex w-full cursor-pointer flex-col items-stretch gap-1.5 overflow-visible rounded-xl border border-transparent bg-white p-2.5 pb-3 text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-slate-500 focus-visible:ring-offset-background"
               onClick={() => {
-                const newColorName =
-                  groupName === "Ungrouped"
-                    ? lastInteractedColor
-                    : groupName.toLowerCase() + "/new" + lastInteractedColor
-                onAddColor(swatchFromLegacy(newColorName))
+                const isUngrouped = groupName === UNGROUPED_LABEL
+                onAddColor(
+                  createSwatch({
+                    hex: lastInteractedColor,
+                    name: isUngrouped ? "" : "new",
+                    group: isUngrouped ? null : groupName.toLowerCase(),
+                  }),
+                )
               }}
             >
               <div className="flex w-full items-center justify-between px-0.5 text-[11px] font-semibold text-transparent" aria-hidden="true">
@@ -2261,8 +2217,8 @@ const GROUP_SNAP_HOLD_MS = 160
                   onNameChange={(value) => handleNameChange(value, actualIndex)}
                   onNameSave={() => handleSaveName(actualIndex)}
                   onNameCancel={handleCancelNameEdit}
-                  onNameEdit={(mode = "button") => handleEditName(actualIndex, colors[actualIndex], mode)}
-                  onNameClick={() => handleClickName(actualIndex, colors[actualIndex])}
+                  onNameEdit={(mode = "button") => handleEditName(actualIndex, mode)}
+                  onNameClick={() => handleClickName(actualIndex)}
                   onDelete={() => setDeleteIndex(actualIndex)}
                   onCopyValue={(value) => handleCopyValue(value, actualIndex)}
                   onDragStart={(event) => handleDragStart(event, actualIndex)}
