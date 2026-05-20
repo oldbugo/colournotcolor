@@ -28,7 +28,6 @@ import {
 
 import {
   extractHexFromColor,
-  extractCustomName,
   evaluateContrast,
   CONTRAST_REQUIREMENTS,
 } from "@/lib/contrast-utils"
@@ -74,6 +73,12 @@ const DIGITS_ONLY_PATTERN = /^\d+$/
 const FILTER_STORAGE_KEY = "contrast-grid-number-filters-v1"
 const FILTER_STEP_VALUES = [1, 10, 100, 1000] as const
 const FILTER_STEP_MAX_INDEX = FILTER_STEP_VALUES.length - 1
+const ROW_LABEL_WIDTH = 164
+const HEADER_ROW_HEIGHT = CARD_SIZE + 44
+const MATRIX_LEFT_OFFSET = ROW_LABEL_WIDTH + GAP_SIZE
+const MATRIX_TOP_OFFSET = HEADER_ROW_HEIGHT + GAP_SIZE
+const VIRTUAL_OVERSCAN_ROWS = 3
+const VIRTUAL_OVERSCAN_COLUMNS = 2
 const APCA_BRONZE_ORDER: ContrastRequirementId[] = ["large-text", "non-text", "normal-text"]
 const APCA_BRONZE_LABELS: Record<ContrastRequirementId, { label: string; shortLabel: string }> = {
   "large-text": { label: "Large fluent content", shortLabel: "Large fluent content" },
@@ -112,9 +117,78 @@ const APCA_OVERLAY_MARGIN = 16
 const POSITION_EPSILON = 0.5
 const APCA_OVERLAY_HEADER_BUFFER = 120
 const SCROLL_DELTA_EPSILON = 0.5
+const VIRTUAL_SCROLL_UPDATE_THRESHOLD = CARD_WITH_GAP
 const MIDDLE_PAN_EVENT = "contrastgrid:middlepan"
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+
+type VirtualRange = {
+  start: number
+  end: number
+}
+
+type VirtualViewport = {
+  scrollLeft: number
+  scrollTop: number
+  width: number
+  height: number
+}
+
+const EMPTY_VIRTUAL_RANGE: VirtualRange = { start: 0, end: -1 }
+const DEFAULT_VIRTUAL_ITEM_COUNT = 12
+
+const rangeToIndexes = ({ start, end }: VirtualRange) => {
+  if (end < start) {
+    return []
+  }
+  return Array.from({ length: end - start + 1 }, (_, offset) => start + offset)
+}
+
+const getVirtualRange = ({
+  count,
+  viewportStart,
+  viewportSize,
+  itemStride,
+  itemOffset,
+  overscan,
+}: {
+  count: number
+  viewportStart: number
+  viewportSize: number
+  itemStride: number
+  itemOffset: number
+  overscan: number
+}): VirtualRange => {
+  if (count <= 0) {
+    return EMPTY_VIRTUAL_RANGE
+  }
+
+  if (viewportSize <= 0) {
+    return { start: 0, end: Math.min(count - 1, DEFAULT_VIRTUAL_ITEM_COUNT) }
+  }
+
+  const visibleStart = Math.floor((viewportStart - itemOffset) / itemStride)
+  const visibleEnd = Math.ceil((viewportStart + viewportSize - itemOffset) / itemStride)
+
+  return {
+    start: clamp(visibleStart - overscan, 0, count - 1),
+    end: clamp(visibleEnd + overscan, 0, count - 1),
+  }
+}
+
+const isVirtualRectVisible = ({
+  start,
+  size,
+  viewportStart,
+  viewportSize,
+  overscan,
+}: {
+  start: number
+  size: number
+  viewportStart: number
+  viewportSize: number
+  overscan: number
+}) => start + size >= viewportStart - overscan && start <= viewportStart + viewportSize + overscan
 
 type SwatchTileProps = {
   hexColor: string
@@ -417,6 +491,7 @@ const getOrderedRequirementsForStandard = (standard: ContrastStandard) => {
 
 type ColorEntry = {
   id: string
+  hex: string
   legacy: string
   label: string
   baseIndex: number
@@ -716,12 +791,23 @@ export function ContrastGrid({
   const contrastOverlayRef = useRef<HTMLDivElement | null>(null)
   const contrastOverlayContentRef = useRef<HTMLDivElement | null>(null)
   const contrastScrollRef = useRef<HTMLDivElement | null>(null)
+  const virtualScrollFrameRef = useRef<number | null>(null)
   const overlayCloseTimeoutRef = useRef<number | null>(null)
+  const virtualizedOverlayCloseKeyRef = useRef<string | null>(null)
   const isMiddlePanningRef = useRef(false)
+  const [virtualViewport, setVirtualViewport] = useState<VirtualViewport>({
+    scrollLeft: 0,
+    scrollTop: 0,
+    width: 0,
+    height: 0,
+  })
   const panStateRef = useRef<{
     active: boolean
     lastX: number
     lastY: number
+    pendingX: number
+    pendingY: number
+    animationFrameId: number | null
     xTarget: HTMLElement | null
     yTarget: HTMLElement | null
     pointerId: number | null
@@ -729,6 +815,9 @@ export function ContrastGrid({
     active: false,
     lastX: 0,
     lastY: 0,
+    pendingX: 0,
+    pendingY: 0,
+    animationFrameId: null,
     xTarget: null,
     yTarget: null,
     pointerId: null,
@@ -738,6 +827,7 @@ export function ContrastGrid({
     if (!contrastOverlay || contrastOverlayClosing) {
       return
     }
+    virtualizedOverlayCloseKeyRef.current = contrastOverlay.key
     setContrastOverlayClosing(true)
     if (overlayCloseTimeoutRef.current) {
       window.clearTimeout(overlayCloseTimeoutRef.current)
@@ -756,9 +846,13 @@ export function ContrastGrid({
     }
     const cellNode = apcaCellRefs.current.get(contrastOverlay.key)
     if (!cellNode) {
-      setContrastOverlay(null)
+      if (virtualizedOverlayCloseKeyRef.current !== contrastOverlay.key) {
+        virtualizedOverlayCloseKeyRef.current = contrastOverlay.key
+        setContrastOverlay((current) => (current?.key === contrastOverlay.key ? null : current))
+      }
       return
     }
+    virtualizedOverlayCloseKeyRef.current = null
 
     const cellRect = cellNode.getBoundingClientRect()
     const boundsRect = contrastScrollRef.current?.getBoundingClientRect()
@@ -865,8 +959,49 @@ export function ContrastGrid({
       return
     }
 
+    const applyPendingPan = () => {
+      const state = panStateRef.current
+      state.animationFrameId = null
+      if (!state.active) {
+        state.pendingX = 0
+        state.pendingY = 0
+        return
+      }
+
+      const dx = state.pendingX
+      const dy = state.pendingY
+      state.pendingX = 0
+      state.pendingY = 0
+
+      let leftoverX = dx
+      let leftoverY = dy
+
+      if (state.xTarget) {
+        leftoverX = applyPanToAxis(state.xTarget, dx, "x")
+      }
+
+      if (state.yTarget) {
+        leftoverY = applyPanToAxis(state.yTarget, dy, "y")
+      }
+
+      if (Math.abs(leftoverX) > SCROLL_DELTA_EPSILON || Math.abs(leftoverY) > SCROLL_DELTA_EPSILON) {
+        const scrollingElement = document.scrollingElement
+        if (scrollingElement) {
+          scrollingElement.scrollLeft -= leftoverX
+          scrollingElement.scrollTop -= leftoverY
+        } else {
+          window.scrollBy(-leftoverX, -leftoverY)
+        }
+      }
+    }
+
     const stopPanning = () => {
       if (!panStateRef.current.active) return
+      if (panStateRef.current.animationFrameId !== null) {
+        window.cancelAnimationFrame(panStateRef.current.animationFrameId)
+        panStateRef.current.animationFrameId = null
+      }
+      applyPendingPan()
       panStateRef.current.active = false
       setIsMiddlePanning(false)
       isMiddlePanningRef.current = false
@@ -883,6 +1018,8 @@ export function ContrastGrid({
       panStateRef.current.xTarget = null
       panStateRef.current.yTarget = null
       panStateRef.current.pointerId = null
+      panStateRef.current.pendingX = 0
+      panStateRef.current.pendingY = 0
       window.removeEventListener("pointermove", handlePointerMove)
       window.removeEventListener("pointerup", stopPanning)
       window.removeEventListener("pointercancel", stopPanning)
@@ -890,34 +1027,16 @@ export function ContrastGrid({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (!panStateRef.current.active) return
+      const state = panStateRef.current
+      if (!state.active) return
       event.preventDefault()
-      const dx = event.clientX - panStateRef.current.lastX
-      const dy = event.clientY - panStateRef.current.lastY
-
-      let leftoverX = dx
-      let leftoverY = dy
-
-      if (panStateRef.current.xTarget) {
-        leftoverX = applyPanToAxis(panStateRef.current.xTarget, dx, "x")
+      state.pendingX += event.clientX - state.lastX
+      state.pendingY += event.clientY - state.lastY
+      state.lastX = event.clientX
+      state.lastY = event.clientY
+      if (state.animationFrameId === null) {
+        state.animationFrameId = window.requestAnimationFrame(applyPendingPan)
       }
-
-      if (panStateRef.current.yTarget) {
-        leftoverY = applyPanToAxis(panStateRef.current.yTarget, dy, "y")
-      }
-
-      if (Math.abs(leftoverX) > SCROLL_DELTA_EPSILON || Math.abs(leftoverY) > SCROLL_DELTA_EPSILON) {
-        const scrollingElement = document.scrollingElement
-        if (scrollingElement) {
-          scrollingElement.scrollLeft -= leftoverX
-          scrollingElement.scrollTop -= leftoverY
-        } else {
-          window.scrollBy(-leftoverX, -leftoverY)
-        }
-      }
-
-      panStateRef.current.lastX = event.clientX
-      panStateRef.current.lastY = event.clientY
     }
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -934,6 +1053,9 @@ export function ContrastGrid({
         active: true,
         lastX: event.clientX,
         lastY: event.clientY,
+        pendingX: 0,
+        pendingY: 0,
+        animationFrameId: null,
         xTarget,
         yTarget,
         pointerId: event.pointerId,
@@ -968,31 +1090,122 @@ export function ContrastGrid({
     }
   }, [])
 
+  const measureVirtualViewport = useCallback(() => {
+    const node = contrastScrollRef.current
+    if (!node) {
+      return
+    }
+
+    const next = {
+      scrollLeft: node.scrollLeft,
+      scrollTop: node.scrollTop,
+      width: node.clientWidth,
+      height: node.clientHeight,
+    }
+
+    setVirtualViewport((previous) => {
+      const shouldUpdateScrollLeft = Math.abs(previous.scrollLeft - next.scrollLeft) >= VIRTUAL_SCROLL_UPDATE_THRESHOLD
+      const shouldUpdateScrollTop = Math.abs(previous.scrollTop - next.scrollTop) >= VIRTUAL_SCROLL_UPDATE_THRESHOLD
+      const shouldUpdateWidth = Math.abs(previous.width - next.width) >= POSITION_EPSILON
+      const shouldUpdateHeight = Math.abs(previous.height - next.height) >= POSITION_EPSILON
+      const isSame =
+        !shouldUpdateScrollLeft &&
+        !shouldUpdateScrollTop &&
+        !shouldUpdateWidth &&
+        !shouldUpdateHeight
+
+      if (isSame) {
+        return previous
+      }
+
+      return {
+        scrollLeft: shouldUpdateScrollLeft || shouldUpdateWidth ? next.scrollLeft : previous.scrollLeft,
+        scrollTop: shouldUpdateScrollTop || shouldUpdateHeight ? next.scrollTop : previous.scrollTop,
+        width: shouldUpdateWidth ? next.width : previous.width,
+        height: shouldUpdateHeight ? next.height : previous.height,
+      }
+    })
+  }, [])
+
+  useLayoutEffect(() => {
+    const node = contrastScrollRef.current
+    if (!node || typeof window === "undefined") {
+      return
+    }
+
+    const scheduleMeasure = () => {
+      if (virtualScrollFrameRef.current !== null) {
+        return
+      }
+      virtualScrollFrameRef.current = window.requestAnimationFrame(() => {
+        virtualScrollFrameRef.current = null
+        measureVirtualViewport()
+      })
+    }
+
+    measureVirtualViewport()
+    node.addEventListener("scroll", scheduleMeasure, { passive: true })
+
+    const observer =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            scheduleMeasure()
+          })
+        : null
+    observer?.observe(node)
+
+    return () => {
+      node.removeEventListener("scroll", scheduleMeasure)
+      observer?.disconnect()
+      if (virtualScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(virtualScrollFrameRef.current)
+        virtualScrollFrameRef.current = null
+      }
+    }
+  }, [measureVirtualViewport])
+
   useLayoutEffect(() => {
     if (contrastOverlay) {
       updateContrastOverlayPosition()
     }
   }, [contrastOverlay, updateContrastOverlayPosition, colors.length])
 
-  const overlayAnimationFrameRef = useRef<number | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!contrastOverlay) {
-      if (overlayAnimationFrameRef.current !== null) {
-        cancelAnimationFrame(overlayAnimationFrameRef.current)
-        overlayAnimationFrameRef.current = null
-      }
       return
     }
-    const tick = () => {
+    let firstFrame: number | null = null
+    let secondFrame: number | null = null
+
+    firstFrame = window.requestAnimationFrame(() => {
       updateContrastOverlayPosition()
-      overlayAnimationFrameRef.current = requestAnimationFrame(tick)
-    }
-    overlayAnimationFrameRef.current = requestAnimationFrame(tick)
+      secondFrame = window.requestAnimationFrame(updateContrastOverlayPosition)
+    })
+
     return () => {
-      if (overlayAnimationFrameRef.current !== null) {
-        cancelAnimationFrame(overlayAnimationFrameRef.current)
-        overlayAnimationFrameRef.current = null
+      if (firstFrame !== null) {
+        window.cancelAnimationFrame(firstFrame)
       }
+      if (secondFrame !== null) {
+        window.cancelAnimationFrame(secondFrame)
+      }
+    }
+  }, [contrastOverlay, contrastOverlayExpanded, updateContrastOverlayPosition])
+
+  useEffect(() => {
+    if (!contrastOverlay || typeof ResizeObserver === "undefined") {
+      return
+    }
+    const node = contrastOverlayContentRef.current ?? contrastOverlayRef.current
+    if (!node) {
+      return
+    }
+    const observer = new ResizeObserver(() => {
+      updateContrastOverlayPosition()
+    })
+    observer.observe(node)
+    return () => {
+      observer.disconnect()
     }
   }, [contrastOverlay, updateContrastOverlayPosition])
 
@@ -1133,6 +1346,7 @@ const colorEntries = useMemo<ColorEntry[]>(
         const numericValue = extractNumericValue(swatch)
         return {
           id: swatch.id,
+          hex: extractHexFromColor(swatch.hex),
           legacy: swatchToLegacy(swatch),
           label: composeLabel(swatch.name, swatch.group, swatch.hex) || swatch.hex,
           baseIndex: index,
@@ -1313,10 +1527,14 @@ const colorEntries = useMemo<ColorEntry[]>(
     return subset.filter((entry) => passesNumberFilter(entry, columnNumberFilter))
   }, [colorEntries, effectiveColumnFilterIds, passesNumberFilter, columnNumberFilter])
 
-  const foregroundColors = columnEntries.map((entry) => entry.legacy)
-  const backgroundColors = rowEntries.map((entry) => entry.legacy)
-  const foregroundBaseIndexes = columnEntries.map((entry) => entry.baseIndex)
-  const backgroundBaseIndexes = rowEntries.map((entry) => entry.baseIndex)
+  const foregroundColors = useMemo(() => columnEntries.map((entry) => entry.legacy), [columnEntries])
+  const backgroundColors = useMemo(() => rowEntries.map((entry) => entry.legacy), [rowEntries])
+  const foregroundHexColors = useMemo(() => columnEntries.map((entry) => entry.hex), [columnEntries])
+  const backgroundHexColors = useMemo(() => rowEntries.map((entry) => entry.hex), [rowEntries])
+  const foregroundLabels = useMemo(() => columnEntries.map((entry) => entry.label || entry.hex), [columnEntries])
+  const backgroundLabels = useMemo(() => rowEntries.map((entry) => entry.label || entry.hex), [rowEntries])
+  const foregroundBaseIndexes = useMemo(() => columnEntries.map((entry) => entry.baseIndex), [columnEntries])
+  const backgroundBaseIndexes = useMemo(() => rowEntries.map((entry) => entry.baseIndex), [rowEntries])
 
   const editingRowIndex =
     editingColor && typeof editingColor.index === "number"
@@ -2385,9 +2603,60 @@ const renderNumberFilterSection = (
   }
 
   const isAnyHeaderDragging = draggedFgIndex !== null || draggedBgIndex !== null
+  const matrixWidth = ROW_LABEL_WIDTH + GAP_SIZE + foregroundColors.length * CARD_WITH_GAP + CARD_SIZE
+  const matrixHeight = HEADER_ROW_HEIGHT + GAP_SIZE + backgroundColors.length * CARD_WITH_GAP + CARD_SIZE
+  const bottomAddRowTop = MATRIX_TOP_OFFSET + backgroundColors.length * CARD_WITH_GAP
+  const addColumnLeft = MATRIX_LEFT_OFFSET + foregroundColors.length * CARD_WITH_GAP
+  const visibleColumnRange = useMemo(
+    () =>
+      getVirtualRange({
+        count: foregroundColors.length,
+        viewportStart: virtualViewport.scrollLeft,
+        viewportSize: virtualViewport.width,
+        itemStride: CARD_WITH_GAP,
+        itemOffset: MATRIX_LEFT_OFFSET,
+        overscan: VIRTUAL_OVERSCAN_COLUMNS,
+      }),
+    [foregroundColors.length, virtualViewport.scrollLeft, virtualViewport.width],
+  )
+  const visibleRowRange = useMemo(
+    () =>
+      getVirtualRange({
+        count: backgroundColors.length,
+        viewportStart: virtualViewport.scrollTop,
+        viewportSize: virtualViewport.height,
+        itemStride: CARD_WITH_GAP,
+        itemOffset: MATRIX_TOP_OFFSET,
+        overscan: VIRTUAL_OVERSCAN_ROWS,
+      }),
+    [backgroundColors.length, virtualViewport.height, virtualViewport.scrollTop],
+  )
+  const visibleColumnIndexes = useMemo(() => rangeToIndexes(visibleColumnRange), [visibleColumnRange])
+  const visibleRowIndexes = useMemo(() => rangeToIndexes(visibleRowRange), [visibleRowRange])
+  const isHeaderRowVisible = isVirtualRectVisible({
+    start: 0,
+    size: HEADER_ROW_HEIGHT,
+    viewportStart: virtualViewport.scrollTop,
+    viewportSize: virtualViewport.height,
+    overscan: CARD_WITH_GAP,
+  })
+  const isBottomAddRowVisible = isVirtualRectVisible({
+    start: bottomAddRowTop,
+    size: CARD_SIZE,
+    viewportStart: virtualViewport.scrollTop,
+    viewportSize: virtualViewport.height,
+    overscan: CARD_WITH_GAP,
+  })
+  const isAddColumnVisible = isVirtualRectVisible({
+    start: addColumnLeft,
+    size: CARD_SIZE,
+    viewportStart: virtualViewport.scrollLeft,
+    viewportSize: virtualViewport.width,
+    overscan: CARD_WITH_GAP,
+  })
 
   return (
-    <div className="overflow-visible pb-4 pl-4 pt-4 pr-0">
+    <div className="flex h-full min-h-[320px] min-w-0 flex-col overflow-hidden pb-4 pl-4 pt-4 pr-0">
       <style jsx>{`
         @keyframes zoomOut {
           from {
@@ -2454,7 +2723,7 @@ const renderNumberFilterSection = (
         }
       `}</style>
 
-      <div className="mb-6 flex flex-wrap gap-4">
+      <div className="mb-6 flex shrink-0 flex-wrap gap-4">
         <div className="space-y-3 min-w-[320px] max-w-[420px]">
           <DropdownMenu open={isRequirementMenuOpen} onOpenChange={setIsRequirementMenuOpen}>
             <DropdownMenuTrigger asChild>
@@ -2934,7 +3203,7 @@ const renderNumberFilterSection = (
 
       <div
         ref={contrastScrollRef}
-        className="contrast-scroll-area overflow-auto pb-4 pl-4 pr-0 pt-4"
+        className="contrast-scroll-area min-h-0 flex-1 overflow-auto pb-4 pl-4 pr-0 pt-4"
         style={{ cursor: isMiddlePanning ? "grabbing" : undefined }}
       >
         {isMatrixEmpty ? (
@@ -2954,20 +3223,19 @@ const renderNumberFilterSection = (
             </div>
           </div>
         ) : (
-          <div className="relative inline-block overflow-visible">
-            <div
-              ref={gridRef}
-              className="inline-grid relative gap-4 overflow-visible"
-              style={{ gridTemplateColumns: `164px repeat(${foregroundColors.length}, ${CARD_SIZE}px) ${CARD_SIZE}px` }}
-              onDragOver={handleGridDragOver}
-              onDrop={(e) => {
-                handleFgDrop(e)
-                handleBgDrop(e)
-              }}
-            >
+          <div
+            ref={gridRef}
+            className="relative overflow-visible"
+            style={{ width: `${matrixWidth}px`, height: `${matrixHeight}px` }}
+            onDragOver={handleGridDragOver}
+            onDrop={(e) => {
+              handleFgDrop(e)
+              handleBgDrop(e)
+            }}
+          >
             {fgIndicatorPosition && fgDragMode === "insert" && (
               <div
-                className="absolute w-1 bg-blue-500 rounded-full pointer-events-none z-30"
+                className="absolute w-1 rounded-full bg-blue-500 pointer-events-none z-30"
                 style={{
                   left: `${fgIndicatorPosition.left}px`,
                   top: `${fgIndicatorPosition.top}px`,
@@ -2978,7 +3246,7 @@ const renderNumberFilterSection = (
 
             {bgIndicatorPosition && bgDragMode === "insert" && (
               <div
-                className="absolute h-1 bg-blue-500 rounded-full pointer-events-none z-30"
+                className="absolute h-1 rounded-full bg-blue-500 pointer-events-none z-30"
                 style={{
                   left: `${bgIndicatorPosition.left}px`,
                   top: `${bgIndicatorPosition.top}px`,
@@ -2987,86 +3255,97 @@ const renderNumberFilterSection = (
               />
             )}
 
-            <div onDragOver={handleBgGapDragOver} onDrop={handleBgDrop} />
+            <div
+              className="absolute"
+              style={{ left: 0, top: 0, width: ROW_LABEL_WIDTH, height: HEADER_ROW_HEIGHT }}
+              onDragOver={handleBgGapDragOver}
+              onDrop={handleBgDrop}
+            />
 
-            {foregroundColors.map((color, i) => {
-              const isDragging = draggedFgIndex === i
-              const isEditing = editingColumnIndex === i
-              const customName = extractCustomName(color)
-              const hexColor = extractHexFromColor(color)
-              const displayText = customName || hexColor
+            {isHeaderRowVisible &&
+              visibleColumnIndexes.map((i) => {
+                const isDragging = draggedFgIndex === i
+                const isEditing = editingColumnIndex === i
+                const hexColor = foregroundHexColors[i] ?? extractHexFromColor(foregroundColors[i] ?? "")
+                const displayText = foregroundLabels[i] ?? hexColor
 
-              return (
-                <div
-                  key={i}
-                  ref={(el) => {
-                    if (el) {
-                      fgHeaderRefs.current.set(i, el)
-                    } else {
-                      fgHeaderRefs.current.delete(i)
-                    }
-                  }}
-                  className="relative flex items-center flex-col transition-all duration-200 overflow-visible"
-                  style={{
-                    opacity: isDragging ? 0.5 : 1,
-                    transform: isDragging ? "scale(0.95)" : "scale(1)",
-                    ...getFgAnimationStyle(i),
-                  }}
-                  onDragOver={(e) => handleFgDragOver(e, i)}
-                  onDrop={handleFgDrop}
-                  data-color-card
-                >
-                  {isEditing && <FocusIndicator />}
+                return (
+                  <div
+                    key={columnEntries[i]?.id ?? i}
+                    ref={(el) => {
+                      if (el) {
+                        fgHeaderRefs.current.set(i, el)
+                      } else {
+                        fgHeaderRefs.current.delete(i)
+                      }
+                    }}
+                    className="absolute flex items-center flex-col transition-all duration-200 overflow-visible"
+                    style={{
+                      left: `${MATRIX_LEFT_OFFSET + i * CARD_WITH_GAP}px`,
+                      top: 0,
+                      width: `${CARD_SIZE}px`,
+                      height: `${HEADER_ROW_HEIGHT}px`,
+                      opacity: isDragging ? 0.5 : 1,
+                      transform: isDragging ? "scale(0.95)" : "scale(1)",
+                      ...getFgAnimationStyle(i),
+                    }}
+                    onDragOver={(e) => handleFgDragOver(e, i)}
+                    onDrop={handleFgDrop}
+                    data-color-card
+                  >
+                    {isEditing && <FocusIndicator />}
 
-                  <DragHandle
-                    draggable
-                    data-drag-handle
-                    className="mb-1"
-                    highlighted={hoveredFgIndex === i}
-                    onDragStart={(event) => handleFgDragStart(event, i)}
-                    onDragEnd={handleFgDragEnd}
-                    onMouseEnter={() => setHoveredFgIndex(i)}
-                    onMouseLeave={() => setHoveredFgIndex(null)}
-                  />
+                    <DragHandle
+                      draggable
+                      data-drag-handle
+                      className="mb-1"
+                      highlighted={hoveredFgIndex === i}
+                      onDragStart={(event) => handleFgDragStart(event, i)}
+                      onDragEnd={handleFgDragEnd}
+                      onMouseEnter={() => setHoveredFgIndex(i)}
+                      onMouseLeave={() => setHoveredFgIndex(null)}
+                    />
 
-                  <SwatchTile
-                    hexColor={hexColor}
-                    label={displayText}
-                    onClick={(e) => handleFgHeaderClick(i, e)}
-                  />
-                </div>
-              )
-            })}
+                    <SwatchTile hexColor={hexColor} label={displayText} onClick={(e) => handleFgHeaderClick(i, e)} />
+                  </div>
+                )
+              })}
 
-            <div className="relative flex items-center flex-col">
-              <div className="mb-1 flex cursor-grab active:cursor-grabbing flex-col gap-1 rounded p-2 opacity-0 pointer-events-none">
-                <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
-                <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
-              </div>
-              <Button
-                variant="outline"
-                size="icon"
-                className="bg-transparent cursor-pointer border border-border hover:bg-foreground/5 rounded-md"
+            {isHeaderRowVisible && isAddColumnVisible && (
+              <div
+                className="absolute flex items-center flex-col"
                 style={{
-                  height: `${CARD_SIZE}px`,
+                  left: `${addColumnLeft}px`,
+                  top: 0,
                   width: `${CARD_SIZE}px`,
+                  height: `${HEADER_ROW_HEIGHT}px`,
                 }}
-                onClick={() => onAddColor?.()}
               >
-                <Plus className="h-8 w-8" />
-              </Button>
-            </div>
+                <div className="mb-1 flex cursor-grab active:cursor-grabbing flex-col gap-1 rounded p-2 opacity-0 pointer-events-none">
+                  <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
+                  <div className="h-0.5 w-8 rounded-full bg-foreground/40" />
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="bg-transparent cursor-pointer border border-border hover:bg-foreground/5 rounded-md"
+                  style={{ height: `${CARD_SIZE}px`, width: `${CARD_SIZE}px` }}
+                  onClick={() => onAddColor?.()}
+                >
+                  <Plus className="h-8 w-8" />
+                </Button>
+              </div>
+            )}
 
-            {backgroundColors.map((bgColor, bgIndex) => {
+            {visibleRowIndexes.map((bgIndex) => {
+              const rowTop = MATRIX_TOP_OFFSET + bgIndex * CARD_WITH_GAP
               const isBgDragging = draggedBgIndex === bgIndex
               const isEditing = editingRowIndex === bgIndex
-              const bgCustomName = extractCustomName(bgColor)
-              const bgHexColor = extractHexFromColor(bgColor)
-              const bgDisplayText = bgCustomName || bgHexColor
+              const bgHexColor = backgroundHexColors[bgIndex] ?? extractHexFromColor(backgroundColors[bgIndex] ?? "")
+              const bgDisplayText = backgroundLabels[bgIndex] ?? bgHexColor
 
               return (
-                <React.Fragment key={bgIndex}>
-                  {/* Background label */}
+                <React.Fragment key={rowEntries[bgIndex]?.id ?? bgIndex}>
                   <div
                     ref={(el) => {
                       if (el) {
@@ -3075,8 +3354,12 @@ const renderNumberFilterSection = (
                         bgLabelRefs.current.delete(bgIndex)
                       }
                     }}
-                    className="relative flex w-full items-center transition-all duration-200 pr-0 mr-0 gap-2 overflow-visible"
+                    className="absolute flex items-center transition-all duration-200 pr-0 mr-0 gap-2 overflow-visible"
                     style={{
+                      left: 0,
+                      top: `${rowTop}px`,
+                      width: `${ROW_LABEL_WIDTH}px`,
+                      height: `${CARD_SIZE}px`,
                       opacity: isBgDragging ? 0.5 : 1,
                       transform: isBgDragging ? "scale(0.95)" : "scale(1)",
                       ...getBgAnimationStyle(bgIndex),
@@ -3087,17 +3370,17 @@ const renderNumberFilterSection = (
                   >
                     {isEditing && <FocusIndicator />}
 
-                      <DragHandle
-                        draggable
-                        data-drag-handle
-                        orientation="vertical"
-                        className="px-1 py-2 shrink-0"
-                        highlighted={hoveredBgIndex === bgIndex}
-                        onDragStart={(event) => handleBgDragStart(event, bgIndex)}
-                        onDragEnd={handleBgDragEnd}
-                        onMouseEnter={() => setHoveredBgIndex(bgIndex)}
-                        onMouseLeave={() => setHoveredBgIndex(null)}
-                      />
+                    <DragHandle
+                      draggable
+                      data-drag-handle
+                      orientation="vertical"
+                      className="px-1 py-2 shrink-0"
+                      highlighted={hoveredBgIndex === bgIndex}
+                      onDragStart={(event) => handleBgDragStart(event, bgIndex)}
+                      onDragEnd={handleBgDragEnd}
+                      onMouseEnter={() => setHoveredBgIndex(bgIndex)}
+                      onMouseLeave={() => setHoveredBgIndex(null)}
+                    />
 
                     <div className="ml-auto flex flex-col items-center gap-1">
                       <SwatchTile
@@ -3108,12 +3391,17 @@ const renderNumberFilterSection = (
                     </div>
                   </div>
 
-                  {/* Contrast cells for this background row */}
-                  {foregroundColors.map((fgColor, fgIndex) => {
+                  {visibleColumnIndexes.map((fgIndex) => {
                     const isFgDragging = draggedFgIndex === fgIndex
-                    const fgHexColor = extractHexFromColor(fgColor)
-                    const wcagEvaluation = evaluateContrast("wcag2", fgHexColor, bgHexColor, activeRequirement)
-                    const apcaEvaluation = evaluateContrast("apca", fgHexColor, bgHexColor, apcaActiveRequirement)
+                    const fgHexColor = foregroundHexColors[fgIndex] ?? extractHexFromColor(foregroundColors[fgIndex] ?? "")
+                    const wcagEvaluation =
+                      contrastStandard === "wcag2"
+                        ? evaluateContrast("wcag2", fgHexColor, bgHexColor, activeRequirement)
+                        : null
+                    const apcaEvaluation =
+                      isApcaStandard(contrastStandard)
+                        ? evaluateContrast("apca", fgHexColor, bgHexColor, apcaActiveRequirement)
+                        : null
                     const cellKey = `${bgIndex}-${fgIndex}`
                     const showOverlayToggle = Boolean(wcagEvaluation || apcaEvaluation)
 
@@ -3185,12 +3473,14 @@ const renderNumberFilterSection = (
                       }${maxLc && apcaEvaluation.lcAbs > maxLc ? `, above max ${formatLcThresholdLabel(maxLc)}` : ""}, ${requirementLabel}, ${standardLabel}.`
                     }
 
-                    const hasOverlayData = showOverlayToggle
-
                     const handleOverlayToggle = () => {
-                      if (!hasOverlayData) {
+                      if (!showOverlayToggle) {
                         return
                       }
+                      const nextWcagEvaluation =
+                        wcagEvaluation ?? evaluateContrast("wcag2", fgHexColor, bgHexColor, activeRequirement)
+                      const nextApcaEvaluation =
+                        apcaEvaluation ?? evaluateContrast("apca", fgHexColor, bgHexColor, apcaActiveRequirement)
                       setContrastOverlay((current) => {
                         if (current?.key === cellKey) {
                           return null
@@ -3204,8 +3494,8 @@ const renderNumberFilterSection = (
                         return {
                           key: cellKey,
                           standard: contrastStandard,
-                          wcagEvaluation: wcagEvaluation?.standard === "wcag2" ? wcagEvaluation : null,
-                          apcaEvaluation: apcaEvaluation?.standard === "apca" ? apcaEvaluation : null,
+                          wcagEvaluation: nextWcagEvaluation?.standard === "wcag2" ? nextWcagEvaluation : null,
+                          apcaEvaluation: nextApcaEvaluation?.standard === "apca" ? nextApcaEvaluation : null,
                           requirementId: activeRequirement.id,
                           requirementLabel,
                           fgColor: fgHexColor,
@@ -3216,7 +3506,7 @@ const renderNumberFilterSection = (
                       })
                     }
 
-                    const interactiveProps = hasOverlayData
+                    const interactiveProps = showOverlayToggle
                       ? {
                           role: "button" as const,
                           tabIndex: 0,
@@ -3233,7 +3523,7 @@ const renderNumberFilterSection = (
 
                     return (
                       <div
-                        key={`${bgIndex}-${fgIndex}`}
+                        key={`${rowEntries[bgIndex]?.id ?? bgIndex}-${columnEntries[fgIndex]?.id ?? fgIndex}`}
                         ref={(node) => {
                           if (node) {
                             apcaCellRefs.current.set(cellKey, node)
@@ -3241,8 +3531,10 @@ const renderNumberFilterSection = (
                             apcaCellRefs.current.delete(cellKey)
                           }
                         }}
-                        className="relative flex flex-col items-center justify-center border border-border transition-all duration-200 rounded-md"
+                        className="absolute flex flex-col items-center justify-center border border-border transition-all duration-200 rounded-md"
                         style={{
+                          left: `${MATRIX_LEFT_OFFSET + fgIndex * CARD_WITH_GAP}px`,
+                          top: `${rowTop}px`,
                           height: `${CARD_SIZE}px`,
                           width: `${CARD_SIZE}px`,
                           backgroundColor: bgHexColor,
@@ -3275,53 +3567,30 @@ const renderNumberFilterSection = (
                       </div>
                     )
                   })}
-
-                  <div
-                    style={{
-                      height: `${CARD_SIZE}px`,
-                      width: `${CARD_SIZE}px`,
-                    }}
-                  />
                 </React.Fragment>
               )
             })}
 
-            <div className="relative flex items-center pr-0 mr-0 gap-2">
-              <div className="flex gap-1 p-2 opacity-0 pointer-events-none">
-                <div className="h-8 w-0.5 rounded-full bg-foreground/40" />
-                <div className="h-8 w-0.5 rounded-full bg-foreground/40" />
-              </div>
-              <Button
-                variant="outline"
-                size="icon"
-                className="rounded-lg bg-transparent cursor-pointer border border-border hover:bg-foreground/5"
-                style={{
-                  height: `${CARD_SIZE}px`,
-                  width: `${CARD_SIZE}px`,
-                }}
-                onClick={() => onAddColor?.()}
-              >
-                <Plus className="h-8 w-8" />
-              </Button>
-            </div>
-
-            {foregroundColors.map((_, fgIndex) => (
+            {isBottomAddRowVisible && (
               <div
-                key={`placeholder-${fgIndex}`}
-                style={{
-                  height: `${CARD_SIZE}px`,
-                  width: `${CARD_SIZE}px`,
-                }}
-              />
-            ))}
-
-            <div
-              style={{
-                height: `${CARD_SIZE}px`,
-                width: `${CARD_SIZE}px`,
-              }}
-            />
-            </div>
+                className="absolute flex items-center pr-0 mr-0 gap-2"
+                style={{ left: 0, top: `${bottomAddRowTop}px`, width: `${ROW_LABEL_WIDTH}px`, height: `${CARD_SIZE}px` }}
+              >
+                <div className="flex gap-1 p-2 opacity-0 pointer-events-none">
+                  <div className="h-8 w-0.5 rounded-full bg-foreground/40" />
+                  <div className="h-8 w-0.5 rounded-full bg-foreground/40" />
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="rounded-lg bg-transparent cursor-pointer border border-border hover:bg-foreground/5"
+                  style={{ height: `${CARD_SIZE}px`, width: `${CARD_SIZE}px` }}
+                  onClick={() => onAddColor?.()}
+                >
+                  <Plus className="h-8 w-8" />
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

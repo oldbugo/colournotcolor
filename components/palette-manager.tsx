@@ -9,7 +9,7 @@ import type { ColorPalette, EditingColor } from "@/app/page"
 import { SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
-import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect } from "react"
+import { useState, useRef, useEffect, useMemo, useCallback, useLayoutEffect, useSyncExternalStore } from "react"
 import {
   clampHsluv,
   getHsluvBoundingLines,
@@ -69,6 +69,10 @@ const COLOR_MODE_OPTIONS: Array<{ key: ColorMode; label: string }> = [
 
 const PICKER_HEIGHTS_STORAGE_KEY = "palette-picker-heights-v1"
 
+const subscribeToStaticCapability = () => () => {}
+const getEyedropperSnapshot = () => typeof window !== "undefined" && "EyeDropper" in window
+const getServerEyedropperSnapshot = () => false
+
 function readPickerHeightFromStorage(paletteId: string): number | null {
   if (typeof window === "undefined") {
     return null
@@ -115,7 +119,11 @@ export function PaletteManager({
   const [pickerHeight, setPickerHeight] = useState<number | null>(null)
   const [isResizingPicker, setIsResizingPicker] = useState(false)
   const [hasCustomPickerHeight, setHasCustomPickerHeight] = useState(false)
-  const supportsEyedropper = typeof window !== "undefined" && "EyeDropper" in window
+  const supportsEyedropper = useSyncExternalStore(
+    subscribeToStaticCapability,
+    getEyedropperSnapshot,
+    getServerEyedropperSnapshot,
+  )
   const [liveUpdate, setLiveUpdate] = useState(false)
   const sidebarRef = useRef<HTMLDivElement>(null)
   const [sidebarWidth, setSidebarWidth] = useState<number | null>(null)

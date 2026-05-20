@@ -74,7 +74,7 @@ export function ContrastChecker({
 
   if (showOnlyGrid) {
     return (
-      <div className="p-0">
+      <div className="h-full min-h-0 p-0">
         <ContrastGrid
           paletteId={palette.id}
           colors={palette.colors}

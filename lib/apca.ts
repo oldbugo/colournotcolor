@@ -18,6 +18,8 @@ const B_COEFF = 0.072175
 
 type RGB = { r: number; g: number; b: number }
 
+const softClampedYCache = new Map<string, number | null>()
+
 const normalizeHex = (hex: string): string | null => {
   const normalized = hex.trim().replace(/^#/, "")
 
@@ -58,16 +60,30 @@ const srgbToY = ({ r, g, b }: RGB): number =>
 const softClampNearBlack = (value: number): number =>
   value > BLK_THRS ? value : value + Math.pow(BLK_THRS - value, BLK_CLMP)
 
-export function calculateApca(textHex: string, backgroundHex: string): number | null {
-  const textRgb = parseHex(textHex)
-  const backgroundRgb = parseHex(backgroundHex)
-
-  if (!textRgb || !backgroundRgb) {
+const getCachedSoftClampedY = (hex: string): number | null => {
+  const normalized = normalizeHex(hex)
+  const key = normalized?.toUpperCase() ?? null
+  if (!key) {
     return null
   }
 
-  const textY = softClampNearBlack(srgbToY(textRgb))
-  const backgroundY = softClampNearBlack(srgbToY(backgroundRgb))
+  if (softClampedYCache.has(key)) {
+    return softClampedYCache.get(key) ?? null
+  }
+
+  const rgb = parseHex(key)
+  const value = rgb ? softClampNearBlack(srgbToY(rgb)) : null
+  softClampedYCache.set(key, value)
+  return value
+}
+
+export function calculateApca(textHex: string, backgroundHex: string): number | null {
+  const textY = getCachedSoftClampedY(textHex)
+  const backgroundY = getCachedSoftClampedY(backgroundHex)
+
+  if (textY === null || backgroundY === null) {
+    return null
+  }
 
   if (Math.abs(backgroundY - textY) < DELTA_Y_MIN) {
     return 0

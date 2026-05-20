@@ -2,6 +2,8 @@ import { calculateApca } from "@/lib/apca"
 
 type RGB = { r: number; g: number; b: number }
 
+const luminanceCache = new Map<string, number | null>()
+
 function hexToRgb(hex: string): RGB | null {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
   return result
@@ -19,6 +21,18 @@ function getLuminance(r: number, g: number, b: number): number {
     return val <= 0.03928 ? val / 12.92 : Math.pow((val + 0.055) / 1.055, 2.4)
   })
   return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs
+}
+
+function getCachedLuminance(color: string): number | null {
+  const hex = extractHexFromColor(color).trim().toUpperCase()
+  if (luminanceCache.has(hex)) {
+    return luminanceCache.get(hex) ?? null
+  }
+
+  const rgb = hexToRgb(hex)
+  const luminance = rgb ? getLuminance(rgb.r, rgb.g, rgb.b) : null
+  luminanceCache.set(hex, luminance)
+  return luminance
 }
 
 export function extractHexFromColor(color: string): string {
@@ -99,16 +113,10 @@ export type ApcaContrastEvaluation = {
 export type ContrastEvaluation = WcagContrastEvaluation | ApcaContrastEvaluation
 
 export function calculateContrast(color1: string, color2: string): number {
-  const hex1 = extractHexFromColor(color1)
-  const hex2 = extractHexFromColor(color2)
+  const lum1 = getCachedLuminance(color1)
+  const lum2 = getCachedLuminance(color2)
 
-  const rgb1 = hexToRgb(hex1)
-  const rgb2 = hexToRgb(hex2)
-
-  if (!rgb1 || !rgb2) return 1
-
-  const lum1 = getLuminance(rgb1.r, rgb1.g, rgb1.b)
-  const lum2 = getLuminance(rgb2.r, rgb2.g, rgb2.b)
+  if (lum1 === null || lum2 === null) return 1
 
   const lighter = Math.max(lum1, lum2)
   const darker = Math.min(lum1, lum2)
