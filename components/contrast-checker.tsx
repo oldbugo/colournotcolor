@@ -17,6 +17,7 @@ type ContrastCheckerProps = {
   lastInteractedColor?: string
   showOnlyGrid?: boolean
   collapseGroupsDuringGroupDrag: boolean
+  onMiddlePanChange?: (active: boolean) => void
 }
 
 export function ContrastChecker({
@@ -30,6 +31,7 @@ export function ContrastChecker({
   lastInteractedColor = "#808080",
   showOnlyGrid = false,
   collapseGroupsDuringGroupDrag,
+  onMiddlePanChange,
 }: ContrastCheckerProps) {
   const handleReorderColors = (fromIndex: number, toIndex: number) => {
     const colors = [...palette.colors]
@@ -85,6 +87,7 @@ export function ContrastChecker({
           editingColor={editingColor}
           onAddColor={handleAddColor}
           onRemoveColor={handleRemoveColor}
+          onMiddlePanChange={onMiddlePanChange}
         />
       </div>
     )

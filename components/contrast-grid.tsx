@@ -117,7 +117,6 @@ const POSITION_EPSILON = 0.5
 const APCA_OVERLAY_HEADER_BUFFER = 120
 const SCROLL_DELTA_EPSILON = 0.5
 const VIRTUAL_SCROLL_UPDATE_THRESHOLD = CARD_WITH_GAP
-const MIDDLE_PAN_EVENT = "contrastgrid:middlepan"
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
@@ -597,6 +596,7 @@ type ContrastGridProps = {
   editingColor?: EditingColor
   onAddColor?: () => void
   onRemoveColor?: (index: number) => void
+  onMiddlePanChange?: (active: boolean) => void
 }
 
 export function ContrastGrid({
@@ -610,6 +610,7 @@ export function ContrastGrid({
   editingColor,
   onAddColor,
   onRemoveColor,
+  onMiddlePanChange,
 }: ContrastGridProps) {
   const [hoveredFgIndex, setHoveredFgIndex] = useState<number | null>(null)
   const [hoveredBgIndex, setHoveredBgIndex] = useState<number | null>(null)
@@ -794,6 +795,10 @@ export function ContrastGrid({
   const overlayCloseTimeoutRef = useRef<number | null>(null)
   const virtualizedOverlayCloseKeyRef = useRef<string | null>(null)
   const isMiddlePanningRef = useRef(false)
+  const onMiddlePanChangeRef = useRef(onMiddlePanChange)
+  useEffect(() => {
+    onMiddlePanChangeRef.current = onMiddlePanChange
+  }, [onMiddlePanChange])
   const [virtualViewport, setVirtualViewport] = useState<VirtualViewport>({
     scrollLeft: 0,
     scrollTop: 0,
@@ -1004,9 +1009,7 @@ export function ContrastGrid({
       panStateRef.current.active = false
       setIsMiddlePanning(false)
       isMiddlePanningRef.current = false
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent(MIDDLE_PAN_EVENT, { detail: false }))
-      }
+      onMiddlePanChangeRef.current?.(false)
       if (panStateRef.current.pointerId !== null) {
         try {
           scrollNode.releasePointerCapture?.(panStateRef.current.pointerId)
@@ -1061,9 +1064,7 @@ export function ContrastGrid({
       }
       setIsMiddlePanning(true)
       isMiddlePanningRef.current = true
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent(MIDDLE_PAN_EVENT, { detail: true }))
-      }
+      onMiddlePanChangeRef.current?.(true)
       try {
         scrollNode.setPointerCapture?.(event.pointerId)
       } catch {
@@ -1078,9 +1079,7 @@ export function ContrastGrid({
     scrollNode.addEventListener("pointerdown", handlePointerDown)
     return () => {
       stopPanning()
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent(MIDDLE_PAN_EVENT, { detail: false }))
-      }
+      onMiddlePanChangeRef.current?.(false)
       scrollNode.removeEventListener("pointerdown", handlePointerDown)
       window.removeEventListener("pointermove", handlePointerMove)
       window.removeEventListener("pointerup", stopPanning)

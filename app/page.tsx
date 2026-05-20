@@ -111,20 +111,10 @@ const commitEditingColor = useCallback(
     storage.saveContrastStandard(contrastStandard)
   }, [contrastStandard])
 
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    const handlePanToggle = (event: Event) => {
-      const detail = (event as CustomEvent<boolean>).detail
-      if (typeof detail === "boolean") {
-        isMiddlePanningRef.current = detail
-        if (!detail) {
-          lastMiddlePanRef.current = Date.now()
-        }
-      }
-    }
-    window.addEventListener("contrastgrid:middlepan", handlePanToggle)
-    return () => {
-      window.removeEventListener("contrastgrid:middlepan", handlePanToggle)
+  const handleMiddlePanChange = useCallback((active: boolean) => {
+    isMiddlePanningRef.current = active
+    if (!active) {
+      lastMiddlePanRef.current = Date.now()
     }
   }, [])
 
@@ -399,6 +389,7 @@ const commitEditingColor = useCallback(
             onColorUpdate={handleColorUpdate}
             lastInteractedColor={lastInteractedColor}
             collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
+            onMiddlePanChange={handleMiddlePanChange}
           />
         }
         panel3={
@@ -412,6 +403,7 @@ const commitEditingColor = useCallback(
             onColorUpdate={handleColorUpdate}
             lastInteractedColor={lastInteractedColor}
             collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
+            onMiddlePanChange={handleMiddlePanChange}
             showOnlyGrid={true}
           />
         }
