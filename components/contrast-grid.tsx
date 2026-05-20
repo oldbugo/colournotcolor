@@ -39,8 +39,7 @@ import type {
   ContrastRequirementId,
   ApcaThresholds,
 } from "@/lib/contrast-utils"
-import type { ColorSwatch } from "@/types/palette"
-import type { EditingColor } from "@/app/page"
+import type { ColorSwatch, EditingColor } from "@/types/palette"
 import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
 import { CARD_CONTROL_RADII, SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { getStatusPillBaseClassName, getStatusPillClassName, getStatusPillTone } from "@/lib/status-pill"

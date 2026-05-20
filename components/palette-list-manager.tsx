@@ -4,7 +4,7 @@ import type React from "react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import type { ColorPalette } from "@/app/page"
+import type { ColorPalette } from "@/types/palette"
 
 type PaletteListManagerProps = {
   palettes: ColorPalette[]

@@ -5,7 +5,7 @@ import type React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import type { ColorPalette, EditingColor } from "@/app/page"
+import type { ColorPalette, EditingColor } from "@/types/palette"
 import { SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { cn } from "@/lib/utils"
 import { ChevronDown, ChevronUp, Pipette } from "lucide-react"
@@ -31,7 +31,6 @@ type PaletteManagerProps = {
   editingColor: EditingColor
   onColorChange: (color: string) => void
   lastInteractedColor?: string
-  debugFreezePopup?: boolean
   showPaletteList?: boolean
 }
 
@@ -111,7 +110,6 @@ export function PaletteManager({
   editingColor,
   onColorChange,
   lastInteractedColor: _lastInteractedColor = "#808080",
-  debugFreezePopup = true,
   showPaletteList = true,
 }: PaletteManagerProps) {
   void _lastInteractedColor
@@ -371,7 +369,7 @@ export function PaletteManager({
       return
     }
 
-    const activeEditing = editingColor ?? (debugFreezePopup ? frozenEditingColorRef.current : null)
+    const activeEditing = editingColor ?? frozenEditingColorRef.current
     if (!activeEditing?.swatch) {
       previousEditingColorRef.current = null
       return
@@ -382,9 +380,7 @@ export function PaletteManager({
       return
     }
     previousEditingColorRef.current = colorKey
-    if (debugFreezePopup) {
-      frozenEditingColorRef.current = activeEditing
-    }
+    frozenEditingColorRef.current = activeEditing
 
     const applyEditingColor = () => {
       const hex = activeEditing.swatch.hex
@@ -418,7 +414,7 @@ export function PaletteManager({
     }
 
     applyEditingColor()
-  }, [colorMode, draggingSlider, editingColor, debugFreezePopup, isDraggingPlane])
+  }, [colorMode, draggingSlider, editingColor, isDraggingPlane])
 
 
   useEffect(() => {
@@ -1006,9 +1002,7 @@ export function PaletteManager({
   const pickerContentHeight = showPaletteList
     ? pickerExpanded
       ? (pickerHeight === null ? "auto" : `${pickerHeight}px`)
-      : debugFreezePopup
-        ? "auto"
-        : "0px"
+      : "auto"
     : undefined
 
 
@@ -1183,8 +1177,7 @@ export function PaletteManager({
               </div>
             </div>
 
-            {editingColor || debugFreezePopup ? (
-              <>
+            <>
                 <div
                   ref={planeRef}
                   className={cn(
@@ -1431,11 +1424,6 @@ export function PaletteManager({
                 </p>
               )}
               </>
-            ) : (
-              <div className="flex items-center justify-center p-4 text-center text-xs text-muted-foreground">
-                Click on a color hex value to start editing
-              </div>
-            )}
           </div>
         </div>
       </div>

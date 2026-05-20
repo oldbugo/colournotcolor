@@ -7,21 +7,9 @@ import { PaletteListManager } from "@/components/palette-list-manager"
 import { Header } from "@/components/header"
 import { ResizablePanels } from "@/components/resizable-panels"
 import { storage } from "@/lib/storage-utils"
-import type { ColorSwatch } from "@/types/palette"
+import type { ColorPalette, ColorSwatch, EditingColor } from "@/types/palette"
 import { createSwatch, parseLegacyColor, splitLabel, swatchToLegacy, updateSwatch } from "@/lib/color-utils"
 import type { ContrastStandard } from "@/lib/contrast-utils"
-
-export type ColorPalette = {
-  id: string
-  name: string
-  colors: ColorSwatch[]
-}
-
-export type EditingColor = {
-  index: number
-  swatch: ColorSwatch
-  legacyValue: string
-} | null
 
 const DEFAULT_COLOR_VALUES = [
   "#41B4C8",
@@ -54,11 +42,6 @@ function createDefaultPalettes(): ColorPalette[] {
   return [createDefaultPalette()]
 }
 
-// Disable auto-closing the color popup on outside clicks.
-const DISABLE_POPUP_AUTO_CLOSE = false
-// Freeze popup close requests unless explicitly allowed via the manual token.
-const DEBUG_FREEZE_POPUP = false
-
 export default function Home() {
   const defaultPalettes = useMemo(() => createDefaultPalettes(), [])
   const defaultActiveId = defaultPalettes[0]?.id ?? "1"
@@ -74,8 +57,7 @@ const hasHydratedRef = useRef(false)
 const isMiddlePanningRef = useRef(false)
 const lastMiddlePanRef = useRef<number | null>(null)
 const commitEditingColor = useCallback(
-  (next: EditingColor, allowClear = false) => {
-    if (DEBUG_FREEZE_POPUP && next === null && !allowClear) return
+  (next: EditingColor) => {
     setEditingColor(next)
   },
   [setEditingColor],
@@ -147,9 +129,6 @@ const commitEditingColor = useCallback(
   }, [])
 
   useEffect(() => {
-    if (DISABLE_POPUP_AUTO_CLOSE || DEBUG_FREEZE_POPUP) {
-      return
-    }
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement
 
@@ -237,7 +216,7 @@ const commitEditingColor = useCallback(
       index: 0,
       swatch: starterColors[0],
       legacyValue: swatchToLegacy(starterColors[0]),
-    }, true)
+    })
     setLastInteractedColor(starterColors[0].hex)
   }
 
@@ -274,8 +253,7 @@ const commitEditingColor = useCallback(
   const handleColorEdit = useCallback(
     (index: number) => {
       if (index === -1) {
-        if (DEBUG_FREEZE_POPUP) return
-        commitEditingColor(null, true)
+        commitEditingColor(null)
         lastStickyEditingColorRef.current = null
         return
       }
@@ -288,7 +266,7 @@ const commitEditingColor = useCallback(
           swatch,
           legacyValue: swatchToLegacy(swatch),
         }
-        commitEditingColor(next, true)
+        commitEditingColor(next)
         lastStickyEditingColorRef.current = next
       }
     },
@@ -320,7 +298,7 @@ const commitEditingColor = useCallback(
       swatch: updatedSwatch,
       legacyValue: swatchToLegacy(updatedSwatch),
     }
-    commitEditingColor(next, true)
+    commitEditingColor(next)
     lastStickyEditingColorRef.current = next
   }
 
@@ -331,7 +309,7 @@ const commitEditingColor = useCallback(
         swatch: newSwatch,
         legacyValue: swatchToLegacy(newSwatch),
       }
-      commitEditingColor(next, true)
+      commitEditingColor(next)
       lastStickyEditingColorRef.current = next
       setLastInteractedColor(newSwatch.hex)
     }
@@ -342,10 +320,8 @@ const commitEditingColor = useCallback(
     const defaultPalettes = createDefaultPalettes()
     setPalettes(defaultPalettes)
     setActivePaletteId(defaultPalettes[0].id)
-    if (!DEBUG_FREEZE_POPUP) {
-      commitEditingColor(null, false)
-      lastStickyEditingColorRef.current = null
-    }
+    commitEditingColor(null)
+    lastStickyEditingColorRef.current = null
     setContrastStandard("wcag2")
   }
 
@@ -361,7 +337,7 @@ const commitEditingColor = useCallback(
     if (payload.colors[0]) {
       setLastInteractedColor(payload.colors[0].hex)
     }
-    commitEditingColor(null, true)
+    commitEditingColor(null)
     lastStickyEditingColorRef.current = null
   }
 

@@ -1,9 +1,8 @@
 "use client"
 
-import type { ColorPalette, EditingColor } from "@/app/page"
 import { ContrastGrid } from "@/components/contrast-grid"
 import { ColorManager } from "@/components/color-manager"
-import type { ColorSwatch } from "@/types/palette"
+import type { ColorPalette, ColorSwatch, EditingColor } from "@/types/palette"
 import { createSwatch } from "@/lib/color-utils"
 import type { ContrastStandard } from "@/lib/contrast-utils"
 

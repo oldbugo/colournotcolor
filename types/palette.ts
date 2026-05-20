@@ -16,12 +16,3 @@ export type EditingColor = {
   swatch: ColorSwatch
   legacyValue: string
 } | null
-
-export type PaletteState = {
-  palettes: ColorPalette[]
-  activePaletteId: string
-  editingColor: EditingColor
-  lastInteractedColor: string
-  isHydrated: boolean
-}
-
