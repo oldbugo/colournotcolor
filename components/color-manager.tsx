@@ -27,6 +27,7 @@ import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
 import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
+import { useCardDnd } from "@/components/color-manager/use-card-dnd"
 import { useDragAutoScroll } from "@/components/color-manager/use-drag-auto-scroll"
 import { useDropZoneLayout } from "@/components/color-manager/use-drop-zone-layout"
 import { useGroupScrollAnchor } from "@/components/color-manager/use-group-scroll-anchor"
@@ -39,7 +40,6 @@ import {
 } from "@/lib/color-utils"
 import { cn } from "@/lib/utils"
 import { scheduleSnap, findScrollParent as detectScrollParent, type Align, type CancelHandle } from "@/lib/scroll-snap"
-import { computeDragMode, computeInsertTargetIndex } from "@/lib/index-dnd"
 import { computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
 
 type ColorManagerProps = {
@@ -154,30 +154,24 @@ export function ColorManager({
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const [nameError, setNameError] = useState<number | null>(null)
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
-  const [dragMode, setDragMode] = useState<"swap" | "insert" | null>(null)
-  const [insertPosition, setInsertPosition] = useState<"before" | "after" | null>(null)
-  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null)
   const [hoveredHandleIndex, setHoveredHandleIndex] = useState<number | null>(null)
   const [draggedGroup, setDraggedGroup] = useState<string | null>(null)
   const [dragOverGroupName, setDragOverGroupName] = useState<string | null>(null)
   const [isDragOverNewGroup, setIsDragOverNewGroup] = useState(false)
   const [isDragOverTrash, setIsDragOverTrash] = useState(false)
   const [isBetweenZonesActive, setIsBetweenZonesActive] = useState(false)
-  const [isAnyCardDragging, setIsAnyCardDragging] = useState(false)
   const deleteZoneTooltipId = useId()
 
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map())
-  const dragImageRef = useRef<HTMLDivElement | null>(null)
   const newGroupZoneRef = useRef<HTMLDivElement | null>(null)
   const deleteZoneRef = useRef<HTMLDivElement | null>(null)
   const dropZonesContainerRef = useRef<HTMLDivElement | null>(null)
   const dropZonesLayoutRef = useRef<HTMLDivElement | null>(null)
+  const newGroupLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const trashLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const betweenZoneLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const swatchesRef = useRef(swatches)
   const [indicatorPosition, setIndicatorPosition] = useState<DragIndicatorPosition | null>(null)
-  const [justDropped, setJustDropped] = useState(false)
-  const [droppedAtIndex, setDroppedAtIndex] = useState<number | null>(null)
   const [poppingCardIds, setPoppingCardIds] = useState<string[]>([])
   const defaultSizeIndex = useMemo(() => {
     const index = CARD_SIZE_TOKENS.findIndex((token) => token.id === "md")
@@ -246,6 +240,7 @@ export function ColorManager({
   const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
   const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
   const draggedGroupRef = useRef<string | null>(null)
+  const groupDragImageRef = useRef<HTMLDivElement | null>(null)
   const pendingGroupSnapTimerRef = useRef<number | null>(null)
   const suppressExpansionTimeoutRef = useRef<number | null>(null)
   const pendingGroupSnapRef = useRef<{ groupName: string; options?: { force?: boolean; align?: Align } } | null>(null)
@@ -550,6 +545,103 @@ const GROUP_SNAP_HOLD_MS = 160
     dragViewportPointerRef.current = null
   }, [])
 
+  const isCardComfortablyVisible = useCallback(
+    (index: number | null) => {
+      if (typeof window === "undefined" || index === null) {
+        return false
+      }
+      const card = cardRefs.current.get(index)
+      const scrollParent = ensureScrollParent()
+      if (!card || !scrollParent) {
+        return false
+      }
+      const cardRect = card.getBoundingClientRect()
+      const parentRect = scrollParent.getBoundingClientRect()
+      const visibleTop = parentRect.top + CARD_VIEWPORT_MARGIN
+      const visibleBottom = parentRect.bottom - CARD_VIEWPORT_MARGIN
+      if (cardRect.top < visibleTop || cardRect.bottom > visibleBottom) {
+        return false
+      }
+      const nearTop = cardRect.top - visibleTop < CARD_NUDGE_BAND
+      const nearBottom = visibleBottom - cardRect.bottom < CARD_NUDGE_BAND
+      return !(nearTop || nearBottom)
+    },
+    [ensureScrollParent],
+  )
+
+  const triggerCardSnapIllusion = useCallback(
+    (fromIndex: number, toIndex: number, groupName: string | null, options?: { isCrossGroup?: boolean }) => {
+      const targetIndex = Number.isFinite(toIndex) ? toIndex : null
+      const allowIllusion = options?.isCrossGroup ?? false
+
+      const queueSnap = (delayMs?: number) => {
+        scheduleCardViewportSnap(targetIndex, {
+          disableSnapIllusion: !allowIllusion,
+          delayMs,
+        })
+      }
+
+      if (allowIllusion && groupName) {
+        pendingCardSnapRef.current = { index: targetIndex, options: { disableSnapIllusion: false } }
+        requestGroupSnapPostExpansion(groupName, { force: true, align: "top" })
+        return
+      }
+
+      if (typeof window !== "undefined" && targetIndex !== null) {
+        window.requestAnimationFrame(() => {
+          if (isCardComfortablyVisible(targetIndex)) {
+            return
+          }
+          queueSnap(GROUP_SNAP_HOLD_MS)
+        })
+        return
+      }
+
+      queueSnap(GROUP_SNAP_HOLD_MS)
+    },
+    [isCardComfortablyVisible, requestGroupSnapPostExpansion, scheduleCardViewportSnap],
+  )
+
+  const resetDragSiblings = useCallback(() => {
+    setIsDragOverNewGroup(false)
+    setIsDragOverTrash(false)
+    setIsBetweenZonesActive(false)
+    clearTimeoutRef(newGroupLeaveTimeoutRef)
+    clearTimeoutRef(trashLeaveTimeoutRef)
+    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
+    clearGlobalDragPointer()
+  }, [clearGlobalDragPointer])
+
+  const {
+    draggedIndex,
+    dragOverIndex,
+    dragMode,
+    insertPosition,
+    dragOverGroup,
+    isAnyCardDragging,
+    justDropped,
+    droppedAtIndex,
+    markDropped,
+    resetCardDrag,
+    handleDragStart,
+    handleDragOver,
+    handleDragOverGroup,
+    handleDragLeave,
+    handleDrop,
+    handleDragEnd,
+    handleInsertZoneHover,
+    handleInsertZoneLeave,
+  } = useCardDnd({
+    swatches,
+    cardRefs,
+    ungroupedLabel: UNGROUPED_LABEL,
+    onBatchUpdateColors,
+    onColorEdit,
+    triggerCardSnapIllusion,
+    updatePointer: updateDragPointerFromEvent,
+    onResetSiblings: resetDragSiblings,
+  })
+
   const applyGroupDragImage = useCallback(
     (event: React.DragEvent, groupName: string) => {
       if (typeof document === "undefined" || typeof window === "undefined") {
@@ -561,9 +653,9 @@ const GROUP_SNAP_HOLD_MS = 160
         return
       }
 
-      if (dragImageRef.current) {
-        document.body.removeChild(dragImageRef.current)
-        dragImageRef.current = null
+      if (groupDragImageRef.current) {
+        document.body.removeChild(groupDragImageRef.current)
+        groupDragImageRef.current = null
       }
 
       const sectionRect = section.getBoundingClientRect()
@@ -601,7 +693,7 @@ const GROUP_SNAP_HOLD_MS = 160
       preview.appendChild(stub)
 
       document.body.appendChild(preview)
-      dragImageRef.current = preview
+      groupDragImageRef.current = preview
 
       const rawOffsetX = event.clientX - sectionRect.left
       const rawOffsetY = event.clientY - sectionRect.top
@@ -623,7 +715,7 @@ const GROUP_SNAP_HOLD_MS = 160
         // ignore browsers that disallow custom drag previews
       }
     },
-    [dragImageRef, findGroupSectionElement],
+    [groupDragImageRef, findGroupSectionElement],
   )
 
   useEffect(() => {
@@ -755,16 +847,6 @@ const GROUP_SNAP_HOLD_MS = 160
   }, [cardSizeIndex, groupCount, ensureScrollParent])
 
   useEffect(() => {
-    if (justDropped) {
-      const timer = setTimeout(() => {
-        setJustDropped(false)
-        setDroppedAtIndex(null)
-      }, 500)
-      return () => clearTimeout(timer)
-    }
-  }, [justDropped])
-
-  useEffect(() => {
     if (editingIndex !== null && nameInputRef.current && editMode) {
       const input = nameInputRef.current
       const value = input.value
@@ -872,158 +954,8 @@ const GROUP_SNAP_HOLD_MS = 160
     setTimeout(() => setCopiedIndex(null), 2000)
   }
 
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    updateDragPointerFromEvent(e)
-    if (dragImageRef.current) {
-      document.body.removeChild(dragImageRef.current)
-      dragImageRef.current = null
-    }
-    setDraggedIndex(index)
-    setIsAnyCardDragging(true)
-    e.dataTransfer.effectAllowed = "move"
-
-    const card = cardRefs.current.get(index)
-    if (card && typeof window !== "undefined") {
-      const rect = card.getBoundingClientRect()
-      const clone = card.cloneNode(true) as HTMLDivElement
-      clone.style.position = "absolute"
-      clone.style.top = "-9999px"
-      clone.style.left = "-9999px"
-      clone.style.width = `${rect.width}px`
-      clone.style.height = `${rect.height}px`
-      clone.style.pointerEvents = "none"
-      clone.style.boxShadow = window.getComputedStyle(card).boxShadow
-      document.body.appendChild(clone)
-      dragImageRef.current = clone
-      const offsetX = e.clientX - rect.left
-      const offsetY = e.clientY - rect.top
-      e.dataTransfer.setDragImage(clone, offsetX, offsetY)
-    }
-
-    onColorEdit?.(-1)
-  }
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    updateDragPointerFromEvent(e)
-    e.preventDefault()
-    if (draggedIndex !== null && draggedIndex !== index) {
-      const rect = e.currentTarget.getBoundingClientRect()
-      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
-      const intent = computeDragMode(pointerRatio)
-      setDragMode(intent.mode)
-      setInsertPosition(intent.insertPosition)
-      setDragOverIndex(index)
-    }
-  }
-
-  const handleDragOverGroup = (e: React.DragEvent, groupName: string) => {
-    updateDragPointerFromEvent(e)
-    e.preventDefault()
-    setDragOverGroup(groupName)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    updateDragPointerFromEvent(e)
-    e.preventDefault()
-    if (draggedIndex !== null && dragOverIndex !== null && dragMode === "swap") {
-      const draggedSwatch = swatches[draggedIndex]
-      const targetSwatch = swatches[dragOverIndex]
-
-      const draggedGroup = draggedSwatch.group
-      const targetGroup = targetSwatch.group
-      const isCrossGroupMove = draggedGroup !== targetGroup
-
-      const newSwatches = [...swatches]
-      if (isCrossGroupMove) {
-        // Items swap into each other's groups so the visual buckets keep the same positions.
-        newSwatches[draggedIndex] = updateSwatch(targetSwatch, { group: draggedGroup })
-        newSwatches[dragOverIndex] = updateSwatch(draggedSwatch, { group: targetGroup })
-      } else {
-        newSwatches[draggedIndex] = targetSwatch
-        newSwatches[dragOverIndex] = draggedSwatch
-      }
-
-      onBatchUpdateColors(newSwatches)
-      setDroppedAtIndex(dragOverIndex)
-      setJustDropped(true)
-      const destinationGroupLabel = targetGroup ?? UNGROUPED_LABEL.toLowerCase()
-      triggerCardSnapIllusion(draggedIndex, dragOverIndex, destinationGroupLabel, { isCrossGroup: isCrossGroupMove })
-    } else if (
-      draggedIndex !== null &&
-      dragOverIndex !== null &&
-      dragMode === "insert" &&
-      insertPosition
-    ) {
-      const draggedSwatch = swatches[draggedIndex]
-      const targetSwatch = swatches[dragOverIndex]
-      const draggedGroup = draggedSwatch.group
-      const targetGroup = targetSwatch.group
-      const isCrossGroupMove = draggedGroup !== targetGroup
-
-      const targetIndex = computeInsertTargetIndex({
-        draggedIndex,
-        dragOverIndex,
-        insertPosition,
-        length: swatches.length,
-      })
-
-      if (targetIndex === null) {
-        setDraggedIndex(null)
-        setDragOverIndex(null)
-        setDragMode(null)
-        setInsertPosition(null)
-        setDragOverGroup(null)
-        setIsAnyCardDragging(false)
-        setIsDragOverNewGroup(false)
-        setIsDragOverTrash(false)
-        setIsBetweenZonesActive(false)
-        return
-      }
-
-      const swatchToInsert = isCrossGroupMove
-        ? updateSwatch(draggedSwatch, { group: targetGroup })
-        : draggedSwatch
-
-      const newSwatches = [...swatches]
-      newSwatches.splice(draggedIndex, 1)
-      newSwatches.splice(targetIndex, 0, swatchToInsert)
-
-      onBatchUpdateColors(newSwatches)
-      setDroppedAtIndex(targetIndex)
-      setJustDropped(true)
-      const destinationGroupLabel = targetGroup ?? UNGROUPED_LABEL.toLowerCase()
-      triggerCardSnapIllusion(draggedIndex, targetIndex, destinationGroupLabel, { isCrossGroup: isCrossGroupMove })
-    }
-    setDraggedIndex(null)
-    setDragOverIndex(null)
-    setDragMode(null)
-    setInsertPosition(null)
-    setDragOverGroup(null)
-    setIsAnyCardDragging(false)
-    setIsDragOverNewGroup(false)
-    setIsDragOverTrash(false)
-    setIsBetweenZonesActive(false)
-  }
-
-  const handleDragEnd = () => {
-    setDraggedIndex(null)
-    setDragOverIndex(null)
-    setDragMode(null)
-    setInsertPosition(null)
-    setDragOverGroup(null)
-    setIsAnyCardDragging(false)
-    setIsDragOverNewGroup(false)
-    setIsDragOverTrash(false)
-    setIsBetweenZonesActive(false)
-    clearTimeoutRef(newGroupLeaveTimeoutRef)
-    clearTimeoutRef(trashLeaveTimeoutRef)
-    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
-    if (dragImageRef.current) {
-      document.body.removeChild(dragImageRef.current)
-      dragImageRef.current = null
-    }
-    clearGlobalDragPointer()
-  }
+  // Card DnD handlers + state are owned by useCardDnd above; leave-timer and
+  // pointer cleanup happen via resetDragSiblings when the hook resets state.
 
   const resetGroupDragState = useCallback(() => {
     if (collapseGroupsDuringGroupDrag && areGroupsCollapsedForDrag) {
@@ -1303,63 +1235,6 @@ const GROUP_SNAP_HOLD_MS = 160
     }
   }, [isAnyCardDragging, updateDragPointerFromEvent])
 
-  const isCardComfortablyVisible = useCallback(
-    (index: number | null) => {
-      if (typeof window === "undefined" || index === null) {
-        return false
-      }
-      const card = cardRefs.current.get(index)
-      const scrollParent = ensureScrollParent()
-      if (!card || !scrollParent) {
-        return false
-      }
-      const cardRect = card.getBoundingClientRect()
-      const parentRect = scrollParent.getBoundingClientRect()
-      const visibleTop = parentRect.top + CARD_VIEWPORT_MARGIN
-      const visibleBottom = parentRect.bottom - CARD_VIEWPORT_MARGIN
-      if (cardRect.top < visibleTop || cardRect.bottom > visibleBottom) {
-        return false
-      }
-      const nearTop = cardRect.top - visibleTop < CARD_NUDGE_BAND
-      const nearBottom = visibleBottom - cardRect.bottom < CARD_NUDGE_BAND
-      return !(nearTop || nearBottom)
-    },
-    [ensureScrollParent],
-  )
-
-  const triggerCardSnapIllusion = useCallback(
-    (fromIndex: number, toIndex: number, groupName: string | null, options?: { isCrossGroup?: boolean }) => {
-      const targetIndex = Number.isFinite(toIndex) ? toIndex : null
-      const allowIllusion = options?.isCrossGroup ?? false
-
-      const queueSnap = (delayMs?: number) => {
-        scheduleCardViewportSnap(targetIndex, {
-          disableSnapIllusion: !allowIllusion,
-          delayMs,
-        })
-      }
-
-      if (allowIllusion && groupName) {
-        pendingCardSnapRef.current = { index: targetIndex, options: { disableSnapIllusion: false } }
-        requestGroupSnapPostExpansion(groupName, { force: true, align: "top" })
-        return
-      }
-
-      if (typeof window !== "undefined" && targetIndex !== null) {
-        window.requestAnimationFrame(() => {
-          if (isCardComfortablyVisible(targetIndex)) {
-            return
-          }
-          queueSnap(GROUP_SNAP_HOLD_MS)
-        })
-        return
-      }
-
-      queueSnap(GROUP_SNAP_HOLD_MS)
-    },
-    [isCardComfortablyVisible, requestGroupSnapPostExpansion, scheduleCardViewportSnap],
-  )
-
   useEffect(() => {
     if (!pendingNewGroupSwatchId) return
     const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
@@ -1367,14 +1242,13 @@ const GROUP_SNAP_HOLD_MS = 160
 
     schedulePostEffect(() => {
       onColorEdit?.(index)
-      setDroppedAtIndex(index)
-      setJustDropped(true)
+      markDropped(index)
       scheduleCardViewportSnap(index, {
         disableSnapIllusion: false,
       })
       setPendingNewGroupSwatchId(null)
     })
-  }, [onColorEdit, pendingNewGroupSwatchId, scheduleCardViewportSnap, swatches])
+  }, [markDropped, onColorEdit, pendingNewGroupSwatchId, scheduleCardViewportSnap, swatches])
 
   const handleGroupDragStart = (e: React.DragEvent, groupName: string) => {
     onColorEdit?.(-1)
@@ -1520,43 +1394,6 @@ const GROUP_SNAP_HOLD_MS = 160
     resetGroupDragState()
   }
 
-  const handleInsertZoneHover = (targetIndex: number, targetGroup: string, position: "before" | "after") => {
-    if (draggedIndex === null) {
-      setDragMode(null)
-      setInsertPosition(null)
-      setDragOverIndex(null)
-      setDragOverGroup(null)
-      return
-    }
-
-    if (draggedIndex === targetIndex) {
-      return
-    }
-
-    const isAdjacent =
-      (draggedIndex === targetIndex - 1 && position === "before") ||
-      (draggedIndex === targetIndex + 1 && position === "after")
-
-    if (isAdjacent) {
-      return
-    }
-
-    if (dragMode === "insert" && insertPosition === position && dragOverIndex === targetIndex) {
-      return
-    }
-
-    setDragMode("insert")
-    setInsertPosition(position)
-    setDragOverIndex(targetIndex)
-    setDragOverGroup(targetGroup)
-  }
-
-  const handleInsertZoneLeave = () => {
-    setDragOverIndex(null)
-    setDragMode(null)
-    setInsertPosition(null)
-  }
-
   const getNextGroupName = useCallback(() => {
     const existingGroupsLower = new Set(Array.from(groupedColors.keys(), (group) => group.toLowerCase()))
     const baseName = "newGroup"
@@ -1630,12 +1467,7 @@ const GROUP_SNAP_HOLD_MS = 160
       }
     }
 
-    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
-    setIsDragOverNewGroup(false)
-    setIsDragOverTrash(false)
-    setDraggedIndex(null)
-    setIsAnyCardDragging(false)
-    setIsBetweenZonesActive(false)
+    resetCardDrag()
   }
 
   const handleDropOnTrash = (e: React.DragEvent) => {
@@ -1647,19 +1479,10 @@ const GROUP_SNAP_HOLD_MS = 160
       scheduleCardRemoval(draggedIndex)
     }
 
-    clearTimeoutRef(betweenZoneLeaveTimeoutRef)
-    setIsDragOverTrash(false)
-    setIsDragOverNewGroup(false)
-    setDraggedIndex(null)
-    setIsAnyCardDragging(false)
-    setIsBetweenZonesActive(false)
+    resetCardDrag()
   }
 
   const groupNameTextClass = "text-3xl font-medium"
-
-  const handleDragLeave = () => {
-    setDragOverIndex(null)
-  }
 
   const handleCardClick = (index: number, e: React.MouseEvent) => {
     const target = e.target as HTMLElement
@@ -1675,9 +1498,6 @@ const GROUP_SNAP_HOLD_MS = 160
     onColorEdit?.(index)
   }
 
-  const newGroupLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const trashLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const betweenZoneLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const removalTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   useEffect(() => {
@@ -2032,9 +1852,7 @@ const GROUP_SNAP_HOLD_MS = 160
                 setIsDragOverNewGroup(true)
                 setIsDragOverTrash(false)
                 setIsBetweenZonesActive(true)
-                setDragOverIndex(null)
-                setDragMode(null)
-                setInsertPosition(null)
+                handleInsertZoneLeave()
               }
             }}
             onDragLeave={(event) => {
