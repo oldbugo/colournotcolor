@@ -27,6 +27,7 @@ import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
 import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
+import { useDragAutoScroll } from "@/components/color-manager/use-drag-auto-scroll"
 import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
   composeLabel,
@@ -750,75 +751,11 @@ const GROUP_SNAP_HOLD_MS = 160
     }
   }, [])
 
-  useEffect(() => {
-    if ((draggedGroup === null && !isAnyCardDragging) || typeof window === "undefined" || typeof document === "undefined") {
-      return
-    }
-
-    const scrollParent = ensureScrollParent()
-    if (!scrollParent) {
-      return
-    }
-
-    const EDGE_THRESHOLD_PX = 180
-    const MIN_SCROLL_SPEED = 4
-    const MAX_SCROLL_SPEED = 28
-
-    let rafId = 0
-
-    const step = () => {
-      const pointer = dragViewportPointerRef.current
-      if (pointer) {
-        const isDocumentScroller =
-          scrollParent === document.body ||
-          scrollParent === document.documentElement ||
-          scrollParent === document.scrollingElement
-
-        let topBoundary = 0
-        let bottomBoundary = window.innerHeight ?? 0
-
-        if (!isDocumentScroller) {
-          const rect = scrollParent.getBoundingClientRect()
-          topBoundary = rect.top
-          bottomBoundary = rect.bottom
-        }
-
-        const viewportHeight = Math.max(bottomBoundary - topBoundary, 1)
-        const threshold = Math.min(EDGE_THRESHOLD_PX, viewportHeight / 2)
-
-        if (threshold > 0) {
-          let delta = 0
-
-          const distanceToTop = pointer.y - topBoundary
-          const normalizedTopDistance = Math.max(distanceToTop, 0)
-          if (normalizedTopDistance < threshold) {
-            const intensity = (threshold - normalizedTopDistance) / threshold
-            const eased = intensity * intensity
-            delta = -(MIN_SCROLL_SPEED + (MAX_SCROLL_SPEED - MIN_SCROLL_SPEED) * eased)
-          } else {
-            const distanceToBottom = bottomBoundary - pointer.y
-            const normalizedBottomDistance = Math.max(distanceToBottom, 0)
-            if (normalizedBottomDistance < threshold) {
-              const intensity = (threshold - normalizedBottomDistance) / threshold
-              const eased = intensity * intensity
-              delta = MIN_SCROLL_SPEED + (MAX_SCROLL_SPEED - MIN_SCROLL_SPEED) * eased
-            }
-          }
-
-          if (delta !== 0) {
-            scrollParent.scrollTop += delta
-          }
-        }
-      }
-
-      rafId = window.requestAnimationFrame(step)
-    }
-
-    rafId = window.requestAnimationFrame(step)
-    return () => {
-      window.cancelAnimationFrame(rafId)
-    }
-  }, [draggedGroup, isAnyCardDragging, ensureScrollParent])
+  useDragAutoScroll({
+    active: draggedGroup !== null || isAnyCardDragging,
+    getPointer: () => dragViewportPointerRef.current,
+    getScrollParent: ensureScrollParent,
+  })
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const managerRef = useRef<HTMLDivElement | null>(null)
