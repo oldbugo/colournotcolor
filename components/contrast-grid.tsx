@@ -41,11 +41,16 @@ import type {
 } from "@/lib/contrast-utils"
 import type { ColorSwatch, EditingColor } from "@/types/palette"
 import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
-import { storage, type NumberRange, type StoredContrastFilters } from "@/lib/storage-utils"
+import type { NumberRange } from "@/lib/storage-utils"
 import { CARD_CONTROL_RADII, SEGMENTED_TOGGLE_CLASSNAMES } from "@/lib/design-tokens"
 import { getStatusPillBaseClassName, getStatusPillClassName, getStatusPillTone } from "@/lib/status-pill"
 import { DragHandle } from "@/components/ui/drag-handle"
 import { DropToTrash } from "@/components/dnd/drop-to-trash"
+import {
+  FILTER_STEP_MAX_INDEX,
+  FILTER_STEP_VALUES,
+  useContrastFilters,
+} from "@/components/contrast-grid/use-contrast-filters"
 import { useGridPan } from "@/components/contrast-grid/use-grid-pan"
 import { computeDragMode, computeInsertTargetIndex } from "@/lib/index-dnd"
 import { computeHorizontalIndicatorPosition, computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
@@ -71,8 +76,6 @@ const FILTER_MENU_RESIZE_ARC_SIZE = 64
 const FILTER_MENU_RESIZE_ARC_INSET = 64
 const UNGROUPED_LABEL = "Ungrouped"
 const DIGITS_ONLY_PATTERN = /^\d+$/
-const FILTER_STEP_VALUES = [1, 10, 100, 1000] as const
-const FILTER_STEP_MAX_INDEX = FILTER_STEP_VALUES.length - 1
 const ROW_LABEL_WIDTH = 164
 const HEADER_ROW_HEIGHT = CARD_SIZE + 44
 const MATRIX_LEFT_OFFSET = ROW_LABEL_WIDTH + GAP_SIZE
@@ -470,13 +473,6 @@ type GroupedColorEntry = {
   entries: ColorEntry[]
 }
 
-const serializeFilterIds = (ids: Set<string> | null): string[] | null => {
-  if (ids === null) {
-    return null
-  }
-  return Array.from(ids)
-}
-
 type ContrastGridProps = {
   paletteId: string
   colors: ColorSwatch[]
@@ -514,12 +510,22 @@ export function ContrastGrid({
   const [bgDragMode, setBgDragMode] = useState<"swap" | "insert" | null>(null)
   const [fgInsertPosition, setFgInsertPosition] = useState<"before" | "after" | null>(null)
   const [bgInsertPosition, setBgInsertPosition] = useState<"before" | "after" | null>(null)
-  const [rowFilterIds, setRowFilterIds] = useState<Set<string> | null>(null)
-  const [columnFilterIds, setColumnFilterIds] = useState<Set<string> | null>(null)
-  const [rowNumberFilter, setRowNumberFilter] = useState<NumberRange | null>(null)
-  const [columnNumberFilter, setColumnNumberFilter] = useState<NumberRange | null>(null)
-  const [rowNumberInputs, setRowNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
-  const [columnNumberInputs, setColumnNumberInputs] = useState<{ min: string; max: string }>({ min: "", max: "" })
+  const {
+    rowFilterIds,
+    setRowFilterIds,
+    columnFilterIds,
+    setColumnFilterIds,
+    rowNumberFilter,
+    setRowNumberFilter,
+    columnNumberFilter,
+    setColumnNumberFilter,
+    rowNumberInputs,
+    setRowNumberInputs,
+    columnNumberInputs,
+    setColumnNumberInputs,
+    filterStepIndex,
+    setFilterStepIndex,
+  } = useContrastFilters({ paletteId })
   const [focusedNumberInput, setFocusedNumberInput] = useState<HTMLInputElement | null>(null)
   const [isRowFilterMenuOpen, setIsRowFilterMenuOpen] = useState(false)
   const [isColumnFilterMenuOpen, setIsColumnFilterMenuOpen] = useState(false)
@@ -528,8 +534,6 @@ export function ContrastGrid({
   const [isColumnRangeExpanded, setIsColumnRangeExpanded] = useState(true)
   const [filterMenuSize, setFilterMenuSize] = useState<{ width: number; height: number } | null>(null)
   const [isSwapButtonPressed, setIsSwapButtonPressed] = useState(false)
-  const [filterStepIndex, setFilterStepIndex] = useState(1)
-  const [filtersInitialized, setFiltersInitialized] = useState(false)
   const [contrastOverlay, setContrastOverlay] = useState<{
     key: string
     standard: ContrastStandard
@@ -991,7 +995,7 @@ export function ContrastGrid({
     }
     const clamped = Math.min(FILTER_STEP_MAX_INDEX, Math.max(0, Math.round(rawValue)))
     setFilterStepIndex(clamped)
-  }, [])
+  }, [setFilterStepIndex])
 
   const [fgOverlayStyle, setFgOverlayStyle] = useState<React.CSSProperties | null>(null)
   const [bgOverlayStyle, setBgOverlayStyle] = useState<React.CSSProperties | null>(null)
@@ -1116,24 +1120,6 @@ const colorEntries = useMemo<ColorEntry[]>(
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(
     () => new Set(groupedColorEntries.map((group) => group.key)),
   )
-  useEffect(() => {
-    setFiltersInitialized(false)
-    const stored = storage.loadContrastFilters(paletteId)
-    setRowNumberFilter(stored.rowRange ?? null)
-    setColumnNumberFilter(stored.columnRange ?? null)
-    setRowFilterIds(stored.rowIds === null ? null : new Set<string>(stored.rowIds))
-    setColumnFilterIds(stored.columnIds === null ? null : new Set<string>(stored.columnIds))
-    if (
-      typeof stored.filterStepIndex === "number" &&
-      stored.filterStepIndex >= 0 &&
-      stored.filterStepIndex <= FILTER_STEP_MAX_INDEX
-    ) {
-      setFilterStepIndex(stored.filterStepIndex)
-    } else {
-      setFilterStepIndex(1)
-    }
-    setFiltersInitialized(true)
-  }, [paletteId])
   const effectiveRowFilterIds = useMemo(() => {
     if (!rowFilterIds) return null
     const filtered = [...rowFilterIds].filter((id) => allColorIdSet.has(id))
@@ -1187,43 +1173,7 @@ const colorEntries = useMemo<ColorEntry[]>(
     }
     setRowNumberFilter((current) => clampRangeToBounds(current))
     setColumnNumberFilter((current) => clampRangeToBounds(current))
-  }, [clampRangeToBounds, numericBounds])
-
-  useEffect(() => {
-    if (!rowNumberFilter) {
-      setRowNumberInputs({ min: "", max: "" })
-      return
-    }
-    setRowNumberInputs({
-      min: rowNumberFilter.min.toString(),
-      max: rowNumberFilter.max.toString(),
-    })
-  }, [rowNumberFilter])
-
-  useEffect(() => {
-    if (!columnNumberFilter) {
-      setColumnNumberInputs({ min: "", max: "" })
-      return
-    }
-    setColumnNumberInputs({
-      min: columnNumberFilter.min.toString(),
-      max: columnNumberFilter.max.toString(),
-    })
-  }, [columnNumberFilter])
-
-  useEffect(() => {
-    if (!filtersInitialized) {
-      return
-    }
-    const filters: StoredContrastFilters = {
-      rowRange: rowNumberFilter,
-      columnRange: columnNumberFilter,
-      rowIds: serializeFilterIds(rowFilterIds),
-      columnIds: serializeFilterIds(columnFilterIds),
-      filterStepIndex,
-    }
-    storage.saveContrastFilters(paletteId, filters)
-  }, [filtersInitialized, paletteId, rowNumberFilter, columnNumberFilter, rowFilterIds, columnFilterIds, filterStepIndex])
+  }, [clampRangeToBounds, numericBounds, setColumnNumberFilter, setRowNumberFilter])
 
   useEffect(() => {
     if (!focusedNumberInput || typeof window === "undefined") {
@@ -1398,7 +1348,13 @@ const colorEntries = useMemo<ColorEntry[]>(
       setRowNumberFilter(null)
       setColumnNumberFilter(null)
     }
-  }, [numericBounds])
+  }, [
+    numericBounds,
+    setColumnFilterIds,
+    setColumnNumberFilter,
+    setRowFilterIds,
+    setRowNumberFilter,
+  ])
 
   const swapRowColumnFilters = useCallback(() => {
     const nextRowIds = columnFilterIds ? new Set(columnFilterIds) : null
@@ -1411,7 +1367,16 @@ const colorEntries = useMemo<ColorEntry[]>(
     setRowNumberFilter(nextRowNumberFilter)
     setColumnNumberFilter(nextColumnNumberFilter)
     setIsSwapButtonPressed(false)
-  }, [columnFilterIds, rowFilterIds, columnNumberFilter, rowNumberFilter])
+  }, [
+    columnFilterIds,
+    rowFilterIds,
+    columnNumberFilter,
+    rowNumberFilter,
+    setColumnFilterIds,
+    setColumnNumberFilter,
+    setRowFilterIds,
+    setRowNumberFilter,
+  ])
 
   const beginFilterMenuResize = useCallback(
     (
