@@ -15,18 +15,6 @@ import {
 import { Input } from "@/components/ui/input"
 import { Slider } from "@/components/ui/slider"
 import {
-  AlertDialog,
-  AlertDialogTrigger,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
-  AlertDialogAction,
-} from "@/components/ui/alert-dialog"
-
-import {
   extractHexFromColor,
   evaluateContrast,
   CONTRAST_REQUIREMENTS,
@@ -37,7 +25,6 @@ import type {
   ContrastRequirement,
   ApcaContrastEvaluation,
   ContrastRequirementId,
-  ApcaThresholds,
 } from "@/lib/contrast-utils"
 import type { ColorSwatch, EditingColor } from "@/types/palette"
 import { composeLabel, swatchToLegacy } from "@/lib/color-utils"
@@ -47,11 +34,36 @@ import { getStatusPillBaseClassName, getStatusPillClassName, getStatusPillTone }
 import { DragHandle } from "@/components/ui/drag-handle"
 import { DropToTrash } from "@/components/dnd/drop-to-trash"
 import {
+  APCA_BRONZE_MAX_LC,
+  extractNumericValue,
+  formatLcThresholdLabel,
+  formatLcValue,
+  formatThresholdLabel,
+  getApcaBronzeDescription,
+  getApcaBronzeLabel,
+  getApcaGradient,
+  getApcaMarkerPosition,
+  getApcaRequirementForStandard,
+  getApcaThresholdsForStandard,
+  getOrderedRequirementsForStandard,
+  getRequirementLabelForStandard,
+  getWcagBarSegmentColors,
+  isApcaStandard,
+} from "@/components/contrast-grid/apca-helpers"
+import {
   FILTER_STEP_MAX_INDEX,
   FILTER_STEP_VALUES,
   useContrastFilters,
 } from "@/components/contrast-grid/use-contrast-filters"
 import { useGridPan } from "@/components/contrast-grid/use-grid-pan"
+import {
+  ApcaRangeIndicator,
+  BubbleIndicator,
+  ConfirmActionButton,
+  FocusIndicator,
+  ResizeCornerHandle,
+  SwatchTile,
+} from "@/components/contrast-grid/visual-components"
 import { computeDragMode, computeInsertTargetIndex } from "@/lib/index-dnd"
 import { computeHorizontalIndicatorPosition, computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
 
@@ -59,52 +71,21 @@ const CARD_SIZE = 132 // px
 const GAP_SIZE = 16 // px (gap-4)
 const ANIMATION_DURATION = 0.25 // seconds - faster animation
 const CARD_WITH_GAP = CARD_SIZE + GAP_SIZE // 148px
-const BORDER_GAP = 8 // px - gap for borders (-inset-2 = 8px)
 const EXPANDED_CENTER_CARD_WIDTH = 288 // px (w-72)
 const EXPANDED_CENTER_CARD_HEIGHT = 160 // px (h-40)
 const SLIDER_EDGE_PADDING_PERCENT = 6
-const APCA_RANGE_MAX = 108
-const APCA_RANGE_EDGE_PADDING_PERCENT = 2
 const FILTER_CONTROL_SIZE = 40 // px
 const FILTER_MENU_MIN_WIDTH = 320
 const FILTER_MENU_MIN_HEIGHT = 240
 const FILTER_MENU_MAX_WIDTH_RATIO = 0.8
 const FILTER_MENU_MAX_HEIGHT_RATIO = 0.7
-const FILTER_MENU_RESIZE_OUTLINE_OFFSET = 12
-const FILTER_MENU_RESIZE_ARC_RADIUS_ADJUST = -6
-const FILTER_MENU_RESIZE_ARC_SIZE = 64
-const FILTER_MENU_RESIZE_ARC_INSET = 64
 const UNGROUPED_LABEL = "Ungrouped"
-const DIGITS_ONLY_PATTERN = /^\d+$/
 const ROW_LABEL_WIDTH = 164
 const HEADER_ROW_HEIGHT = CARD_SIZE + 44
 const MATRIX_LEFT_OFFSET = ROW_LABEL_WIDTH + GAP_SIZE
 const MATRIX_TOP_OFFSET = HEADER_ROW_HEIGHT + GAP_SIZE
 const VIRTUAL_OVERSCAN_ROWS = 3
 const VIRTUAL_OVERSCAN_COLUMNS = 2
-const APCA_BRONZE_ORDER: ContrastRequirementId[] = ["large-text", "non-text", "normal-text"]
-const APCA_BRONZE_LABELS: Record<ContrastRequirementId, { label: string; shortLabel: string }> = {
-  "large-text": { label: "Large fluent content", shortLabel: "Large fluent content" },
-  "non-text": { label: "Other content text", shortLabel: "Other content text" },
-  "normal-text": { label: "Body text", shortLabel: "Body text" },
-}
-const APCA_BRONZE_DESCRIPTIONS: Partial<Record<ContrastRequirementId, string>> = {
-  "non-text": "Fonts 16px or larger.",
-  "large-text": "Fonts larger than 32px.",
-}
-const APCA_BRONZE_THRESHOLDS: Record<ContrastRequirementId, ApcaThresholds> = {
-  "normal-text": { min: 75, preferred: 90 },
-  "non-text": { min: 60 },
-  "large-text": { min: 45 },
-}
-const APCA_BRONZE_MAX_LC: Partial<Record<ContrastRequirementId, number>> = {
-  "large-text": 90,
-}
-const APCA_RANGE_COLORS = {
-  fail: "#ff7a7a",
-  caution: "#ffd36a",
-  pass: "#7aa879",
-}
 const DEFAULT_REQUIREMENT_INDEX = Math.max(
   0,
   CONTRAST_REQUIREMENTS.findIndex((requirement) => requirement.id === "normal-text"),
@@ -191,270 +172,7 @@ const isVirtualRectVisible = ({
   overscan: number
 }) => start + size >= viewportStart - overscan && start <= viewportStart + viewportSize + overscan
 
-type SwatchTileProps = {
-  hexColor: string
-  label: string
-  size?: number
-  labelPlacement?: "bottom" | "center"
-  className?: string
-  onClick?: (event: React.MouseEvent<HTMLDivElement>) => void
-}
 
-const SwatchTile = ({
-  hexColor,
-  label,
-  size = CARD_SIZE,
-  labelPlacement = "bottom",
-  className,
-  onClick,
-}: SwatchTileProps) => {
-  const isCentered = labelPlacement === "center"
-  const baseClassName = `flex flex-col items-center border border-border transition-all cursor-pointer hover:opacity-90 rounded-md ${
-    isCentered ? "justify-center" : "justify-end pb-0"
-  }`
-  const combinedClassName = className ? `${baseClassName} ${className}` : baseClassName
-
-  return (
-    <div
-      className={combinedClassName}
-      style={{ height: `${size}px`, width: `${size}px`, backgroundColor: hexColor }}
-      onClick={onClick}
-    >
-      <div className="w-full py-2 px-2">
-        <div className="rounded bg-white font-mono text-black text-center px-2 my-0 text-sm rounded-sm border py-1 font-light leading-6 break-words whitespace-normal min-h-[2.5rem] flex items-center justify-center">
-          <span className="block w-full break-words whitespace-normal">{label}</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const FocusIndicator = ({ inset = BORDER_GAP }: { inset?: number }) => (
-  <div
-    className="absolute border-2 border-dashed border-gray-400 rounded-lg pointer-events-none z-20"
-    style={{ inset: `-${inset}px` }}
-  />
-)
-
-const BubbleIndicator = ({ left }: { left: number }) => (
-  <div className="pointer-events-none absolute -bottom-4 flex -translate-x-1/2 flex-col items-center" style={{ left: `${left}%` }}>
-    <div className="h-2 w-px bg-border/80" />
-    <div className="h-3 w-3 rotate-45 rounded-[2px] border border-border bg-background shadow-[0_2px_4px_rgba(0,0,0,0.16)]" />
-  </div>
-)
-
-type ResizeCornerHandleProps = {
-  position: "left" | "right"
-  onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void
-}
-
-const ResizeCornerHandle = ({ position, onPointerDown }: ResizeCornerHandleProps) => {
-  const isLeft = position === "left"
-  const outlineStyle: React.CSSProperties = {
-    bottom: -7,
-    width: FILTER_MENU_RESIZE_ARC_SIZE,
-    height: FILTER_MENU_RESIZE_ARC_SIZE,
-    border: "3px solid currentColor",
-    borderRadius: `calc(var(--radius) + ${FILTER_MENU_RESIZE_OUTLINE_OFFSET + FILTER_MENU_RESIZE_ARC_RADIUS_ADJUST}px)`,
-    clipPath: isLeft
-      ? `inset(${FILTER_MENU_RESIZE_ARC_INSET}% ${FILTER_MENU_RESIZE_ARC_INSET}% 0 0)`
-      : `inset(${FILTER_MENU_RESIZE_ARC_INSET}% 0 0 ${FILTER_MENU_RESIZE_ARC_INSET}%)`,
-  }
-  if (isLeft) {
-    outlineStyle.left = -7
-  } else {
-    outlineStyle.right = -7
-  }
-  return (
-    <div
-      className={`group absolute -bottom-1 ${isLeft ? "-left-1" : "-right-1"} h-12 w-12 text-foreground/50 hover:text-foreground/90 z-10`}
-      style={{ cursor: isLeft ? "nesw-resize" : "nwse-resize" }}
-      onPointerDown={onPointerDown}
-      role="separator"
-    >
-      <div
-        className="pointer-events-none absolute opacity-0 transition-opacity duration-150 group-hover:opacity-100"
-        style={outlineStyle}
-      />
-    </div>
-  )
-}
-
-const getApcaMarkerPosition = (value: number) => {
-  if (!Number.isFinite(value)) {
-    return 0
-  }
-  const clampedValue = Math.min(APCA_RANGE_MAX, Math.max(0, value))
-  const percent = (clampedValue / APCA_RANGE_MAX) * 100
-  return clamp(percent, APCA_RANGE_EDGE_PADDING_PERCENT, 100 - APCA_RANGE_EDGE_PADDING_PERCENT)
-}
-
-const getApcaRangePercent = (value: number) => {
-  const clampedValue = Math.min(APCA_RANGE_MAX, Math.max(0, value))
-  return (clampedValue / APCA_RANGE_MAX) * 100
-}
-
-const getApcaGradient = ({
-  min,
-  preferred,
-  max,
-  tailGradient,
-}: {
-  min: number
-  preferred?: number
-  max?: number
-  tailGradient?: boolean
-}) => {
-  const minPct = getApcaRangePercent(min)
-  const preferredPct = typeof preferred === "number" ? getApcaRangePercent(preferred) : null
-
-  if (typeof max === "number") {
-    const maxPct = getApcaRangePercent(max)
-    const midPct = preferredPct !== null ? clamp(preferredPct, minPct, maxPct) : (minPct + maxPct) / 2
-    return `linear-gradient(90deg, ${APCA_RANGE_COLORS.fail} 0%, ${APCA_RANGE_COLORS.fail} ${minPct}%, ${APCA_RANGE_COLORS.caution} ${minPct}%, ${APCA_RANGE_COLORS.pass} ${midPct}%, ${APCA_RANGE_COLORS.caution} ${maxPct}%, ${APCA_RANGE_COLORS.fail} ${maxPct}%, ${APCA_RANGE_COLORS.fail} 100%)`
-  }
-
-  if (preferredPct !== null) {
-    return `linear-gradient(90deg, ${APCA_RANGE_COLORS.fail} 0%, ${APCA_RANGE_COLORS.fail} ${minPct}%, ${APCA_RANGE_COLORS.caution} ${minPct}%, ${APCA_RANGE_COLORS.pass} ${preferredPct}%, ${APCA_RANGE_COLORS.caution} 100%)`
-  }
-
-  if (tailGradient) {
-    return `linear-gradient(90deg, ${APCA_RANGE_COLORS.fail} 0%, ${APCA_RANGE_COLORS.fail} ${minPct}%, ${APCA_RANGE_COLORS.caution} ${minPct}%, ${APCA_RANGE_COLORS.pass} 100%)`
-  }
-
-  return `linear-gradient(90deg, ${APCA_RANGE_COLORS.fail} 0%, ${APCA_RANGE_COLORS.fail} ${minPct}%, ${APCA_RANGE_COLORS.pass} ${minPct}%, ${APCA_RANGE_COLORS.pass} 100%)`
-}
-
-const getWcagBarSegmentColors = (requirement: ContrastRequirement) => {
-  const aaTarget = requirement.wcagThresholds.aa
-  const aaaTarget = requirement.wcagThresholds.aaa
-  const segmentLowerBounds = [0, 3, 4.5, 7]
-  return segmentLowerBounds.map((lower) => {
-    if (typeof aaaTarget === "number" && lower >= aaaTarget) {
-      return APCA_RANGE_COLORS.pass
-    }
-    if (lower >= aaTarget) {
-      return APCA_RANGE_COLORS.caution
-    }
-    return APCA_RANGE_COLORS.fail
-  })
-}
-
-const ApcaRangeIndicator = ({
-  markers,
-  gradient,
-}: {
-  markers: Array<{ value: number; label: string }>
-  gradient: string
-}) => {
-  if (markers.length === 0) {
-    return null
-  }
-
-  const sortedMarkers = [...markers].sort((a, b) => a.value - b.value)
-
-  return (
-    <div className="w-full">
-      <div className="relative h-3 w-full">
-        <div
-          className="absolute inset-0 rounded-full border border-border shadow-sm"
-          style={{ background: gradient }}
-        />
-        {sortedMarkers.map((marker) => {
-          const left = getApcaMarkerPosition(marker.value)
-          return (
-            <div
-              key={`${marker.label}-${marker.value}`}
-              className="absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-border bg-background shadow-sm"
-              style={{ left: `${left}%` }}
-            />
-          )
-        })}
-      </div>
-      <div className="relative mt-4 h-6 w-full text-base font-semibold text-foreground text-center">
-        {sortedMarkers.map((marker) => {
-          const left = getApcaMarkerPosition(marker.value)
-          return (
-            <span key={`${marker.label}-label-${marker.value}`} className="absolute -translate-x-1/2" style={{ left: `${left}%` }}>
-              {marker.label}
-            </span>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-const extractNumericValue = (swatch: ColorSwatch): number | null => {
-  const candidateName = swatch.name?.trim()
-  if (candidateName && DIGITS_ONLY_PATTERN.test(candidateName)) {
-    return Number(candidateName)
-  }
-  const isUngrouped = !swatch.group?.trim()
-  const hexDigits = swatch.hex.replace("#", "")
-  if (hexDigits && DIGITS_ONLY_PATTERN.test(hexDigits)) {
-    if (isUngrouped && hexDigits.length === 6) {
-      return null
-    }
-    return Number(hexDigits)
-  }
-  return null
-}
-
-const formatThresholdLabel = (value: number) => (Number.isInteger(value) ? `${value.toFixed(0)}:1` : `${value.toFixed(1)}:1`)
-const formatLcThresholdLabel = (value: number) => `Lc ${value}`
-const formatLcValue = (value: number) => {
-  const rounded = Math.round(value * 10) / 10
-  if (Object.is(rounded, -0)) {
-    return "0"
-  }
-  return Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)
-}
-
-const isApcaStandard = (standard: ContrastStandard) => standard === "apca-bronze"
-
-const getApcaBronzeLabel = (requirement: ContrastRequirement, variant: "label" | "shortLabel") => {
-  const entry = APCA_BRONZE_LABELS[requirement.id]
-  if (!entry) {
-    return variant === "shortLabel"
-      ? requirement.apcaShortLabel ?? requirement.shortLabel
-      : requirement.apcaLabel ?? requirement.label
-  }
-  return variant === "shortLabel" ? entry.shortLabel : entry.label
-}
-
-const getApcaBronzeDescription = (requirement: ContrastRequirement) =>
-  APCA_BRONZE_DESCRIPTIONS[requirement.id] ?? requirement.apcaDescription ?? requirement.description
-
-const getApcaThresholdsForStandard = (standard: ContrastStandard, requirement: ContrastRequirement) => {
-  if (standard === "apca-bronze") {
-    return APCA_BRONZE_THRESHOLDS[requirement.id] ?? requirement.apcaThresholds
-  }
-  return requirement.apcaThresholds
-}
-
-const getApcaRequirementForStandard = (standard: ContrastStandard, requirement: ContrastRequirement) => {
-  const apcaThresholds = getApcaThresholdsForStandard(standard, requirement)
-  if (apcaThresholds === requirement.apcaThresholds) {
-    return requirement
-  }
-  return { ...requirement, apcaThresholds }
-}
-
-const getRequirementLabelForStandard = (standard: ContrastStandard, requirement: ContrastRequirement) => {
-  if (standard === "apca-bronze") {
-    return getApcaBronzeLabel(requirement, "label")
-  }
-  return requirement.label
-}
-
-const getOrderedRequirementsForStandard = (standard: ContrastStandard) => {
-  if (standard !== "apca-bronze") {
-    return CONTRAST_REQUIREMENTS
-  }
-  const requirementMap = new Map(CONTRAST_REQUIREMENTS.map((requirement) => [requirement.id, requirement]))
-  return APCA_BRONZE_ORDER.map((id) => requirementMap.get(id)).filter(Boolean) as ContrastRequirement[]
-}
 
 type ColorEntry = {
   id: string
@@ -3325,51 +3043,6 @@ const renderNumberFilterSection = (
   )
 }
 
-type ConfirmActionButtonProps = {
-  variant: "clear" | "select"
-  description: string
-  onConfirm: () => void
-}
-
-const ConfirmActionButton = ({ variant, description, onConfirm }: ConfirmActionButtonProps) => {
-  const isClear = variant === "clear"
-  const buttonText = isClear ? "Clear all" : "Select all"
-  const triggerVariant = isClear ? "blackOutline" : "black"
-
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant={triggerVariant} size="sm" className="flex-1">
-          {buttonText}
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{`Confirm ${buttonText.toLowerCase()}`}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter className="gap-2">
-          <AlertDialogCancel asChild>
-            <Button variant="blackOutline" size="sm">
-              Cancel
-            </Button>
-          </AlertDialogCancel>
-          <AlertDialogAction asChild>
-            <Button
-              variant="black"
-              size="sm"
-              onClick={() => {
-                onConfirm()
-              }}
-            >
-              {buttonText}
-            </Button>
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
 
 type ContrastOverlayPanelProps = {
   position: { top: number; left: number; width: number; height: number }
