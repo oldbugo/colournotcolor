@@ -28,6 +28,7 @@ import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
 import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
 import { useDragAutoScroll } from "@/components/color-manager/use-drag-auto-scroll"
+import { useDropZoneLayout } from "@/components/color-manager/use-drop-zone-layout"
 import { useGroupScrollAnchor } from "@/components/color-manager/use-group-scroll-anchor"
 import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
@@ -234,13 +235,10 @@ export function ColorManager({
     }
   }, [computeColumnCount])
 
-  const [dropZoneWidth, setDropZoneWidth] = useState(() => selectedCardSize.width)
-  const [dropZonesStacked, setDropZonesStacked] = useState(false)
   const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
   const [areGroupsCollapsedForDrag, setAreGroupsCollapsedForDrag] = useState(false)
   const [suppressGroupExpansionAnimation, setSuppressGroupExpansionAnimation] = useState(false)
-  const isAnyCardDraggingRef = useRef(isAnyCardDragging)
   const [groupDragMode, setGroupDragMode] = useState<"swap" | "insert" | null>(null)
   const [groupInsertPosition, setGroupInsertPosition] = useState<"before" | "after" | null>(null)
   const groupDragPointerRef = useRef<{ x: number; y: number } | null>(null)
@@ -1693,106 +1691,18 @@ const GROUP_SNAP_HOLD_MS = 160
     }
   }, [])
 
-  useEffect(() => {
-    isAnyCardDraggingRef.current = isAnyCardDragging
-  }, [isAnyCardDragging])
-
-  const dropZoneDimensionStyle = useMemo(() => {
-    if (!dropZoneWidth) return undefined
-    const roundedWidth = Math.max(0, Math.round(dropZoneWidth))
-    return { width: `${roundedWidth}px`, maxWidth: `${roundedWidth}px` }
-  }, [dropZoneWidth])
-
-  const updateDropZoneWidth = useCallback((nextWidth: number | null | undefined) => {
-    if (!nextWidth || Number.isNaN(nextWidth)) return
-    if (isAnyCardDraggingRef.current) return
-    const rounded = Math.max(0, Math.round(nextWidth))
-    setDropZoneWidth((previous) => (previous === rounded ? previous : rounded))
-  }, [])
-
-  const measureDropZoneWidth = useCallback(() => {
-    if (isAnyCardDraggingRef.current) return dropZoneWidth
-    let measured = selectedCardSize.width
-    const iterator = cardRefs.current.values().next()
-    if (!iterator.done) {
-      const cardElement = iterator.value
-      if (cardElement) {
-        const rect = cardElement.getBoundingClientRect()
-        if (rect.width > 0) {
-          measured = rect.width
-        }
-      }
-    }
-    updateDropZoneWidth(measured)
-    return measured
-  }, [dropZoneWidth, selectedCardSize.width, updateDropZoneWidth])
-
-  useLayoutEffect(() => {
-    schedulePostEffect(() => {
-      measureDropZoneWidth()
-    })
-  }, [measureDropZoneWidth, swatches.length, cardSizeIndex])
-
-  useEffect(() => {
-    const iterator = cardRefs.current.values().next()
-    const firstCard = iterator.value as HTMLElement | undefined
-    if (!firstCard) return
-
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const width = entry.contentRect.width
-        if (width) {
-          updateDropZoneWidth(width)
-        }
-      }
-    })
-
-    observer.observe(firstCard)
-    return () => observer.disconnect()
-  }, [cardSizeIndex, swatches.length, updateDropZoneWidth])
-
-  const recomputeDropZoneLayout = useCallback(() => {
-    const container = dropZonesLayoutRef.current ?? dropZonesContainerRef.current
-    if (!container) return
-    if (isAnyCardDraggingRef.current) return
-
-    const containerWidth = container.clientWidth
-    const styles = window.getComputedStyle(container)
-    const gapValueRaw = styles.columnGap || styles.gap || "0"
-    const gap = Number.parseFloat(gapValueRaw) || 0
-    const targetWidth = dropZoneWidth || selectedCardSize.width
-    if (!targetWidth) return
-    const requiredWidth = targetWidth * 2 + gap + 4
-    const shouldStack = containerWidth < requiredWidth
-    setDropZonesStacked((previous) => (previous === shouldStack ? previous : shouldStack))
-  }, [dropZoneWidth, selectedCardSize.width])
-
-  useLayoutEffect(() => {
-    recomputeDropZoneLayout()
-  }, [recomputeDropZoneLayout])
-
-  useLayoutEffect(() => {
-    const container = dropZonesLayoutRef.current ?? dropZonesContainerRef.current
-    if (!container) return
-
-    const observer = new ResizeObserver(() => {
-      if (isAnyCardDraggingRef.current) return
-      recomputeDropZoneLayout()
-    })
-    observer.observe(container)
-    window.addEventListener("resize", recomputeDropZoneLayout)
-
-    return () => {
-      observer.disconnect()
-      window.removeEventListener("resize", recomputeDropZoneLayout)
-    }
-  }, [recomputeDropZoneLayout])
-
-  useEffect(() => {
-    if (!isAnyCardDragging) {
-      recomputeDropZoneLayout()
-    }
-  }, [isAnyCardDragging, recomputeDropZoneLayout])
+  const { dropZoneDimensionStyle, dropZonesStacked } = useDropZoneLayout({
+    fallbackWidth: selectedCardSize.width,
+    isDragging: isAnyCardDragging,
+    getFirstCard: () => {
+      const iterator = cardRefs.current.values().next()
+      return (iterator.done ? null : iterator.value) ?? null
+    },
+    containerRef: dropZonesContainerRef,
+    layoutRef: dropZonesLayoutRef,
+    cardSizeIndex,
+    swatchCount: swatches.length,
+  })
 
   const dropZoneBaseClass =
     "group relative flex shrink-0 flex-col rounded-lg border-2 border-transparent bg-transparent duration-200 ease-in-out transition-[border-color,background-color,box-shadow,opacity]"
