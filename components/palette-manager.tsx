@@ -15,24 +15,21 @@ import {
   clampHsluv,
   hexToHsluv,
   hsluvToHex,
-  luvToHex,
   maxChromaForHsluv,
   type Hsluv,
 } from "@/lib/hsluv"
 import {
   HSLUV_LIGHTNESS_EPSILON,
-  HSLUV_TEXTURE_BLOCK_SIZE,
   HSLUV_TEXTURE_SIZE,
-  closestPoint,
-  fromPixelCoordinate,
   getPickerGeometry,
   getPickerScale,
   mapHsluvSelectionToPlanePoint,
   mapPlanePointToHsluvSelection,
   normalizeHueInputDegrees,
   toPixelCoordinate,
-  type PickerGeometry,
 } from "@/lib/hsluv-picker-geometry"
+import { hexToHSL, hslToHex } from "@/lib/hsl"
+import { drawHslPlaneTexture, generatePlaneTexture } from "@/lib/picker-plane-texture"
 
 type PaletteManagerProps = {
   palettes: ColorPalette[]
@@ -1408,167 +1405,4 @@ function channelsToHexByMode(channels: Hsluv, mode: ColorMode): string {
 const ratioToValue = (axis: PlaneAxis, ratio: number) => (axis === "h" ? ratio * 360 : ratio * 100)
 const valueToRatio = (axis: PlaneAxis, value: number) => (axis === "h" ? value / 360 : value / 100)
 
-function drawHslPlaneTexture(ctx: CanvasRenderingContext2D, width: number, height: number, hue: number) {
-  const normalizedHue = ((hue % 360) + 360) % 360
-  const rowCount = Math.max(1, Math.round(height))
-  for (let y = 0; y < rowCount; y += 1) {
-    const ratioY = rowCount === 1 ? 0 : y / (rowCount - 1)
-    const lightness = (1 - ratioY) * 100
-    const rowGradient = ctx.createLinearGradient(0, y, width, y)
-    rowGradient.addColorStop(0, `hsl(${normalizedHue}, 0%, ${lightness}%)`)
-    rowGradient.addColorStop(1, `hsl(${normalizedHue}, 100%, ${lightness}%)`)
-    ctx.fillStyle = rowGradient
-    ctx.fillRect(0, y, width, 1)
-  }
-}
-
-function generatePlaneTexture(
-  mode: ColorMode,
-  plane: PlaneAxis,
-  base: Hsluv,
-  geometry: PickerGeometry,
-  width: number,
-  height: number,
-): HTMLCanvasElement | null {
-  if (typeof document === "undefined") {
-    return null
-  }
-
-  const canvas = document.createElement("canvas")
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext("2d")
-  if (!ctx) {
-    return null
-  }
-
-  if (mode !== "hsluv" || plane !== "l") {
-    return null
-  }
-
-  if (base.l <= 0.00000001 || base.l >= 99.9999999 || geometry.vertices.length === 0) {
-    return null
-  }
-
-  const scale = getPickerScale(geometry, width, height)
-  const shapePoints = geometry.vertices.map((point) => toPixelCoordinate(point, width, height, scale))
-  const xs = shapePoints.map((point) => point.x)
-  const ys = shapePoints.map((point) => point.y)
-  const xmin = Math.floor(Math.min(...xs) / HSLUV_TEXTURE_BLOCK_SIZE)
-  const ymin = Math.floor(Math.min(...ys) / HSLUV_TEXTURE_BLOCK_SIZE)
-  const xmax = Math.ceil(Math.max(...xs) / HSLUV_TEXTURE_BLOCK_SIZE)
-  const ymax = Math.ceil(Math.max(...ys) / HSLUV_TEXTURE_BLOCK_SIZE)
-
-  ctx.clearRect(0, 0, width, height)
-  ctx.globalCompositeOperation = "source-over"
-
-  for (let blockX = xmin; blockX < xmax; blockX += 1) {
-    for (let blockY = ymin; blockY < ymax; blockY += 1) {
-      const px = blockX * HSLUV_TEXTURE_BLOCK_SIZE
-      const py = blockY * HSLUV_TEXTURE_BLOCK_SIZE
-      const point = fromPixelCoordinate(
-        px + HSLUV_TEXTURE_BLOCK_SIZE / 2,
-        py + HSLUV_TEXTURE_BLOCK_SIZE / 2,
-        width,
-        height,
-        scale,
-      )
-      const clamped = closestPoint(geometry, point)
-      const hex = luvToHex(base.l, clamped.x, clamped.y)
-      ctx.fillStyle = hex
-      ctx.fillRect(px, py, HSLUV_TEXTURE_BLOCK_SIZE, HSLUV_TEXTURE_BLOCK_SIZE)
-    }
-  }
-
-  ctx.globalCompositeOperation = "destination-in"
-  ctx.beginPath()
-  ctx.moveTo(shapePoints[0].x, shapePoints[0].y)
-  for (let i = 1; i < shapePoints.length; i += 1) {
-    ctx.lineTo(shapePoints[i].x, shapePoints[i].y)
-  }
-  ctx.closePath()
-  ctx.fill()
-  ctx.globalCompositeOperation = "source-over"
-
-  return canvas
-}
-
-function hexToHSL(hex: string): { h: number; s: number; l: number } {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
-  if (!result) return { h: 0, s: 0, l: 0 }
-
-  const r = Number.parseInt(result[1], 16) / 255
-  const g = Number.parseInt(result[2], 16) / 255
-  const b = Number.parseInt(result[3], 16) / 255
-
-  const max = Math.max(r, g, b)
-  const min = Math.min(r, g, b)
-  const l = (max + min) / 2
-
-  if (max === min) {
-    return { h: 0, s: 0, l: l * 100 }
-  }
-
-  const d = max - min
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
-  let h = 0
-  switch (max) {
-    case r:
-      h = (g - b) / d + (g < b ? 6 : 0)
-      break
-    case g:
-      h = (b - r) / d + 2
-      break
-    default:
-      h = (r - g) / d + 4
-      break
-  }
-
-  return {
-    h: (h / 6) * 360,
-    s: s * 100,
-    l: l * 100,
-  }
-}
-
-function hslToHex(h: number, s: number, l: number): string {
-  const normalizedHue = ((h % 360) + 360) % 360
-  const normalizedS = Math.max(0, Math.min(100, s)) / 100
-  const normalizedL = Math.max(0, Math.min(100, l)) / 100
-
-  const c = (1 - Math.abs(2 * normalizedL - 1)) * normalizedS
-  const x = c * (1 - Math.abs(((normalizedHue / 60) % 2) - 1))
-  const m = normalizedL - c / 2
-  let r = 0
-  let g = 0
-  let b = 0
-
-  if (normalizedHue < 60) {
-    r = c
-    g = x
-  } else if (normalizedHue < 120) {
-    r = x
-    g = c
-  } else if (normalizedHue < 180) {
-    g = c
-    b = x
-  } else if (normalizedHue < 240) {
-    g = x
-    b = c
-  } else if (normalizedHue < 300) {
-    r = x
-    b = c
-  } else {
-    r = c
-    b = x
-  }
-
-  const toHex = (n: number) => {
-    const channel = Math.round((n + m) * 255)
-    const hex = channel.toString(16)
-    return hex.length === 1 ? `0${hex}` : hex
-  }
-
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
-}
 
