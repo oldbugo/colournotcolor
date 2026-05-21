@@ -28,6 +28,7 @@ import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
 import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
 import { useDragAutoScroll } from "@/components/color-manager/use-drag-auto-scroll"
+import { useGroupScrollAnchor } from "@/components/color-manager/use-group-scroll-anchor"
 import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
   composeLabel,
@@ -63,11 +64,6 @@ type GroupDragIntentState = {
 type GroupDeadzoneLock = {
   groupName: string
   position: "before" | "after"
-}
-
-type GroupScrollAnchorState = {
-  groupName: string
-  viewportTop: number
 }
 
 const GROUP_VIEWPORT_MARGIN = 16
@@ -252,10 +248,7 @@ export function ColorManager({
   const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
   const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
   const draggedGroupRef = useRef<string | null>(null)
-  const groupScrollAnchorRef = useRef<GroupScrollAnchorState | null>(null)
-  const scrollAnchorReleaseTimeoutRef = useRef<number | null>(null)
   const pendingGroupSnapTimerRef = useRef<number | null>(null)
-  const [scrollAnchorVersion, setScrollAnchorVersion] = useState(0)
   const suppressExpansionTimeoutRef = useRef<number | null>(null)
   const pendingGroupSnapRef = useRef<{ groupName: string; options?: { force?: boolean; align?: Align } } | null>(null)
   const prevGroupsCollapsedRef = useRef(areGroupsCollapsedForDrag)
@@ -265,7 +258,6 @@ const pendingCardSnapRef = useRef<{ index: number | null; options?: { disableSna
 const groupSnapHandleRef = useRef<CancelHandle | null>(null)
 const groupSectionRectsRef = useRef<Array<{ name: string; rect: DOMRect }>>([])
 const groupSectionRectsDirtyRef = useRef(false)
-const GROUP_SCROLL_ANCHOR_LOCK_MS = 260
 const GROUP_SNAP_HOLD_MS = 160
 
   useEffect(() => {
@@ -377,57 +369,11 @@ const GROUP_SNAP_HOLD_MS = 160
     return fallback
   }, [])
 
-  const releaseGroupScrollAnchor = useCallback(
-    (delay = 0) => {
-      if (typeof window !== "undefined" && scrollAnchorReleaseTimeoutRef.current !== null) {
-        window.clearTimeout(scrollAnchorReleaseTimeoutRef.current)
-        scrollAnchorReleaseTimeoutRef.current = null
-      }
-
-      const clearAnchor = () => {
-        groupScrollAnchorRef.current = null
-        setScrollAnchorVersion((version) => version + 1)
-      }
-
-      if (delay <= 0 || typeof window === "undefined") {
-        clearAnchor()
-        return
-      }
-
-      scrollAnchorReleaseTimeoutRef.current = window.setTimeout(() => {
-        clearAnchor()
-        scrollAnchorReleaseTimeoutRef.current = null
-      }, delay)
-    },
-    [],
-  )
-
-  const queueGroupScrollAnchor = useCallback(
-    (groupName: string | null, force = false) => {
-      if (!groupName) {
-        return
-      }
-      if (!collapseGroupsDuringGroupDrag && !force) {
-        return
-      }
-
-      const section = findGroupSectionElement(groupName)
-      if (!section) {
-        return
-      }
-
-      const rect = section.getBoundingClientRect()
-
-      groupScrollAnchorRef.current = {
-        groupName,
-        viewportTop: rect.top,
-      }
-
-      setScrollAnchorVersion((version) => version + 1)
-      releaseGroupScrollAnchor(GROUP_SCROLL_ANCHOR_LOCK_MS)
-    },
-    [GROUP_SCROLL_ANCHOR_LOCK_MS, collapseGroupsDuringGroupDrag, findGroupSectionElement, releaseGroupScrollAnchor],
-  )
+  const { queueGroupScrollAnchor, releaseGroupScrollAnchor } = useGroupScrollAnchor({
+    enabled: collapseGroupsDuringGroupDrag,
+    getScrollParent: ensureScrollParent,
+    findGroupSectionElement,
+  })
 
   const cancelCardSnap = useCallback(() => {
     if (cardSnapHandleRef.current) {
@@ -682,74 +628,13 @@ const GROUP_SNAP_HOLD_MS = 160
     [dragImageRef, findGroupSectionElement],
   )
 
-  const applyGroupScrollAnchor = useCallback(() => {
-    const anchor = groupScrollAnchorRef.current
-    if (!anchor) {
-      return
-    }
-
-    const section = findGroupSectionElement(anchor.groupName)
-    if (!section) {
-      return
-    }
-
-    const scrollParent = ensureScrollParent()
-    if (!scrollParent) {
-      return
-    }
-
-    const currentTop = section.getBoundingClientRect().top
-    const delta = currentTop - anchor.viewportTop
-    if (Math.abs(delta) > 0.5) {
-      scrollParent.scrollTop += delta
-    }
-  }, [ensureScrollParent, findGroupSectionElement])
-
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return
-    }
-
-    if (!groupScrollAnchorRef.current) {
-      return
-    }
-
-    let rafId = 0
-    const tick = () => {
-      if (!groupScrollAnchorRef.current) {
-        return
-      }
-      applyGroupScrollAnchor()
-      rafId = window.requestAnimationFrame(tick)
-    }
-
-    rafId = window.requestAnimationFrame(tick)
-    return () => {
-      window.cancelAnimationFrame(rafId)
-    }
-  }, [applyGroupScrollAnchor, scrollAnchorVersion])
-
-  useEffect(() => {
-    if (!groupScrollAnchorRef.current) {
-      return
-    }
-
     if (areGroupsCollapsedForDrag) {
       return
     }
-
     const delay = suppressGroupExpansionAnimation ? GROUP_SECTION_ANIMATION_MS + 80 : 220
     releaseGroupScrollAnchor(delay)
   }, [areGroupsCollapsedForDrag, releaseGroupScrollAnchor, suppressGroupExpansionAnimation])
-
-  useEffect(() => {
-    return () => {
-      if (typeof window !== "undefined" && scrollAnchorReleaseTimeoutRef.current !== null) {
-        window.clearTimeout(scrollAnchorReleaseTimeoutRef.current)
-      }
-      groupScrollAnchorRef.current = null
-    }
-  }, [])
 
   useDragAutoScroll({
     active: draggedGroup !== null || isAnyCardDragging,
