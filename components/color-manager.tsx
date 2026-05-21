@@ -26,10 +26,11 @@ import {
 import type { ColorSwatch } from "@/types/palette"
 import { ColorCard } from "@/components/color-manager/color-card"
 import { GroupHeader } from "@/components/color-manager/group-header"
-import { GroupSection, GROUP_SECTION_METRICS, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
+import { GroupSection, GROUP_SECTION_ANIMATION_MS } from "@/components/color-manager/group-section"
 import { useCardDnd } from "@/components/color-manager/use-card-dnd"
 import { useDragAutoScroll } from "@/components/color-manager/use-drag-auto-scroll"
 import { useDropZoneLayout } from "@/components/color-manager/use-drop-zone-layout"
+import { useGroupDnd } from "@/components/color-manager/use-group-dnd"
 import { useGroupScrollAnchor } from "@/components/color-manager/use-group-scroll-anchor"
 import type { ColorWithName, ColorFormatMode, DragIndicatorPosition } from "@/components/color-manager/types"
 import {
@@ -53,18 +54,6 @@ type ColorManagerProps = {
   activeEditingIndex?: number | null
   lastInteractedColor?: string
   collapseGroupsDuringGroupDrag: boolean
-}
-
-type GroupDragIntentState = {
-  groupName: string
-  mode: "swap" | "insert"
-  position: "before" | "after" | null
-  distance: number
-}
-
-type GroupDeadzoneLock = {
-  groupName: string
-  position: "before" | "after"
 }
 
 const GROUP_VIEWPORT_MARGIN = 16
@@ -155,8 +144,6 @@ export function ColorManager({
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const [nameError, setNameError] = useState<number | null>(null)
   const [hoveredHandleIndex, setHoveredHandleIndex] = useState<number | null>(null)
-  const [draggedGroup, setDraggedGroup] = useState<string | null>(null)
-  const [dragOverGroupName, setDragOverGroupName] = useState<string | null>(null)
   const [isDragOverNewGroup, setIsDragOverNewGroup] = useState(false)
   const [isDragOverTrash, setIsDragOverTrash] = useState(false)
   const [isBetweenZonesActive, setIsBetweenZonesActive] = useState(false)
@@ -231,67 +218,17 @@ export function ColorManager({
 
   const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
-  const [areGroupsCollapsedForDrag, setAreGroupsCollapsedForDrag] = useState(false)
-  const [suppressGroupExpansionAnimation, setSuppressGroupExpansionAnimation] = useState(false)
-  const [groupDragMode, setGroupDragMode] = useState<"swap" | "insert" | null>(null)
-  const [groupInsertPosition, setGroupInsertPosition] = useState<"before" | "after" | null>(null)
-  const groupDragPointerRef = useRef<{ x: number; y: number } | null>(null)
   const dragViewportPointerRef = useRef<{ x: number; y: number } | null>(null)
-  const lastGroupIntentRef = useRef<GroupDragIntentState | null>(null)
-  const groupDeadzoneLockRef = useRef<GroupDeadzoneLock | null>(null)
-  const draggedGroupRef = useRef<string | null>(null)
-  const groupDragImageRef = useRef<HTMLDivElement | null>(null)
   const pendingGroupSnapTimerRef = useRef<number | null>(null)
-  const suppressExpansionTimeoutRef = useRef<number | null>(null)
   const pendingGroupSnapRef = useRef<{ groupName: string; options?: { force?: boolean; align?: Align } } | null>(null)
-  const prevGroupsCollapsedRef = useRef(areGroupsCollapsedForDrag)
   const cardSnapHandleRef = useRef<CancelHandle | null>(null)
   const cardSnapDelayTimeoutRef = useRef<number | null>(null)
 const pendingCardSnapRef = useRef<{ index: number | null; options?: { disableSnapIllusion?: boolean; delayMs?: number } } | null>(null)
 const groupSnapHandleRef = useRef<CancelHandle | null>(null)
-const groupSectionRectsRef = useRef<Array<{ name: string; rect: DOMRect }>>([])
-const groupSectionRectsDirtyRef = useRef(false)
 const GROUP_SNAP_HOLD_MS = 160
 
   useEffect(() => {
-    if (!collapseGroupsDuringGroupDrag) {
-      schedulePostEffect(() => {
-        setAreGroupsCollapsedForDrag(false)
-        setSuppressGroupExpansionAnimation(false)
-      })
-    }
-  }, [collapseGroupsDuringGroupDrag])
-
-  useEffect(() => {
-    draggedGroupRef.current = draggedGroup
-  }, [draggedGroup])
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return
-    }
-    const prev = prevGroupsCollapsedRef.current
-    prevGroupsCollapsedRef.current = areGroupsCollapsedForDrag
-    if (prev && !areGroupsCollapsedForDrag) {
-      schedulePostEffect(() => {
-        setSuppressGroupExpansionAnimation(true)
-        if (suppressExpansionTimeoutRef.current !== null) {
-          window.clearTimeout(suppressExpansionTimeoutRef.current)
-        }
-        suppressExpansionTimeoutRef.current = window.setTimeout(() => {
-          setSuppressGroupExpansionAnimation(false)
-          suppressExpansionTimeoutRef.current = null
-        }, GROUP_SECTION_ANIMATION_MS)
-      })
-    }
-  }, [areGroupsCollapsedForDrag])
-
-  useEffect(() => {
     return () => {
-      if (typeof window !== "undefined" && suppressExpansionTimeoutRef.current !== null) {
-        window.clearTimeout(suppressExpansionTimeoutRef.current)
-        suppressExpansionTimeoutRef.current = null
-      }
       if (typeof window !== "undefined" && pendingGroupSnapTimerRef.current !== null) {
         window.clearTimeout(pendingGroupSnapTimerRef.current)
         pendingGroupSnapTimerRef.current = null
@@ -315,30 +252,6 @@ const GROUP_SNAP_HOLD_MS = 160
     }
     return null
   }, [])
-
-  const measureGroupSectionRects = useCallback(
-    (force = false) => {
-      if (!force && !groupSectionRectsDirtyRef.current && groupSectionRectsRef.current.length > 0) {
-        return groupSectionRectsRef.current
-      }
-      if (typeof document === "undefined") {
-        return []
-      }
-      const sections = document.querySelectorAll<HTMLElement>("[data-group-section]")
-      const nextRects: Array<{ name: string; rect: DOMRect }> = []
-      sections.forEach((section) => {
-        const name = section.getAttribute("data-group-name")
-        if (!name) {
-          return
-        }
-        nextRects.push({ name, rect: section.getBoundingClientRect() })
-      })
-      groupSectionRectsRef.current = nextRects
-      groupSectionRectsDirtyRef.current = false
-      return nextRects
-    },
-    [],
-  )
 
   const ensureScrollParent = useCallback((): HTMLElement | null => {
     if (typeof document === "undefined") {
@@ -526,13 +439,6 @@ const GROUP_SNAP_HOLD_MS = 160
     [collapseGroupsDuringGroupDrag, flushPendingGroupSnap],
   )
 
-  useEffect(() => {
-    if (suppressGroupExpansionAnimation) {
-      return
-    }
-    flushPendingGroupSnap()
-  }, [flushPendingGroupSnap, suppressGroupExpansionAnimation])
-
   const updateDragPointerFromEvent = useCallback((event: { clientX: number; clientY: number }) => {
     const { clientX, clientY } = event
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
@@ -642,81 +548,36 @@ const GROUP_SNAP_HOLD_MS = 160
     onResetSiblings: resetDragSiblings,
   })
 
-  const applyGroupDragImage = useCallback(
-    (event: React.DragEvent, groupName: string) => {
-      if (typeof document === "undefined" || typeof window === "undefined") {
-        return
-      }
+  const groupedColors = groupSwatchesByCategory(swatches)
+  const groupCount = groupedColors.size
 
-      const section = findGroupSectionElement(groupName)
-      if (!section) {
-        return
-      }
-
-      if (groupDragImageRef.current) {
-        document.body.removeChild(groupDragImageRef.current)
-        groupDragImageRef.current = null
-      }
-
-      const sectionRect = section.getBoundingClientRect()
-      if (sectionRect.width === 0 || sectionRect.height === 0) {
-        return
-      }
-
-      const headerNode = section.querySelector<HTMLElement>("[data-group-header]")
-      const headerClone = headerNode ? (headerNode.cloneNode(true) as HTMLElement) : null
-      const preview = document.createElement("div")
-      const computed = window.getComputedStyle(section)
-      preview.className = section.className
-      preview.style.width = `${sectionRect.width}px`
-      preview.style.maxWidth = `${sectionRect.width}px`
-      preview.style.padding = computed.padding
-      preview.style.borderRadius = computed.borderRadius
-      preview.style.background = computed.backgroundColor || "var(--background)"
-      preview.style.boxShadow = computed.boxShadow || "0 12px 25px rgba(15, 23, 42, 0.18)"
-      preview.style.position = "absolute"
-      preview.style.top = "-9999px"
-      preview.style.left = "-9999px"
-      preview.style.pointerEvents = "none"
-      preview.style.overflow = "hidden"
-
-      if (headerClone) {
-        preview.appendChild(headerClone)
-      }
-
-      const stub = document.createElement("div")
-      stub.style.height = "40px"
-      stub.style.marginTop = "8px"
-      stub.style.borderRadius = "8px"
-      stub.style.background = "linear-gradient(90deg, rgba(226,232,240,0.9), rgba(203,213,225,0.6))"
-      stub.style.border = "1px solid rgba(148, 163, 184, 0.35)"
-      preview.appendChild(stub)
-
-      document.body.appendChild(preview)
-      groupDragImageRef.current = preview
-
-      const rawOffsetX = event.clientX - sectionRect.left
-      const rawOffsetY = event.clientY - sectionRect.top
-      const headerHeight = headerClone
-        ? headerClone.getBoundingClientRect().height || 48
-        : headerNode?.getBoundingClientRect().height || 48
-      const clampedOffsetX =
-        Number.isFinite(rawOffsetX) && sectionRect.width > 0
-          ? Math.min(Math.max(rawOffsetX, 16), Math.max(16, sectionRect.width - 16))
-          : sectionRect.width / 2
-      const clampedOffsetY =
-        Number.isFinite(rawOffsetY) && headerHeight > 0
-          ? Math.min(Math.max(rawOffsetY, 12), Math.max(12, headerHeight - 6))
-          : headerHeight / 2
-
-      try {
-        event.dataTransfer.setDragImage(preview, clampedOffsetX, clampedOffsetY)
-      } catch {
-        // ignore browsers that disallow custom drag previews
-      }
-    },
-    [groupDragImageRef, findGroupSectionElement],
-  )
+  const {
+    draggedGroup,
+    dragOverGroupName,
+    groupDragMode,
+    groupInsertPosition,
+    areGroupsCollapsedForDrag,
+    suppressGroupExpansionAnimation,
+    handleGroupDragStart,
+    handleGroupDragOver,
+    handleGroupInsertZoneDragOver,
+    handleGroupInsertZoneDrop,
+    handleGroupDrop,
+    handleGroupDragEnd,
+  } = useGroupDnd({
+    swatches,
+    groupedColors,
+    cardColumnCount,
+    collapseGroupsDuringGroupDrag,
+    isAnyCardDragging,
+    onBatchUpdateColors,
+    onColorEdit,
+    findGroupSectionElement,
+    queueGroupScrollAnchor,
+    requestGroupSnapPostExpansion,
+    updateDragPointerFromEvent,
+    clearGlobalDragPointer,
+  })
 
   useEffect(() => {
     if (areGroupsCollapsedForDrag) {
@@ -726,11 +587,33 @@ const GROUP_SNAP_HOLD_MS = 160
     releaseGroupScrollAnchor(delay)
   }, [areGroupsCollapsedForDrag, releaseGroupScrollAnchor, suppressGroupExpansionAnimation])
 
+  useEffect(() => {
+    if (suppressGroupExpansionAnimation) {
+      return
+    }
+    flushPendingGroupSnap()
+  }, [flushPendingGroupSnap, suppressGroupExpansionAnimation])
+
   useDragAutoScroll({
     active: draggedGroup !== null || isAnyCardDragging,
     getPointer: () => dragViewportPointerRef.current,
     getScrollParent: ensureScrollParent,
   })
+
+  useEffect(() => {
+    if (!pendingNewGroupSwatchId) return
+    const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
+    if (index === -1) return
+
+    schedulePostEffect(() => {
+      onColorEdit?.(index)
+      markDropped(index)
+      scheduleCardViewportSnap(index, {
+        disableSnapIllusion: false,
+      })
+      setPendingNewGroupSwatchId(null)
+    })
+  }, [markDropped, onColorEdit, pendingNewGroupSwatchId, scheduleCardViewportSnap, swatches])
 
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const managerRef = useRef<HTMLDivElement | null>(null)
@@ -741,16 +624,6 @@ const GROUP_SNAP_HOLD_MS = 160
   const [newlyCreatedGroups, setNewlyCreatedGroups] = useState<Set<string>>(new Set())
   const [removingGroups, setRemovingGroups] = useState<Set<string>>(new Set())
   const prevGroupsRef = useRef<Set<string>>(new Set())
-
-  const groupedColors = groupSwatchesByCategory(swatches)
-  const groupCount = groupedColors.size
-
-  useEffect(() => {
-    if (!draggedGroup) {
-      return
-    }
-    groupSectionRectsDirtyRef.current = true
-  }, [draggedGroup, groupedColors, cardColumnCount, areGroupsCollapsedForDrag])
 
   useEffect(() => {
     const currentGroups = new Set(groupedColors.keys())
@@ -957,442 +830,6 @@ const GROUP_SNAP_HOLD_MS = 160
   // Card DnD handlers + state are owned by useCardDnd above; leave-timer and
   // pointer cleanup happen via resetDragSiblings when the hook resets state.
 
-  const resetGroupDragState = useCallback(() => {
-    if (collapseGroupsDuringGroupDrag && areGroupsCollapsedForDrag) {
-      queueGroupScrollAnchor(draggedGroupRef.current)
-    }
-    setDraggedGroup(null)
-    setDragOverGroupName(null)
-    setAreGroupsCollapsedForDrag(false)
-    setGroupDragMode(null)
-    setGroupInsertPosition(null)
-    groupDragPointerRef.current = null
-    groupSectionRectsRef.current = []
-    groupSectionRectsDirtyRef.current = false
-    clearGlobalDragPointer()
-  }, [areGroupsCollapsedForDrag, clearGlobalDragPointer, collapseGroupsDuringGroupDrag, queueGroupScrollAnchor])
-
-  const evaluateGroupDragIntent = useCallback(
-    (pointer: { x: number; y: number }) => {
-      if (!draggedGroup) return
-
-      const cachedRects =
-        groupSectionRectsRef.current.length > 0 && !groupSectionRectsDirtyRef.current
-          ? groupSectionRectsRef.current
-          : measureGroupSectionRects()
-      const sections = cachedRects
-      if (sections.length === 0) {
-        if (groupDragMode !== null) setGroupDragMode(null)
-        if (groupInsertPosition !== null) setGroupInsertPosition(null)
-        if (dragOverGroupName !== null) setDragOverGroupName(null)
-        return
-      }
-
-      const halfGap = GROUP_SECTION_METRICS.insertGap / 2
-      const horizontalOutset = GROUP_SECTION_METRICS.horizontalDetectionOutset
-      const baseEdgeThreshold = GROUP_SECTION_METRICS.edgeInsertThreshold
-      const lastIntent = lastGroupIntentRef.current
-      const midpointDeadzone = GROUP_SECTION_METRICS.insertMidpointDeadzone
-
-      let bestIntent: GroupDragIntentState | null = null
-
-      const tolerance = 1.5
-
-      const considerCandidate = (
-        groupName: string,
-        mode: "swap" | "insert",
-        position: "before" | "after" | null,
-        distance: number,
-      ) => {
-        if (distance < 0) return
-        if (mode === "swap" && groupName === draggedGroup) return
-
-        const candidatePosition: "before" | "after" | null =
-          mode === "insert" ? position ?? "before" : null
-        const candidateMatchesCurrent =
-          dragOverGroupName === groupName &&
-          groupDragMode === mode &&
-          (mode !== "insert" || groupInsertPosition === candidatePosition)
-
-        const adoptCandidate = () => {
-          bestIntent = {
-            groupName,
-            mode,
-            position: candidatePosition,
-            distance,
-          }
-        }
-
-        if (!bestIntent || distance < bestIntent.distance - tolerance) {
-          adoptCandidate()
-          return
-        }
-
-        if (!bestIntent) return
-
-        const bestMatchesCurrent =
-          dragOverGroupName === bestIntent.groupName &&
-          groupDragMode === bestIntent.mode &&
-          (bestIntent.mode !== "insert" || groupInsertPosition === bestIntent.position)
-
-        if (Math.abs(distance - bestIntent.distance) <= tolerance) {
-          if (candidateMatchesCurrent && !bestMatchesCurrent) {
-            adoptCandidate()
-            return
-          }
-          if (!bestMatchesCurrent) {
-            if (bestIntent.mode === "swap" && mode === "insert") {
-              adoptCandidate()
-              return
-            }
-            if (mode === "insert" && groupInsertPosition === candidatePosition) {
-              adoptCandidate()
-            }
-          }
-        }
-      }
-
-      for (const section of sections) {
-        const groupName = section.name
-        const rect = section.rect
-        const horizontalMin = rect.left - horizontalOutset
-        const horizontalMax = rect.right + horizontalOutset
-        if (pointer.x < horizontalMin || pointer.x > horizontalMax) continue
-
-        const insideVertical = pointer.y >= rect.top && pointer.y <= rect.bottom
-        const distanceAbove = rect.top - pointer.y
-        const distanceBelow = pointer.y - rect.bottom
-        const topEdgeDistance = pointer.y - rect.top
-        const bottomEdgeDistance = rect.bottom - pointer.y
-        const edgeThreshold = Math.min(baseEdgeThreshold, rect.height / 2)
-
-        if (insideVertical) {
-          const centerLine = rect.top + rect.height / 2
-          const distanceToCenter = pointer.y - centerLine
-          const absCenterDistance = Math.abs(distanceToCenter)
-          const withinDeadzone = midpointDeadzone > 0 && absCenterDistance <= midpointDeadzone
-          const currentLock = groupDeadzoneLockRef.current
-
-          if (
-            currentLock &&
-            currentLock.groupName === groupName &&
-            (midpointDeadzone <= 0 || absCenterDistance > midpointDeadzone + GROUP_SECTION_METRICS.insertThickness + 2)
-          ) {
-            groupDeadzoneLockRef.current = null
-          }
-
-          if (withinDeadzone) {
-            let handledDeadzone = false
-            if (currentLock && currentLock.groupName === groupName) {
-              considerCandidate(groupName, "insert", currentLock.position, absCenterDistance)
-              handledDeadzone = true
-            } else if (
-              lastIntent &&
-              lastIntent.mode === "insert" &&
-              lastIntent.groupName === groupName &&
-              lastIntent.position !== null
-            ) {
-              groupDeadzoneLockRef.current = { groupName, position: lastIntent.position }
-              considerCandidate(groupName, "insert", lastIntent.position, absCenterDistance)
-              handledDeadzone = true
-            }
-
-            if (handledDeadzone) {
-              continue
-            }
-          }
-
-          if (groupDeadzoneLockRef.current?.groupName === groupName) {
-            groupDeadzoneLockRef.current = null
-          }
-
-          if (topEdgeDistance >= 0 && topEdgeDistance <= edgeThreshold) {
-            considerCandidate(groupName, "insert", "before", topEdgeDistance)
-          }
-          if (bottomEdgeDistance >= 0 && bottomEdgeDistance <= edgeThreshold) {
-            considerCandidate(groupName, "insert", "after", bottomEdgeDistance)
-          }
-
-          const centerDistance = Math.abs(distanceToCenter)
-          considerCandidate(groupName, "swap", null, centerDistance)
-        } else {
-          if (groupDeadzoneLockRef.current?.groupName === groupName) {
-            groupDeadzoneLockRef.current = null
-          }
-          if (distanceAbove >= 0 && distanceAbove <= halfGap) {
-            considerCandidate(groupName, "insert", "before", distanceAbove)
-          }
-          if (distanceBelow >= 0 && distanceBelow <= halfGap) {
-            considerCandidate(groupName, "insert", "after", distanceBelow)
-          }
-        }
-      }
-
-      if (!bestIntent) {
-        setDragOverGroupName(null)
-        setGroupDragMode(null)
-        setGroupInsertPosition(null)
-        lastGroupIntentRef.current = null
-        return
-      }
-
-      const baseIntent = bestIntent as GroupDragIntentState
-      let resolvedIntent: GroupDragIntentState = baseIntent
-      if (
-        lastIntent &&
-        resolvedIntent.mode === "insert" &&
-        lastIntent.mode === "insert" &&
-        resolvedIntent.groupName === lastIntent.groupName &&
-        resolvedIntent.position !== null &&
-        lastIntent.position !== null
-      ) {
-        const distanceDelta = Math.abs(resolvedIntent.distance - lastIntent.distance)
-        if (distanceDelta <= GROUP_SECTION_METRICS.insertThickness + 2) {
-          resolvedIntent = {
-            ...resolvedIntent,
-            position: lastIntent.position,
-            distance: lastIntent.distance,
-          }
-        }
-      }
-
-      const intent: GroupDragIntentState = resolvedIntent
-
-      const nextGroupName = intent.groupName
-      const nextMode: typeof intent.mode = intent.mode
-      const nextInsertPosition: "before" | "after" | null =
-        intent.mode === "insert" ? intent.position : null
-
-      if (dragOverGroupName !== nextGroupName) {
-        setDragOverGroupName(nextGroupName)
-      }
-
-      if (groupDragMode !== nextMode) {
-        setGroupDragMode(nextMode)
-      }
-
-      if (groupInsertPosition !== nextInsertPosition) {
-        setGroupInsertPosition(nextInsertPosition)
-      }
-
-      lastGroupIntentRef.current = { ...intent }
-
-      if (intent.mode === "insert" && intent.position !== null) {
-        groupDeadzoneLockRef.current = { groupName: intent.groupName, position: intent.position }
-      } else if (groupDeadzoneLockRef.current?.groupName === intent.groupName) {
-        groupDeadzoneLockRef.current = null
-      }
-    },
-    [draggedGroup, dragOverGroupName, groupDragMode, groupInsertPosition, measureGroupSectionRects],
-  )
-
-  const syncGroupHoverFromPointer = useCallback(() => {
-    const pointer = groupDragPointerRef.current
-    if (!pointer) return
-    evaluateGroupDragIntent(pointer)
-  }, [evaluateGroupDragIntent])
-
-  useEffect(() => {
-    if (!areGroupsCollapsedForDrag) return
-    if (typeof window === "undefined") return
-
-    const frame = window.requestAnimationFrame(() => {
-      syncGroupHoverFromPointer()
-    })
-
-    return () => {
-      window.cancelAnimationFrame(frame)
-    }
-  }, [areGroupsCollapsedForDrag, syncGroupHoverFromPointer])
-
-  useEffect(() => {
-    if (!draggedGroup) return
-    if (typeof document === "undefined") return
-
-    const handleGlobalDragOver = (event: DragEvent) => {
-      groupDragPointerRef.current = { x: event.clientX, y: event.clientY }
-      updateDragPointerFromEvent(event)
-      syncGroupHoverFromPointer()
-    }
-
-    document.addEventListener("dragover", handleGlobalDragOver)
-    return () => {
-      document.removeEventListener("dragover", handleGlobalDragOver)
-    }
-  }, [draggedGroup, syncGroupHoverFromPointer, updateDragPointerFromEvent])
-
-  useEffect(() => {
-    if (!isAnyCardDragging) return
-    if (typeof document === "undefined") return
-
-    const handleCardDragOver = (event: DragEvent) => {
-      updateDragPointerFromEvent(event)
-    }
-
-    document.addEventListener("dragover", handleCardDragOver)
-    return () => {
-      document.removeEventListener("dragover", handleCardDragOver)
-    }
-  }, [isAnyCardDragging, updateDragPointerFromEvent])
-
-  useEffect(() => {
-    if (!pendingNewGroupSwatchId) return
-    const index = swatches.findIndex((swatch) => swatch.id === pendingNewGroupSwatchId)
-    if (index === -1) return
-
-    schedulePostEffect(() => {
-      onColorEdit?.(index)
-      markDropped(index)
-      scheduleCardViewportSnap(index, {
-        disableSnapIllusion: false,
-      })
-      setPendingNewGroupSwatchId(null)
-    })
-  }, [markDropped, onColorEdit, pendingNewGroupSwatchId, scheduleCardViewportSnap, swatches])
-
-  const handleGroupDragStart = (e: React.DragEvent, groupName: string) => {
-    onColorEdit?.(-1)
-    applyGroupDragImage(e, groupName)
-    updateDragPointerFromEvent(e)
-    groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
-    measureGroupSectionRects(true)
-    setDraggedGroup(groupName)
-    setGroupDragMode(null)
-    setGroupInsertPosition(null)
-    if (collapseGroupsDuringGroupDrag) {
-      queueGroupScrollAnchor(groupName)
-      setAreGroupsCollapsedForDrag(true)
-    }
-    e.dataTransfer.effectAllowed = "move"
-  }
-
-  const handleGroupDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    updateDragPointerFromEvent(e)
-    groupDragPointerRef.current = { x: e.clientX, y: e.clientY }
-    evaluateGroupDragIntent(groupDragPointerRef.current)
-  }
-
-  const handleGroupInsertZoneDragOver = (
-    event: React.DragEvent<HTMLDivElement>,
-    groupName: string,
-    position: "before" | "after",
-  ) => {
-    void groupName
-    void position
-    event.preventDefault()
-    event.stopPropagation()
-    if (!draggedGroup) return
-    updateDragPointerFromEvent(event)
-    const pointer = { x: event.clientX, y: event.clientY }
-    groupDragPointerRef.current = pointer
-    evaluateGroupDragIntent(pointer)
-  }
-
-  const handleGroupInsertZoneDrop = (
-    event: React.DragEvent<HTMLDivElement>,
-    groupName: string,
-    position: "before" | "after",
-  ) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (!draggedGroup) return
-    updateDragPointerFromEvent(event)
-    const pointer = { x: event.clientX, y: event.clientY }
-    groupDragPointerRef.current = pointer
-    evaluateGroupDragIntent(pointer)
-    handleGroupDrop(event as React.DragEvent<HTMLElement>, groupName, { mode: "insert", position })
-  }
-
-  const handleGroupDrop = (
-    e: React.DragEvent<HTMLElement>,
-    targetGroupName: string,
-    overrideIntent?: { mode: "swap" | "insert"; position?: "before" | "after" | null },
-  ) => {
-    e.preventDefault()
-    e.stopPropagation()
-    updateDragPointerFromEvent(e)
-
-    if (!draggedGroup || draggedGroup === targetGroupName) {
-      resetGroupDragState()
-      return
-    }
-
-    const dropMode = overrideIntent?.mode ?? groupDragMode
-    const insertPosition =
-      dropMode === "insert" ? overrideIntent?.position ?? groupInsertPosition : null
-
-    if (dropMode !== "insert" && dropMode !== "swap") {
-      resetGroupDragState()
-      return
-    }
-
-    if (dropMode === "insert" && !insertPosition) {
-      resetGroupDragState()
-      return
-    }
-
-    const draggedColors = groupedColors.get(draggedGroup) ?? []
-    if (draggedColors.length === 0) {
-      resetGroupDragState()
-      return
-    }
-
-    const groupOrder = Array.from(groupedColors.keys())
-    const draggedOrderIndex = groupOrder.indexOf(draggedGroup)
-    const targetOrderIndex = groupOrder.indexOf(targetGroupName)
-
-    if (draggedOrderIndex === -1 || targetOrderIndex === -1) {
-      resetGroupDragState()
-      return
-    }
-
-    const newOrder = [...groupOrder]
-
-    if (dropMode === "insert" && insertPosition) {
-      newOrder.splice(draggedOrderIndex, 1)
-      let insertionIndex = targetOrderIndex + (insertPosition === "after" ? 1 : 0)
-      if (draggedOrderIndex < insertionIndex) {
-        insertionIndex -= 1
-      }
-      insertionIndex = Math.max(0, Math.min(newOrder.length, insertionIndex))
-      newOrder.splice(insertionIndex, 0, draggedGroup)
-    } else {
-      if (draggedOrderIndex === targetOrderIndex) {
-        resetGroupDragState()
-        return
-      }
-      ;[newOrder[draggedOrderIndex], newOrder[targetOrderIndex]] = [
-        newOrder[targetOrderIndex],
-        newOrder[draggedOrderIndex],
-      ]
-    }
-
-    const hasChanged = newOrder.some((name, index) => name !== groupOrder[index])
-    if (!hasChanged) {
-      resetGroupDragState()
-      return
-    }
-
-    const newSwatches: ColorSwatch[] = []
-    newOrder.forEach((groupName) => {
-      const items = groupedColors.get(groupName)
-      if (!items) return
-      const sortedItems = [...items].sort((a, b) => a.originalIndex - b.originalIndex)
-      sortedItems.forEach((item) => {
-        newSwatches.push(swatches[item.originalIndex])
-      })
-    })
-
-    onBatchUpdateColors(newSwatches)
-    queueGroupScrollAnchor(draggedGroup, true)
-    requestGroupSnapPostExpansion(draggedGroup, { force: true, align: "top" })
-    resetGroupDragState()
-  }
-
-  const handleGroupDragEnd = () => {
-    resetGroupDragState()
-  }
 
   const getNextGroupName = useCallback(() => {
     const existingGroupsLower = new Set(Array.from(groupedColors.keys(), (group) => group.toLowerCase()))
@@ -1726,7 +1163,7 @@ const GROUP_SNAP_HOLD_MS = 160
             onGroupReorderDrop={(event) => handleGroupDrop(event, groupName)}
             onCardDragOver={(event) => handleDragOverGroup(event, groupName)}
             onCardDrop={handleDrop}
-            onInsertZoneDragOver={(event, position) => handleGroupInsertZoneDragOver(event, groupName, position)}
+            onInsertZoneDragOver={(event) => handleGroupInsertZoneDragOver(event)}
             onInsertZoneDrop={(event, position) => handleGroupInsertZoneDrop(event, groupName, position)}
             header={header}
             addButton={addButton}
