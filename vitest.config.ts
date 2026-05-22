@@ -8,8 +8,8 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "node",
-    include: ["lib/**/*.test.ts"],
+    environment: "jsdom",
+    include: ["lib/**/*.test.ts", "components/**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**", ".next/**"],
   },
 })
