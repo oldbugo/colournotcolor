@@ -50,20 +50,20 @@ import {
   FILTER_STEP_VALUES,
   useContrastFilters,
 } from "@/components/contrast-grid/use-contrast-filters"
+import { ContrastGridStyles } from "@/components/contrast-grid/contrast-grid-styles"
 import { ContrastOverlayPanel } from "@/components/contrast-grid/contrast-overlay-panel"
 import {
   FilterMenuColorGroups,
   FilterMenuNumberSection,
 } from "@/components/contrast-grid/filter-menu-content"
 import { useGridPan } from "@/components/contrast-grid/use-grid-pan"
+import { useHeaderDnd } from "@/components/contrast-grid/use-header-dnd"
 import {
   ConfirmActionButton,
   FocusIndicator,
   ResizeCornerHandle,
   SwatchTile,
 } from "@/components/contrast-grid/visual-components"
-import { computeDragMode, computeInsertTargetIndex } from "@/lib/index-dnd"
-import { computeHorizontalIndicatorPosition, computeVerticalIndicatorPosition } from "@/lib/dnd-indicators"
 
 const CARD_SIZE = 132 // px
 const GAP_SIZE = 16 // px (gap-4)
@@ -215,14 +215,6 @@ export function ContrastGrid({
 }: ContrastGridProps) {
   const [hoveredFgIndex, setHoveredFgIndex] = useState<number | null>(null)
   const [hoveredBgIndex, setHoveredBgIndex] = useState<number | null>(null)
-  const [draggedFgIndex, setDraggedFgIndex] = useState<number | null>(null)
-  const [draggedBgIndex, setDraggedBgIndex] = useState<number | null>(null)
-  const [dragOverFgIndex, setDragOverFgIndex] = useState<number | null>(null)
-  const [dragOverBgIndex, setDragOverBgIndex] = useState<number | null>(null)
-  const [fgDragMode, setFgDragMode] = useState<"swap" | "insert" | null>(null)
-  const [bgDragMode, setBgDragMode] = useState<"swap" | "insert" | null>(null)
-  const [fgInsertPosition, setFgInsertPosition] = useState<"before" | "after" | null>(null)
-  const [bgInsertPosition, setBgInsertPosition] = useState<"before" | "after" | null>(null)
   const {
     rowFilterIds,
     setRowFilterIds,
@@ -680,20 +672,6 @@ export function ContrastGrid({
 
 
 
-  const [fgAnimationState, setFgAnimationState] = useState<{
-    draggedIndex: number
-    targetIndex: number
-  } | null>(null)
-  const [bgAnimationState, setBgAnimationState] = useState<{
-    draggedIndex: number
-    targetIndex: number
-  } | null>(null)
-  const [fgIndicatorPosition, setFgIndicatorPosition] = useState<{ left: number; top: number; height?: number } | null>(
-    null,
-  )
-  const [bgIndicatorPosition, setBgIndicatorPosition] = useState<{ left: number; top: number; width?: number } | null>(
-    null,
-  )
   const rowFilterTriggerRef = useRef<HTMLButtonElement | null>(null)
   const columnFilterTriggerRef = useRef<HTMLButtonElement | null>(null)
   const filterOptionsTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -713,8 +691,6 @@ export function ContrastGrid({
   const [fgOverlayStyle, setFgOverlayStyle] = useState<React.CSSProperties | null>(null)
   const [bgOverlayStyle, setBgOverlayStyle] = useState<React.CSSProperties | null>(null)
 
-  const [fgSwapHighlightStyle, setFgSwapHighlightStyle] = useState<React.CSSProperties | null>(null)
-  const [bgSwapHighlightStyle, setBgSwapHighlightStyle] = useState<React.CSSProperties | null>(null)
 
   const [requirementId, setRequirementId] = useState<ContrastRequirementId>(
     CONTRAST_REQUIREMENTS[DEFAULT_REQUIREMENT_INDEX]?.id ?? "normal-text",
@@ -1140,6 +1116,55 @@ const colorEntries = useMemo<ColorEntry[]>(
     [],
   )
 
+  const {
+    draggedFgIndex,
+    draggedBgIndex,
+    fgDragMode,
+    bgDragMode,
+    fgIndicatorPosition,
+    bgIndicatorPosition,
+    fgSwapHighlightStyle,
+    bgSwapHighlightStyle,
+    isAnyHeaderDragging,
+    handleFgDragStart,
+    handleFgDragOver,
+    handleFgDrop,
+    handleFgDragEnd,
+    handleBgDragStart,
+    handleBgDragOver,
+    handleBgGapDragOver,
+    handleBgDrop,
+    handleBgDragEnd,
+    handleDropOnTrash,
+    handleFgHeaderClick,
+    handleBgHeaderClick,
+    handleCellFgDragOver,
+    handleCellBgDragOver,
+    handleGridDragOver,
+    getFgAnimationStyle,
+    getBgAnimationStyle,
+    getCellAnimationStyle,
+  } = useHeaderDnd({
+    foregroundBaseIndexes,
+    backgroundBaseIndexes,
+    foregroundColumnCount: foregroundColors.length,
+    backgroundRowCount: backgroundColors.length,
+    colorsLength: colors.length,
+    gridRef,
+    fgHeaderRefs,
+    bgLabelRefs,
+    geometry: {
+      cardWithGap: CARD_WITH_GAP,
+      gapSize: GAP_SIZE,
+      animationDuration: ANIMATION_DURATION,
+      rowLabelWidth: ROW_LABEL_WIDTH,
+    },
+    onSwapColors,
+    onReorderColors,
+    onColorEdit,
+    onRemoveColor,
+  })
+
   useEffect(() => {
     if (hoveredFgIndex !== null && gridRef.current) {
       const header = fgHeaderRefs.current.get(hoveredFgIndex)
@@ -1184,450 +1209,6 @@ const colorEntries = useMemo<ColorEntry[]>(
     }
   }, [hoveredBgIndex, foregroundColors.length])
 
-  useEffect(() => {
-    if (dragOverFgIndex !== null && fgDragMode === "swap" && gridRef.current) {
-      const header = fgHeaderRefs.current.get(dragOverFgIndex)
-      if (header) {
-        const headerRect = header.getBoundingClientRect()
-        const highlightHeight = (backgroundColors.length + 1) * CARD_WITH_GAP - GAP_SIZE + 44 // +1 for the add button row
-
-        setFgSwapHighlightStyle({
-          left: headerRect.left - 8,
-          top: headerRect.top - 8,
-          width: headerRect.width + 16,
-          height: highlightHeight,
-        })
-      }
-    } else {
-      setFgSwapHighlightStyle(null)
-    }
-  }, [dragOverFgIndex, fgDragMode, backgroundColors.length])
-
-  useEffect(() => {
-    if (dragOverBgIndex !== null && bgDragMode === "swap" && gridRef.current) {
-      const label = bgLabelRefs.current.get(dragOverBgIndex)
-      if (label) {
-        const labelRect = label.getBoundingClientRect()
-        const gridRect = gridRef.current.getBoundingClientRect()
-
-        const highlightWidth = 164 + foregroundColors.length * CARD_WITH_GAP
-
-        setBgSwapHighlightStyle({
-          left: gridRect.left - 8,
-          top: labelRect.top - 8,
-          width: highlightWidth,
-          height: labelRect.height + 16,
-        })
-      }
-    } else {
-      setBgSwapHighlightStyle(null)
-    }
-  }, [dragOverBgIndex, bgDragMode, foregroundColors.length])
-
-  useEffect(() => {
-    if (dragOverFgIndex !== null && fgDragMode === "insert" && fgInsertPosition) {
-      const header = fgHeaderRefs.current.get(dragOverFgIndex)
-      if (header && gridRef.current) {
-        const rect = header.getBoundingClientRect()
-        const containerRect = gridRef.current.getBoundingClientRect()
-
-        const indicator = computeVerticalIndicatorPosition({
-          containerRect,
-          targetRect: rect,
-          position: fgInsertPosition,
-          gap: GAP_SIZE,
-          offset: GAP_SIZE / 2 + 1,
-          span: "container",
-        })
-
-        setFgIndicatorPosition(indicator)
-      }
-    } else {
-      setFgIndicatorPosition(null)
-    }
-  }, [dragOverFgIndex, fgDragMode, fgInsertPosition])
-
-  useEffect(() => {
-    if (dragOverBgIndex !== null && bgDragMode === "insert" && bgInsertPosition) {
-      const label = bgLabelRefs.current.get(dragOverBgIndex)
-      if (label && gridRef.current) {
-        const rect = label.getBoundingClientRect()
-        const containerRect = gridRef.current.getBoundingClientRect()
-
-        const indicator = computeHorizontalIndicatorPosition({
-          containerRect,
-          targetRect: rect,
-          position: bgInsertPosition,
-          gap: GAP_SIZE,
-          offset: GAP_SIZE / 2,
-          span: "container",
-        })
-
-        setBgIndicatorPosition({
-          left: indicator.left,
-          top: indicator.top - 2,
-          width: indicator.width,
-        })
-      }
-    } else {
-      setBgIndicatorPosition(null)
-    }
-  }, [dragOverBgIndex, bgDragMode, bgInsertPosition])
-
-  useEffect(() => {
-    if (fgAnimationState) {
-      const timer = setTimeout(() => {
-        setFgAnimationState(null)
-      }, ANIMATION_DURATION * 1000)
-      return () => clearTimeout(timer)
-    }
-  }, [fgAnimationState])
-
-  useEffect(() => {
-    if (bgAnimationState) {
-      const timer = setTimeout(() => {
-        setBgAnimationState(null)
-      }, ANIMATION_DURATION * 1000)
-      return () => clearTimeout(timer)
-    }
-  }, [bgAnimationState])
-
-  const handleFgDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedFgIndex(index)
-    e.dataTransfer.effectAllowed = "move"
-  }
-
-  const applyFgDragIntent = (index: number, pointerRatio: number) => {
-    const intent = computeDragMode(pointerRatio)
-    setFgDragMode(intent.mode)
-    setFgInsertPosition(intent.insertPosition)
-    setDragOverFgIndex(index)
-  }
-
-  const applyBgDragIntent = (index: number, pointerRatio: number) => {
-    const intent = computeDragMode(pointerRatio)
-    setBgDragMode(intent.mode)
-    setBgInsertPosition(intent.insertPosition)
-    setDragOverBgIndex(index)
-  }
-
-  const handleFgDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault()
-    if (draggedFgIndex !== null && draggedFgIndex !== index && draggedBgIndex === null) {
-      const rect = e.currentTarget.getBoundingClientRect()
-      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
-      applyFgDragIntent(index, pointerRatio)
-    }
-  }
-
-  const handleFgDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    if (draggedFgIndex === null || dragOverFgIndex === null) {
-      return
-    }
-
-    const fromBaseIndex = foregroundBaseIndexes[draggedFgIndex]
-    if (typeof fromBaseIndex !== "number") {
-      handleFgDragEnd()
-      return
-    }
-
-    if (fgDragMode === "swap") {
-      const targetBaseIndex = foregroundBaseIndexes[dragOverFgIndex]
-      if (typeof targetBaseIndex !== "number") {
-        handleFgDragEnd()
-        return
-      }
-      onSwapColors(fromBaseIndex, targetBaseIndex)
-    } else if (fgDragMode === "insert" && fgInsertPosition) {
-      const targetIndex = computeInsertTargetIndex({
-        draggedIndex: draggedFgIndex,
-        dragOverIndex: dragOverFgIndex,
-        insertPosition: fgInsertPosition,
-        length: foregroundColors.length,
-      })
-
-      if (targetIndex === null) {
-        handleFgDragEnd()
-        return
-      }
-
-      const insertBeforeBase =
-        targetIndex >= foregroundBaseIndexes.length ? colors.length : foregroundBaseIndexes[targetIndex]
-      if (typeof insertBeforeBase !== "number") {
-        handleFgDragEnd()
-        return
-      }
-      const fromBaseIndex = foregroundBaseIndexes[draggedFgIndex]
-      if (typeof fromBaseIndex !== "number") {
-        handleFgDragEnd()
-        return
-      }
-      const isMovingLeft = targetIndex <= draggedFgIndex
-
-      setFgAnimationState({
-        draggedIndex: draggedFgIndex,
-        targetIndex: isMovingLeft ? targetIndex : targetIndex - 1,
-      })
-      onReorderColors(fromBaseIndex, insertBeforeBase)
-    }
-    handleFgDragEnd()
-  }
-
-  const handleFgDragEnd = () => {
-    setDraggedFgIndex(null)
-    setDragOverFgIndex(null)
-    setFgDragMode(null)
-    setFgInsertPosition(null)
-  }
-
-  const handleBgDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedBgIndex(index)
-    e.dataTransfer.effectAllowed = "move"
-  }
-
-  const handleBgDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault()
-    if (draggedBgIndex !== null && draggedBgIndex !== index && draggedFgIndex === null) {
-      const rect = e.currentTarget.getBoundingClientRect()
-      const pointerRatio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5
-      applyBgDragIntent(index, pointerRatio)
-    }
-  }
-
-  const handleBgGapDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    // Keep the current drag state when over gaps
-  }
-
-  const handleBgDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    if (draggedBgIndex === null || dragOverBgIndex === null) {
-      return
-    }
-
-    if (bgDragMode === "swap") {
-      const fromBaseIndex = backgroundBaseIndexes[draggedBgIndex]
-      const targetBaseIndex = backgroundBaseIndexes[dragOverBgIndex]
-      if (typeof fromBaseIndex !== "number" || typeof targetBaseIndex !== "number") {
-        handleBgDragEnd()
-        return
-      }
-      onSwapColors(fromBaseIndex, targetBaseIndex)
-    } else if (bgDragMode === "insert" && bgInsertPosition) {
-      const targetIndex = computeInsertTargetIndex({
-        draggedIndex: draggedBgIndex,
-        dragOverIndex: dragOverBgIndex,
-        insertPosition: bgInsertPosition,
-        length: backgroundColors.length,
-      })
-
-      if (targetIndex === null) {
-        handleBgDragEnd()
-        return
-      }
-
-      const insertBeforeBase =
-        targetIndex >= backgroundBaseIndexes.length ? colors.length : backgroundBaseIndexes[targetIndex]
-      const fromBaseIndex = backgroundBaseIndexes[draggedBgIndex]
-      if (typeof fromBaseIndex !== "number" || typeof insertBeforeBase !== "number") {
-        handleBgDragEnd()
-        return
-      }
-      const isMovingUp = targetIndex <= draggedBgIndex
-
-      setBgAnimationState({
-        draggedIndex: draggedBgIndex,
-        targetIndex: isMovingUp ? targetIndex : targetIndex - 1,
-      })
-      onReorderColors(fromBaseIndex, insertBeforeBase)
-    }
-    handleBgDragEnd()
-  }
-
-  const handleBgDragEnd = () => {
-    setDraggedBgIndex(null)
-    setDragOverBgIndex(null)
-    setBgDragMode(null)
-    setBgInsertPosition(null)
-  }
-
-  const handleDropOnTrash = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-
-    let baseIndex: number | null = null
-    if (draggedFgIndex !== null) {
-      baseIndex = foregroundBaseIndexes[draggedFgIndex] ?? null
-    } else if (draggedBgIndex !== null) {
-      baseIndex = backgroundBaseIndexes[draggedBgIndex] ?? null
-    }
-
-    if (typeof baseIndex === "number") {
-      onColorEdit?.(-1)
-      onRemoveColor?.(baseIndex)
-    }
-
-    if (draggedFgIndex !== null) {
-      handleFgDragEnd()
-    } else if (draggedBgIndex !== null) {
-      handleBgDragEnd()
-    }
-  }
-
-  const handleFgHeaderClick = (index: number, e: React.MouseEvent) => {
-    const target = e.target as HTMLElement
-    if (target.closest("[data-drag-handle]")) {
-      return
-    }
-    const baseIndex = foregroundBaseIndexes[index]
-    if (typeof baseIndex !== "number") {
-      return
-    }
-    onColorEdit?.(baseIndex)
-  }
-
-  const handleBgHeaderClick = (index: number, e: React.MouseEvent) => {
-    const target = e.target as HTMLElement
-    if (target.closest("[data-drag-handle]")) {
-      return
-    }
-    const baseIndex = backgroundBaseIndexes[index]
-    if (typeof baseIndex !== "number") {
-      return
-    }
-    onColorEdit?.(baseIndex)
-  }
-
-  const getFgAnimationStyle = (currentIndex: number) => {
-    if (!fgAnimationState) return {}
-
-    const { draggedIndex, targetIndex } = fgAnimationState
-
-    // The dragged item at its new position should zoom out
-    if (currentIndex === targetIndex) {
-      return {
-        animation: `zoomOut ${ANIMATION_DURATION}s ease-out`,
-      }
-    }
-
-    // The dragged item at its original position should slide away
-    if (currentIndex === draggedIndex) {
-      if (draggedIndex < targetIndex) {
-        return {
-          animation: `slideLeft ${ANIMATION_DURATION}s ease-out`,
-        }
-      } else {
-        return {
-          animation: `slideRight ${ANIMATION_DURATION}s ease-out`,
-        }
-      }
-    }
-
-    // Items that were displaced should slide
-    if (draggedIndex < targetIndex) {
-      // Dragged from left to right, items between should slide left
-      if (currentIndex > draggedIndex && currentIndex <= targetIndex) {
-        return {
-          animation: `slideLeft ${ANIMATION_DURATION}s ease-out`,
-        }
-      }
-    } else {
-      // Dragged from right to left, items between should slide right
-      if (currentIndex >= targetIndex && currentIndex < draggedIndex) {
-        return {
-          animation: `slideRight ${ANIMATION_DURATION}s ease-out`,
-        }
-      }
-    }
-
-    return {}
-  }
-
-  const getBgAnimationStyle = (currentIndex: number) => {
-    if (!bgAnimationState) return {}
-
-    const { draggedIndex, targetIndex } = bgAnimationState
-
-    // The dragged item at its new position should zoom out
-    if (currentIndex === targetIndex) {
-      return {
-        animation: `zoomOut ${ANIMATION_DURATION}s ease-out`,
-      }
-    }
-
-    // The dragged item at its original position should slide away
-    if (currentIndex === draggedIndex) {
-      if (draggedIndex < targetIndex) {
-        return {
-          animation: `slideUp ${ANIMATION_DURATION}s ease-out`,
-        }
-      } else {
-        return {
-          animation: `slideDown ${ANIMATION_DURATION}s ease-out`,
-        }
-      }
-    }
-
-    // Items that were displaced should slide
-    if (draggedIndex < targetIndex) {
-      // Dragged from top to bottom, items between should slide up
-      if (currentIndex > draggedIndex && currentIndex <= targetIndex) {
-        return {
-          animation: `slideUp ${ANIMATION_DURATION}s ease-out`,
-        }
-      }
-    } else {
-      // Dragged from bottom to top, items between should slide down
-      if (currentIndex >= targetIndex && currentIndex < draggedIndex) {
-        return {
-          animation: `slideDown ${ANIMATION_DURATION}s ease-out`,
-        }
-      }
-    }
-
-    return {}
-  }
-
-  const getCellAnimationStyle = (fgIndex: number, bgIndex: number) => {
-    const fgStyle = getFgAnimationStyle(fgIndex)
-    const bgStyle = getBgAnimationStyle(bgIndex)
-
-    // If either the column or row is animating, apply that animation to the cell
-    if (Object.keys(fgStyle).length > 0) return fgStyle
-    if (Object.keys(bgStyle).length > 0) return bgStyle
-
-    return {}
-  }
-
-  const handleCellFgDragOver = (e: React.DragEvent, fgIndex: number) => {
-    e.preventDefault()
-    if (draggedFgIndex !== null && draggedFgIndex !== fgIndex && draggedBgIndex === null) {
-      const rect = e.currentTarget.getBoundingClientRect()
-      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
-      applyFgDragIntent(fgIndex, pointerRatio)
-    }
-  }
-
-  const handleCellBgDragOver = (e: React.DragEvent, bgIndex: number) => {
-    e.preventDefault()
-    e.stopPropagation() // Stop propagation to prevent conflicts
-
-    if (draggedBgIndex === null || draggedBgIndex === bgIndex || draggedFgIndex !== null || !gridRef.current) {
-      return
-    }
-
-    // This ensures consistent threshold logic across headers, cells, and gaps
-    const rect = e.currentTarget.getBoundingClientRect()
-    const pointerRatio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5
-    applyBgDragIntent(bgIndex, pointerRatio)
-  }
-
-  const handleGridDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-  }
-
-  const isAnyHeaderDragging = draggedFgIndex !== null || draggedBgIndex !== null
   const matrixWidth = ROW_LABEL_WIDTH + GAP_SIZE + foregroundColors.length * CARD_WITH_GAP + CARD_SIZE
   const matrixHeight = HEADER_ROW_HEIGHT + GAP_SIZE + backgroundColors.length * CARD_WITH_GAP + CARD_SIZE
   const bottomAddRowTop = MATRIX_TOP_OFFSET + backgroundColors.length * CARD_WITH_GAP
@@ -1682,71 +1263,7 @@ const colorEntries = useMemo<ColorEntry[]>(
 
   return (
     <div className="flex h-full min-h-[320px] min-w-0 flex-col overflow-hidden pb-4 pl-4 pt-4 pr-0">
-      <style jsx>{`
-        @keyframes zoomOut {
-          from {
-            transform: scale(1.15);
-            opacity: 0.8;
-          }
-          to {
-            transform: scale(1);
-            opacity: 1;
-          }
-        }
-        @keyframes slideLeft {
-          from {
-            transform: translateX(${CARD_WITH_GAP}px);
-          }
-          to {
-            transform: translateX(0);
-          }
-        }
-        @keyframes slideRight {
-          from {
-            transform: translateX(-${CARD_WITH_GAP}px);
-          }
-          to {
-            transform: translateX(0);
-          }
-        }
-        @keyframes slideUp {
-          from {
-            transform: translateY(${CARD_WITH_GAP}px);
-          }
-          to {
-            transform: translateY(0);
-          }
-        }
-        @keyframes slideDown {
-          from {
-            transform: translateY(-${CARD_WITH_GAP}px);
-          }
-          to {
-            transform: translateY(0);
-          }
-        }
-        :global(.contrast-scroll-area) {
-          scrollbar-width: thick;
-          scrollbar-color: rgba(79, 79, 79, 0.7) rgba(0, 0, 0, 0.12);
-        }
-        :global(.contrast-scroll-area::-webkit-scrollbar) {
-          width: 16px;
-          height: 16px;
-        }
-        :global(.contrast-scroll-area::-webkit-scrollbar-track) {
-          background-color: rgba(0, 0, 0, 0.12);
-          border-radius: 999px;
-        }
-        :global(.contrast-scroll-area::-webkit-scrollbar-thumb) {
-          background-color: rgba(79, 79, 79, 0.7);
-          border-radius: 999px;
-          border: 4px solid rgba(0, 0, 0, 0);
-          background-clip: content-box;
-        }
-        :global(.contrast-scroll-area:hover::-webkit-scrollbar-thumb) {
-          background-color: rgba(55, 55, 55, 0.85);
-        }
-      `}</style>
+      <ContrastGridStyles cardWithGap={CARD_WITH_GAP} />
 
       <div className="mb-6 flex shrink-0 flex-wrap gap-4">
         <div className="space-y-3 min-w-[320px] max-w-[420px]">
