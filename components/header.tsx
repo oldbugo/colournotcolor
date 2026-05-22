@@ -42,6 +42,7 @@ type HeaderProps = {
   onUpdatePaletteName?: (name: string) => void
   onDuplicatePalette?: () => void
   onDeletePalette?: () => void
+  canDeletePalette?: boolean
   onImportPalette?: (palette: { name: string; colors: ColorSwatch[] }) => void
   collapseGroupsDuringGroupDrag?: boolean
   onCollapseGroupsDuringDragChange?: (value: boolean) => void
@@ -57,6 +58,7 @@ export function Header({
   onUpdatePaletteName,
   onDuplicatePalette,
   onDeletePalette,
+  canDeletePalette = true,
   onImportPalette,
   collapseGroupsDuringGroupDrag = false,
   onCollapseGroupsDuringDragChange,
@@ -307,7 +309,9 @@ export function Header({
                   variant="outline"
                   size="sm"
                   onClick={() => setShowDeleteDialog(true)}
-                  className="cursor-pointer rounded-md border font-semibold h-8"
+                  disabled={!canDeletePalette}
+                  title={canDeletePalette ? undefined : "You must keep at least one palette"}
+                  className="cursor-pointer rounded-md border font-semibold h-8 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Trash2 className="mr-2 h-3.5 w-3.5" />
                   Delete

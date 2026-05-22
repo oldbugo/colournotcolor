@@ -52,6 +52,7 @@ type ColorCardProps = {
   onCardClick: (event: React.MouseEvent<HTMLDivElement>) => void
   onHandleHover: (hovering: boolean) => void
   onSwatchClick: () => void
+  onHandleKeyboardMove?: (direction: -1 | 1) => boolean
   valueMode?: ColorFormatMode
 }
 
@@ -78,6 +79,7 @@ export function ColorCard({
   onCardClick,
   onHandleHover,
   onSwatchClick,
+  onHandleKeyboardMove,
   valueMode,
 }: ColorCardProps) {
   const {
@@ -161,6 +163,14 @@ export function ColorCard({
           highlightActiveEditing ? "border-2 border-dashed border-slate-500" : "border border-transparent"
         } ${isDragging ? "opacity-70 animate-wiggle" : "opacity-100"}`}
         draggable
+        role="group"
+        aria-roledescription="Draggable colour swatch"
+        aria-label={
+          color.name && color.name.toLowerCase() !== canonicalHex.toLowerCase()
+            ? `${color.name} (${canonicalHex.toUpperCase()})`
+            : canonicalHex.toUpperCase()
+        }
+        aria-grabbed={isDragging || undefined}
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = "move"
           onDragStart(event)
@@ -217,6 +227,7 @@ export function ColorCard({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={`Rename ${color.name || canonicalHex}`}
                 className="h-6 w-6 rounded-md border border-transparent text-muted-foreground hover:border-slate-300"
                 onClick={(event) => {
                   event.stopPropagation()
@@ -228,6 +239,7 @@ export function ColorCard({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={`Delete ${color.name || canonicalHex}`}
                 className="h-6 w-6 rounded-md border border-transparent text-muted-foreground hover:border-slate-300"
                 onClick={(event) => {
                   event.stopPropagation()
@@ -240,8 +252,10 @@ export function ColorCard({
           </div>
 
           <div className="w-full overflow-hidden rounded-lg border border-black bg-white shadow-sm">
-            <div
-              className="h-24 w-full border-b border-black"
+            <button
+              type="button"
+              aria-label={`Edit ${color.name || canonicalHex}`}
+              className="h-24 w-full cursor-pointer border-b border-black"
               style={{ backgroundColor: color.hex }}
               onClick={(event) => {
                 event.stopPropagation()
@@ -260,6 +274,7 @@ export function ColorCard({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={`Copy ${displayedValue} to clipboard`}
                 className="h-7 w-7 rounded-md border border-transparent text-muted-foreground hover:border-slate-300"
                 onClick={(event) => {
                   event.stopPropagation()
@@ -279,6 +294,9 @@ export function ColorCard({
             variant="inline"
             highlighted={highlightHandle}
             draggable
+            role="button"
+            tabIndex={0}
+            aria-label={`Drag ${color.name || canonicalHex} to reorder. Use arrow left or right to swap within the group.`}
             className={`${isDragging ? "cursor-grabbing" : ""}`}
             onMouseEnter={() => onHandleHover(true)}
             onMouseLeave={() => onHandleHover(false)}
@@ -288,6 +306,14 @@ export function ColorCard({
             }}
             onDragEnd={onDragEnd}
             onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (!onHandleKeyboardMove) return
+              if (event.key === "ArrowLeft") {
+                if (onHandleKeyboardMove(-1)) event.preventDefault()
+              } else if (event.key === "ArrowRight") {
+                if (onHandleKeyboardMove(1)) event.preventDefault()
+              }
+            }}
           />
         </div>
       </div>

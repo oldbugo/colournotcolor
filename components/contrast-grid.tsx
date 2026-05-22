@@ -1138,6 +1138,8 @@ const colorEntries = useMemo<ColorEntry[]>(
     handleDropOnTrash,
     handleFgHeaderClick,
     handleBgHeaderClick,
+    handleFgHandleKeyDown,
+    handleBgHandleKeyDown,
     handleCellFgDragOver,
     handleCellBgDragOver,
     handleGridDragOver,
@@ -1845,6 +1847,9 @@ const colorEntries = useMemo<ColorEntry[]>(
                       transform: isDragging ? "scale(0.95)" : "scale(1)",
                       ...getFgAnimationStyle(i),
                     }}
+                    role="columnheader"
+                    aria-label={`Foreground column ${i + 1}: ${displayText}`}
+                    aria-grabbed={isDragging || undefined}
                     onDragOver={(e) => handleFgDragOver(e, i)}
                     onDrop={handleFgDrop}
                     data-color-card
@@ -1854,12 +1859,20 @@ const colorEntries = useMemo<ColorEntry[]>(
                     <DragHandle
                       draggable
                       data-drag-handle
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Drag foreground ${displayText} to reorder. Use arrow left or right to swap with the adjacent column.`}
                       className="mb-1"
                       highlighted={hoveredFgIndex === i}
                       onDragStart={(event) => handleFgDragStart(event, i)}
                       onDragEnd={handleFgDragEnd}
                       onMouseEnter={() => setHoveredFgIndex(i)}
                       onMouseLeave={() => setHoveredFgIndex(null)}
+                      onKeyDown={(event) => {
+                        if (handleFgHandleKeyDown(i, event)) {
+                          event.preventDefault()
+                        }
+                      }}
                     />
 
                     <SwatchTile hexColor={hexColor} label={displayText} onClick={(e) => handleFgHeaderClick(i, e)} />
@@ -1920,6 +1933,9 @@ const colorEntries = useMemo<ColorEntry[]>(
                       transform: isBgDragging ? "scale(0.95)" : "scale(1)",
                       ...getBgAnimationStyle(bgIndex),
                     }}
+                    role="rowheader"
+                    aria-label={`Background row ${bgIndex + 1}: ${bgDisplayText}`}
+                    aria-grabbed={isBgDragging || undefined}
                     onDragOver={(e) => handleBgDragOver(e, bgIndex)}
                     onDrop={handleBgDrop}
                     data-color-card
@@ -1930,12 +1946,20 @@ const colorEntries = useMemo<ColorEntry[]>(
                       draggable
                       data-drag-handle
                       orientation="vertical"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Drag background ${bgDisplayText} to reorder. Use arrow up or down to swap with the adjacent row.`}
                       className="px-1 py-2 shrink-0"
                       highlighted={hoveredBgIndex === bgIndex}
                       onDragStart={(event) => handleBgDragStart(event, bgIndex)}
                       onDragEnd={handleBgDragEnd}
                       onMouseEnter={() => setHoveredBgIndex(bgIndex)}
                       onMouseLeave={() => setHoveredBgIndex(null)}
+                      onKeyDown={(event) => {
+                        if (handleBgHandleKeyDown(bgIndex, event)) {
+                          event.preventDefault()
+                        }
+                      }}
                     />
 
                     <div className="ml-auto flex flex-col items-center gap-1">

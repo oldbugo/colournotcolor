@@ -349,6 +349,73 @@ describe("useHeaderDnd", () => {
     expect(result.current.getFgAnimationStyle(0)).toEqual({})
     expect(result.current.getCellAnimationStyle(0, 0)).toEqual({})
   })
+
+  it("ArrowRight on an FG header swaps with the next column via onSwapColors", () => {
+    const onSwapColors = vi.fn()
+    const { result } = renderHook(() =>
+      useHeaderDnd(
+        buildHookOptions({
+          foregroundBaseIndexes: [4, 2, 7],
+          onSwapColors,
+        }),
+      ),
+    )
+
+    const handled = result.current.handleFgHandleKeyDown(0, {
+      key: "ArrowRight",
+    } as React.KeyboardEvent)
+
+    expect(handled).toBe(true)
+    expect(onSwapColors).toHaveBeenCalledWith(4, 2)
+  })
+
+  it("ArrowLeft on the leftmost FG header is a no-op but still consumed", () => {
+    const onSwapColors = vi.fn()
+    const { result } = renderHook(() =>
+      useHeaderDnd(buildHookOptions({ onSwapColors })),
+    )
+
+    const handled = result.current.handleFgHandleKeyDown(0, {
+      key: "ArrowLeft",
+    } as React.KeyboardEvent)
+
+    expect(handled).toBe(true)
+    expect(onSwapColors).not.toHaveBeenCalled()
+  })
+
+  it("ArrowDown on a BG header swaps with the next row", () => {
+    const onSwapColors = vi.fn()
+    const { result } = renderHook(() =>
+      useHeaderDnd(
+        buildHookOptions({
+          backgroundBaseIndexes: [9, 5, 1],
+          onSwapColors,
+        }),
+      ),
+    )
+
+    const handled = result.current.handleBgHandleKeyDown(1, {
+      key: "ArrowDown",
+    } as React.KeyboardEvent)
+
+    expect(handled).toBe(true)
+    expect(onSwapColors).toHaveBeenCalledWith(5, 1)
+  })
+
+  it("non-arrow keys are not handled by either keyboard handler", () => {
+    const onSwapColors = vi.fn()
+    const { result } = renderHook(() =>
+      useHeaderDnd(buildHookOptions({ onSwapColors })),
+    )
+
+    expect(
+      result.current.handleFgHandleKeyDown(0, { key: "Enter" } as React.KeyboardEvent),
+    ).toBe(false)
+    expect(
+      result.current.handleBgHandleKeyDown(0, { key: "Tab" } as React.KeyboardEvent),
+    ).toBe(false)
+    expect(onSwapColors).not.toHaveBeenCalled()
+  })
 })
 
 describe("useHeaderDnd ref handling", () => {

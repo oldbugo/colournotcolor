@@ -224,8 +224,7 @@ const commitEditingColor = useCallback(
   }
 
   const deletePalette = () => {
-    if (palettes.length === 1) {
-      alert("Cannot delete the last palette")
+    if (palettes.length <= 1) {
       return
     }
     const remainingPalettes = palettes.filter((p) => p.id !== activePaletteId)
@@ -346,6 +345,7 @@ const commitEditingColor = useCallback(
         onUpdatePaletteName={(name) => updatePalette(activePalette.id, { name })}
         onDuplicatePalette={duplicatePalette}
         onDeletePalette={deletePalette}
+        canDeletePalette={palettes.length > 1}
         onImportPalette={handleImportPalette}
         collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
         onCollapseGroupsDuringDragChange={setCollapseGroupsDuringGroupDrag}

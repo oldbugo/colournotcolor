@@ -404,6 +404,51 @@ export function useHeaderDnd({
     onColorEdit?.(baseIndex)
   }
 
+  /**
+   * Keyboard reordering for the foreground (column) headers.
+   * ArrowLeft/ArrowRight swap with the adjacent column.
+   * Returns true if the key was handled so the caller can preventDefault.
+   */
+  const handleFgHandleKeyDown = (index: number, e: React.KeyboardEvent): boolean => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") {
+      return false
+    }
+    const direction = e.key === "ArrowLeft" ? -1 : 1
+    const targetIndex = index + direction
+    if (targetIndex < 0 || targetIndex >= foregroundColumnCount) {
+      return true
+    }
+    const fromBase = foregroundBaseIndexes[index]
+    const toBase = foregroundBaseIndexes[targetIndex]
+    if (typeof fromBase !== "number" || typeof toBase !== "number") {
+      return true
+    }
+    onSwapColors(fromBase, toBase)
+    return true
+  }
+
+  /**
+   * Keyboard reordering for the background (row) headers.
+   * ArrowUp/ArrowDown swap with the adjacent row.
+   */
+  const handleBgHandleKeyDown = (index: number, e: React.KeyboardEvent): boolean => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") {
+      return false
+    }
+    const direction = e.key === "ArrowUp" ? -1 : 1
+    const targetIndex = index + direction
+    if (targetIndex < 0 || targetIndex >= backgroundRowCount) {
+      return true
+    }
+    const fromBase = backgroundBaseIndexes[index]
+    const toBase = backgroundBaseIndexes[targetIndex]
+    if (typeof fromBase !== "number" || typeof toBase !== "number") {
+      return true
+    }
+    onSwapColors(fromBase, toBase)
+    return true
+  }
+
   const handleCellFgDragOver = (e: React.DragEvent, fgIndex: number) => {
     e.preventDefault()
     if (draggedFgIndex !== null && draggedFgIndex !== fgIndex && draggedBgIndex === null) {
@@ -556,6 +601,8 @@ export function useHeaderDnd({
     handleDropOnTrash,
     handleFgHeaderClick,
     handleBgHeaderClick,
+    handleFgHandleKeyDown,
+    handleBgHandleKeyDown,
     handleCellFgDragOver,
     handleCellBgDragOver,
     handleGridDragOver,

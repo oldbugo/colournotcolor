@@ -551,6 +551,30 @@ const GROUP_SNAP_HOLD_MS = 160
   const groupedColors = groupSwatchesByCategory(swatches)
   const groupCount = groupedColors.size
 
+  /**
+   * Keyboard reorder for a colour card. Swaps the swatch at actualIndex with the
+   * adjacent swatch within the same group (arrow left/right). Returns true if
+   * the move happened so the caller can preventDefault.
+   */
+  const handleCardKeyboardMove = (actualIndex: number, direction: -1 | 1): boolean => {
+    const current = swatches[actualIndex]
+    if (!current) return false
+    const currentGroupKey = effectiveGroupLabel(current).toLowerCase()
+    let cursor = actualIndex + direction
+    while (cursor >= 0 && cursor < swatches.length) {
+      const candidate = swatches[cursor]
+      if (candidate && effectiveGroupLabel(candidate).toLowerCase() === currentGroupKey) {
+        const next = [...swatches]
+        next[actualIndex] = candidate
+        next[cursor] = current
+        onBatchUpdateColors(next)
+        return true
+      }
+      cursor += direction
+    }
+    return false
+  }
+
   const {
     draggedGroup,
     dragOverGroupName,
@@ -1219,6 +1243,7 @@ const GROUP_SNAP_HOLD_MS = 160
                   onCardClick={(event) => handleCardClick(actualIndex, event)}
                   onHandleHover={(hovering) => setHoveredHandleIndex(hovering ? actualIndex : null)}
                   onSwatchClick={() => onColorEdit?.(actualIndex)}
+                  onHandleKeyboardMove={(direction) => handleCardKeyboardMove(actualIndex, direction)}
                   valueMode={cardValueMode}
                 />
               )
