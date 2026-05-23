@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { createDefaultPanelWorkspaceState } from "./panel-workspace"
 import { storage, type StoredContrastFilters } from "./storage-utils"
 
 /**
@@ -229,8 +230,21 @@ describe("storage.saveContrastFilters / loadContrastFilters", () => {
   })
 })
 
+describe("storage.savePanelWorkspace / loadPanelWorkspace", () => {
+  it("round-trips a panel workspace", () => {
+    const state = createDefaultPanelWorkspaceState()
+    storage.savePanelWorkspace(state)
+    expect(storage.loadPanelWorkspace()).toEqual(state)
+  })
+
+  it("returns null for malformed panel workspace json", () => {
+    localStorage.setItem("color-checker-panel-workspace-v1", "{not json")
+    expect(storage.loadPanelWorkspace()).toBeNull()
+  })
+})
+
 describe("storage.clearAll", () => {
-  it("removes palettes, active id, layout prefs, contrast standard, picker heights, and contrast filters", () => {
+  it("removes palettes, active id, layout prefs, contrast standard, picker heights, contrast filters, and panel workspace", () => {
     storage.savePalettes([
       { id: "1", name: "x", colors: [{ id: "a", hex: "#000", name: "", group: null }] },
     ])
@@ -245,6 +259,7 @@ describe("storage.clearAll", () => {
       columnIds: null,
       filterStepIndex: 1,
     })
+    storage.savePanelWorkspace(createDefaultPanelWorkspaceState())
 
     storage.clearAll()
 
@@ -260,5 +275,6 @@ describe("storage.clearAll", () => {
       columnIds: null,
       filterStepIndex: null,
     })
+    expect(storage.loadPanelWorkspace()).toBeNull()
   })
 })

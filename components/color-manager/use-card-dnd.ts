@@ -194,11 +194,12 @@ export function useCardDnd({
     updatePointerRef.current(e)
     e.preventDefault()
 
+    const rect = e.currentTarget.getBoundingClientRect()
+    const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
+    const intent = computeDragMode(pointerRatio)
+
     setDraggedIndex((current) => {
       if (current === null || current === index) return current
-      const rect = e.currentTarget.getBoundingClientRect()
-      const pointerRatio = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5
-      const intent = computeDragMode(pointerRatio)
       setDragMode(intent.mode)
       setInsertPosition(intent.insertPosition)
       setDragOverIndex(index)

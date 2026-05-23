@@ -1,6 +1,7 @@
 import type { ColorSwatch } from "@/types/palette"
 import { createSwatch, swatchFromLegacy } from "@/lib/color-utils"
 import type { ContrastStandard } from "@/lib/contrast-utils"
+import { normalizePanelWorkspaceState, type PanelWorkspaceState } from "@/lib/panel-workspace"
 
 const STORAGE_KEYS = {
   PALETTES: "color-checker-palettes",
@@ -9,6 +10,7 @@ const STORAGE_KEYS = {
   CONTRAST_STANDARD: "color-checker-contrast-standard",
   PALETTE_PICKER_HEIGHTS: "palette-picker-heights-v1",
   CONTRAST_GRID_FILTERS: "contrast-grid-number-filters-v1",
+  PANEL_WORKSPACE: "color-checker-panel-workspace-v1",
 } as const
 
 export type StoredPalette = {
@@ -259,6 +261,30 @@ export const storage = {
     }
   },
 
+  loadPanelWorkspace: (): PanelWorkspaceState | null => {
+    if (typeof window === "undefined") {
+      return null
+    }
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEYS.PANEL_WORKSPACE)
+      if (!raw) return null
+      return normalizePanelWorkspaceState(JSON.parse(raw))
+    } catch {
+      return null
+    }
+  },
+
+  savePanelWorkspace: (state: PanelWorkspaceState) => {
+    if (typeof window === "undefined") {
+      return
+    }
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.PANEL_WORKSPACE, JSON.stringify(state))
+    } catch {
+      // Swallow storage errors
+    }
+  },
+
   // Clear all stored data (including the contrast standard preference for a complete reset)
   clearAll: () => {
     try {
@@ -268,6 +294,7 @@ export const storage = {
       localStorage.removeItem(STORAGE_KEYS.CONTRAST_STANDARD)
       localStorage.removeItem(STORAGE_KEYS.PALETTE_PICKER_HEIGHTS)
       localStorage.removeItem(STORAGE_KEYS.CONTRAST_GRID_FILTERS)
+      localStorage.removeItem(STORAGE_KEYS.PANEL_WORKSPACE)
     } catch {
       // Swallow storage errors
     }
