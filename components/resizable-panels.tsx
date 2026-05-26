@@ -13,17 +13,32 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react"
-import { GripVertical, Maximize2, Minimize2 } from "lucide-react"
 import {
-  clamp,
+  ChevronLeft,
+  ChevronRight,
+  Grid3X3,
+  GripVertical,
+  Minimize2,
+  Pipette,
+  SwatchBook,
+  type LucideIcon,
+} from "lucide-react"
+import {
+  applySplitResizeSession,
   collapsePanelInWorkspace,
   createDefaultPanelWorkspaceState,
+  createSplitResizeSession,
+  getPanelLayoutMinSize,
   getPanelIds,
   getSplitRatioAtPath,
+  getSplitResizeGroupPath,
   isPanelId,
   movePanelInWorkspace,
+  movePanelToLayoutPathSide,
   movePanelToWorkspaceEdge,
   removePanelFromLayout,
+  resizeSplitLayoutFromSession,
+  resizeSplitSession,
   restorePanelInWorkspace,
   swapPanelsInWorkspace,
   updateSplitRatio,
@@ -58,6 +73,7 @@ type ResizablePanelsProps = {
 type PanelConfig = {
   title: string
   content: ReactNode
+  icon: LucideIcon
 }
 
 type PanelDragSource = "layout" | "dock"
@@ -93,14 +109,27 @@ type ActivePanelDrop =
       target: PanelSlotTarget
     }
   | {
+      type: "group-slot"
+      target: SplitGroupSlotTarget
+    }
+  | {
       type: "edge"
       side: WorkspaceEdgeSide
+    }
+  | {
+      type: "workspace"
     }
 
 type PanelSlotSide = Extract<DropSide, "top" | "bottom">
 type PanelSlotTarget = {
   targetId: PanelId
   side: PanelSlotSide
+}
+
+type SplitGroupSlotTarget = {
+  pathKey: string
+  path: SplitPath
+  side: DropSide
 }
 
 type SplitGapTarget = {
@@ -135,6 +164,12 @@ type DragTargetGeometry = {
     target: SplitGapTarget
     rect: MeasuredRect
   }>
+  groups: Array<{
+    pathKey: string
+    path: SplitPath
+    rect: MeasuredRect
+    panelIds: PanelId[]
+  }>
   edges: Array<{
     side: WorkspaceEdgeSide
     rect: MeasuredRect
@@ -145,21 +180,24 @@ const SPLITTER_SIZE_PX = 12
 const MIN_PANEL_WIDTH_PX = 280
 const MIN_PANEL_HEIGHT_PX = 210
 const KEYBOARD_RESIZE_STEP = 0.035
+const KEYBOARD_RESIZE_STEP_MIN_PX = 28
 const PANEL_POINTER_DRAG_START_PX = 4
 const PANEL_PREVIEW_ANIMATION_MS = 125
 const PANEL_PREVIEW_EASING = "cubic-bezier(0.2, 0.9, 0.2, 1)"
 const PANEL_DRAG_PREVIEW_OFFSET_X = 14
 const PANEL_DRAG_PREVIEW_OFFSET_Y = 16
-const PANEL_GAP_CROSS_AXIS_MARGIN_PX = 20
-const PANEL_GAP_AXIS_ZONE_PX = 64
-const PANEL_GAP_CENTER_BIAS_PX = 24
+const PANEL_GAP_CROSS_AXIS_MARGIN_PX = 32
+const PANEL_GAP_AXIS_ZONE_PX = 96
+const PANEL_GAP_CENTER_BIAS_PX = 8
 const PANEL_SLOT_EDGE_ZONE_PX = 144
+const PANEL_GROUP_SLOT_EDGE_ZONE_PX = 104
+const PANEL_GROUP_SLOT_CROSS_AXIS_MARGIN_PX = 44
 const PANEL_EDGE_DROP_ZONE_PX = 96
 const PANEL_EDGE_GAP_PREVIEW_PX = 44
-const PANEL_DRAG_TOP_PADDING_PX = 56
 const PANEL_DROP_TARGET_DWELL_MS = 110
 const PANEL_DROP_TARGET_SWITCH_COOLDOWN_MS = 90
 const PANEL_DOCK_TARGET_DWELL_MS = 60
+const DROP_SIDES: DropSide[] = ["left", "right", "top", "bottom"]
 
 export function ResizablePanels({
   panel1,
@@ -174,14 +212,17 @@ export function ResizablePanels({
       panel1: {
         title: panel1Title,
         content: panel1,
+        icon: Pipette,
       },
       panel2: {
         title: panel2Title,
         content: panel2,
+        icon: SwatchBook,
       },
       panel3: {
         title: panel3Title,
         content: panel3,
+        icon: Grid3X3,
       },
     }),
     [panel1, panel1Title, panel2, panel2Title, panel3, panel3Title],
@@ -193,6 +234,7 @@ export function ResizablePanels({
   const [dragPreview, setDragPreview] = useState<PanelCursorPreviewState | null>(null)
   const [activeDrop, setActiveDrop] = useState<ActivePanelDrop | null>(null)
   const [isDockActive, setIsDockActive] = useState(false)
+  const [isDockExpanded, setIsDockExpanded] = useState(true)
   const [resizingPathKey, setResizingPathKey] = useState<string | null>(null)
   const workspaceRef = useRef(workspace)
   const dragStateRef = useRef<PanelDragState | null>(null)
@@ -365,7 +407,14 @@ export function ResizablePanels({
       isDockActiveRef.current = false
       setIsDockActive(false)
 
-      if (target?.type === "gap" || target?.type === "swap" || target?.type === "panel-slot" || target?.type === "edge") {
+      if (
+        target?.type === "gap" ||
+        target?.type === "swap" ||
+        target?.type === "panel-slot" ||
+        target?.type === "group-slot" ||
+        target?.type === "edge" ||
+        target?.type === "workspace"
+      ) {
         activeDropRef.current = target
         setActiveDrop((current) => (getResolvedDropKey(current) === getResolvedDropKey(target) ? current : target))
         return
@@ -468,6 +517,7 @@ export function ResizablePanels({
       options: {
         overrideDrop?: ActivePanelDrop | null
         fallbackGapTarget?: SplitGapTarget
+        fallbackGroupSlotTarget?: SplitGroupSlotTarget
         fallbackPanelSlotTarget?: PanelSlotTarget
         fallbackSwapTargetId?: PanelId
         fallbackEdgeSide?: WorkspaceEdgeSide
@@ -489,6 +539,20 @@ export function ResizablePanels({
         const edgeSide = committedActiveDrop?.type === "edge" ? committedActiveDrop.side : options.fallbackEdgeSide
         if (edgeSide) {
           return movePanelToWorkspaceEdge(current, panelId, edgeSide)
+        }
+
+        if (committedActiveDrop?.type === "workspace") {
+          return restorePanelInWorkspace(current, panelId)
+        }
+
+        const groupSlotTarget =
+          committedActiveDrop?.type === "group-slot"
+            ? committedActiveDrop.target
+            : options.fallbackGroupSlotTarget
+        if (groupSlotTarget) {
+          return groupSlotTarget.path.length === 0
+            ? movePanelToWorkspaceEdge(current, panelId, groupSlotTarget.side)
+            : movePanelToLayoutPathSide(current, panelId, groupSlotTarget.path, groupSlotTarget.side)
         }
 
         const panelSlotTarget =
@@ -712,18 +776,28 @@ export function ResizablePanels({
       }
 
       event.preventDefault()
-      const rect = splitContainer.getBoundingClientRect()
-      const availableSize =
-        (direction === "row" ? rect.width : rect.height) - SPLITTER_SIZE_PX
-      if (availableSize <= 0) {
+      const currentLayout = workspaceRef.current.layout
+      const groupPath = getSplitResizeGroupPath(currentLayout, path, direction)
+      const groupContainer = groupPath ? getSplitContainerElement(groupPath) ?? splitContainer : splitContainer
+      const groupRect = groupContainer.getBoundingClientRect()
+      const groupAxisSize = direction === "row" ? groupRect.width : groupRect.height
+      const minPanelSize = direction === "row" ? MIN_PANEL_WIDTH_PX : MIN_PANEL_HEIGHT_PX
+      const resizeSession = createSplitResizeSession(
+        currentLayout,
+        path,
+        direction,
+        groupAxisSize,
+        minPanelSize,
+        SPLITTER_SIZE_PX,
+      )
+
+      if (!resizeSession) {
         return
       }
 
-      const currentRatio = getSplitRatioAtPath(workspaceRef.current.layout, path) ?? 0.5
       const startPointer = direction === "row" ? event.clientX : event.clientY
-      const startFirstSize = availableSize * currentRatio
-      const minPanelSize = direction === "row" ? MIN_PANEL_WIDTH_PX : MIN_PANEL_HEIGHT_PX
-      const effectiveMinSize = Math.min(minPanelSize, availableSize / 2)
+      let currentResizeSession = resizeSession
+      let appliedPointer = startPointer
       const pathKey = getPathKey(path)
       setResizingPathKey(pathKey)
       document.body.style.userSelect = "none"
@@ -731,13 +805,18 @@ export function ResizablePanels({
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         const nextPointer = direction === "row" ? moveEvent.clientX : moveEvent.clientY
-        const delta = nextPointer - startPointer
-        const nextFirstSize = clamp(startFirstSize + delta, effectiveMinSize, availableSize - effectiveMinSize)
-        const nextRatio = nextFirstSize / availableSize
-        setWorkspace((current) => ({
-          ...current,
-          layout: updateSplitRatio(current.layout, path, nextRatio),
-        }))
+        const delta = nextPointer - appliedPointer
+        const resizeResult = resizeSplitSession(currentResizeSession, delta)
+        if (resizeResult.appliedDelta === 0) {
+          return
+        }
+
+        currentResizeSession = resizeResult.session
+        appliedPointer += resizeResult.appliedDelta
+        setWorkspace((current) => {
+          const nextLayout = applySplitResizeSession(current.layout, currentResizeSession)
+          return nextLayout === current.layout ? current : { ...current, layout: nextLayout }
+        })
       }
 
       const handleMouseUp = () => {
@@ -767,6 +846,26 @@ export function ResizablePanels({
     event.preventDefault()
     const sign = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1
     setWorkspace((current) => {
+      const groupPath = getSplitResizeGroupPath(current.layout, path, direction)
+      const groupContainer = groupPath ? getSplitContainerElement(groupPath) : null
+      const groupRect = groupContainer?.getBoundingClientRect()
+      const groupAxisSize = groupRect ? (direction === "row" ? groupRect.width : groupRect.height) : 0
+      const minPanelSize = direction === "row" ? MIN_PANEL_WIDTH_PX : MIN_PANEL_HEIGHT_PX
+      const resizeSession = createSplitResizeSession(
+        current.layout,
+        path,
+        direction,
+        groupAxisSize,
+        minPanelSize,
+        SPLITTER_SIZE_PX,
+      )
+
+      if (resizeSession) {
+        const delta = sign * Math.max(KEYBOARD_RESIZE_STEP_MIN_PX, groupAxisSize * KEYBOARD_RESIZE_STEP)
+        const nextLayout = resizeSplitLayoutFromSession(current.layout, resizeSession, delta)
+        return nextLayout === current.layout ? current : { ...current, layout: nextLayout }
+      }
+
       const currentRatio = getSplitRatioAtPath(current.layout, path) ?? 0.5
       return {
         ...current,
@@ -775,56 +874,58 @@ export function ResizablePanels({
     })
   }, [])
 
-  const workspaceAreaStyle = getWorkspaceEdgePreviewStyle(
-    activeDrop,
-    workspace.collapsed.length > 0 || dragState !== null,
-  )
+  const workspaceAreaStyle = getWorkspaceEdgePreviewStyle(activeDrop)
+  const shouldShowDock = workspace.collapsed.length > 0 || dragState !== null
+  const dockExpanded = workspace.collapsed.length > 0 && isDockExpanded
 
   return (
     <div
-      className="relative flex min-h-0 flex-1 overflow-hidden bg-muted/30"
+      className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/30"
     >
-      <CollapsedPanelDock
-        collapsedPanels={workspace.collapsed}
-        panelConfigs={panelConfigs}
-        dragState={dragState}
-        active={isDockActive}
-        onPanelPointerDragStart={startPanelPointerDrag}
-        onShouldSuppressRestoreClick={shouldSuppressDockRestoreClick}
-        onRestorePanel={restorePanel}
-      />
-
-      <div
-        data-panel-workspace-area="true"
-        className={cn(
-          "min-h-0 flex-1 overflow-auto p-2 transition-[padding] duration-150 ease-out",
-          (workspace.collapsed.length > 0 || dragState) && "pt-14",
-        )}
-        style={workspaceAreaStyle}
-      >
-        {previewWorkspace.layout ? (
-          <PanelLayoutView
-            node={previewWorkspace.layout}
-            path={[]}
-            panelConfigs={panelConfigs}
-            draggedPanelId={dragState?.panelId ?? null}
-            isPanelDragActive={dragState !== null}
-            activeDrop={activeDrop}
-            resizingPathKey={resizingPathKey}
-            onCollapsePanel={collapsePanel}
-            onPanelPointerDragStart={startPanelPointerDrag}
-            onResizeStart={startResize}
-            onSplitterKeyDown={handleSplitterKeyDown}
-          />
-        ) : (
-          <EmptyWorkspace
-            collapsedPanels={workspace.collapsed}
-            panelConfigs={panelConfigs}
-            onRestorePanel={restorePanel}
-          />
-        )}
+      <div className="relative min-h-0 min-w-0 flex-1">
+        <div
+          data-panel-workspace-area="true"
+          className="h-full min-h-0 min-w-0 overflow-auto p-2 transition-[padding] duration-150 ease-out"
+          style={workspaceAreaStyle}
+        >
+          {previewWorkspace.layout ? (
+            <PanelLayoutView
+              node={previewWorkspace.layout}
+              path={[]}
+              panelConfigs={panelConfigs}
+              draggedPanelId={dragState?.panelId ?? null}
+              isPanelDragActive={dragState !== null}
+              activeDrop={activeDrop}
+              resizingPathKey={resizingPathKey}
+              onCollapsePanel={collapsePanel}
+              onPanelPointerDragStart={startPanelPointerDrag}
+              onResizeStart={startResize}
+              onSplitterKeyDown={handleSplitterKeyDown}
+            />
+          ) : (
+            <EmptyWorkspace
+              collapsedPanels={workspace.collapsed}
+              panelConfigs={panelConfigs}
+              dropActive={activeDrop?.type === "workspace"}
+              onRestorePanel={restorePanel}
+            />
+          )}
+        </div>
+        <EdgeDropPreview activeDrop={activeDrop} />
       </div>
-      <EdgeDropPreview activeDrop={activeDrop} />
+      {shouldShowDock && (
+        <CollapsedPanelDock
+          collapsedPanels={workspace.collapsed}
+          panelConfigs={panelConfigs}
+          dragState={dragState}
+          active={isDockActive}
+          expanded={dockExpanded}
+          onExpandedChange={setIsDockExpanded}
+          onPanelPointerDragStart={startPanelPointerDrag}
+          onShouldSuppressRestoreClick={shouldSuppressDockRestoreClick}
+          onRestorePanel={restorePanel}
+        />
+      )}
       <PanelCursorPreview preview={dragPreview} previewRef={setDragPreviewNode} />
     </div>
   )
@@ -935,6 +1036,20 @@ function SplitNode({
   const firstPath = useMemo<SplitPath>(() => [...path, "first"], [path])
   const secondPath = useMemo<SplitPath>(() => [...path, "second"], [path])
   const pathKey = getPathKey(path)
+  const activeGroupSlotSide =
+    activeDrop?.type === "group-slot" && activeDrop.target.pathKey === pathKey ? activeDrop.target.side : null
+  const firstMinSize = getPanelLayoutMinSize(
+    node.first,
+    node.direction,
+    isRow ? MIN_PANEL_WIDTH_PX : MIN_PANEL_HEIGHT_PX,
+    SPLITTER_SIZE_PX,
+  )
+  const secondMinSize = getPanelLayoutMinSize(
+    node.second,
+    node.direction,
+    isRow ? MIN_PANEL_WIDTH_PX : MIN_PANEL_HEIGHT_PX,
+    SPLITTER_SIZE_PX,
+  )
   const gapTarget = useMemo<SplitGapTarget>(
     () => ({
       pathKey,
@@ -948,14 +1063,23 @@ function SplitNode({
   return (
     <div
       ref={containerRef}
-      className={cn("flex h-full min-h-0 min-w-0", !isRow && "flex-col")}
+      data-panel-split-path={pathKey}
+      data-panel-split-direction={node.direction}
+      className={cn(
+        "relative flex h-full min-h-0 min-w-0 transition-[padding] duration-150 ease-out",
+        !isRow && "flex-col",
+        activeGroupSlotSide === "left" && "pl-11",
+        activeGroupSlotSide === "right" && "pr-11",
+        activeGroupSlotSide === "top" && "pt-11",
+        activeGroupSlotSide === "bottom" && "pb-11",
+      )}
     >
       <div
         className="min-h-0 min-w-0"
         style={{
           flex: `0 0 calc(${node.ratio * 100}% - ${SPLITTER_SIZE_PX / 2}px)`,
-          minWidth: isRow ? MIN_PANEL_WIDTH_PX : undefined,
-          minHeight: isRow ? undefined : MIN_PANEL_HEIGHT_PX,
+          minWidth: isRow ? firstMinSize : undefined,
+          minHeight: isRow ? undefined : firstMinSize,
         }}
       >
         <PanelLayoutView
@@ -991,8 +1115,8 @@ function SplitNode({
       <div
         className="min-h-0 min-w-0 flex-1"
         style={{
-          minWidth: isRow ? MIN_PANEL_WIDTH_PX : undefined,
-          minHeight: isRow ? undefined : MIN_PANEL_HEIGHT_PX,
+          minWidth: isRow ? secondMinSize : undefined,
+          minHeight: isRow ? undefined : secondMinSize,
         }}
       >
         <PanelLayoutView
@@ -1009,6 +1133,7 @@ function SplitNode({
           onSplitterKeyDown={onSplitterKeyDown}
         />
       </div>
+      <GroupSlotPreview side={activeGroupSlotSide} />
     </div>
   )
 }
@@ -1239,6 +1364,8 @@ function CollapsedPanelDock({
   panelConfigs,
   dragState,
   active,
+  expanded,
+  onExpandedChange,
   onPanelPointerDragStart,
   onShouldSuppressRestoreClick,
   onRestorePanel,
@@ -1247,56 +1374,92 @@ function CollapsedPanelDock({
   panelConfigs: PanelConfigs
   dragState: { panelId: PanelId; source: PanelDragSource } | null
   active: boolean
+  expanded: boolean
+  onExpandedChange: (expanded: boolean) => void
   onPanelPointerDragStart: (panelId: PanelId, source: PanelDragSource, event: ReactPointerEvent<HTMLElement>) => void
   onShouldSuppressRestoreClick: () => boolean
   onRestorePanel: (panelId: PanelId) => void
 }) {
-  if (collapsedPanels.length === 0 && !dragState) {
-    return null
-  }
-
   return (
-    <div className="pointer-events-none absolute right-3 top-3 z-40 flex max-w-[calc(100%-1.5rem)] justify-end">
-      <div
-        data-panel-divider="true"
-        data-panel-dock="true"
-        className={cn(
-          "pointer-events-auto flex min-h-9 max-w-full items-center gap-2 overflow-hidden rounded-md border border-dashed bg-background/95 p-1 shadow-md backdrop-blur transition",
-          active ? "border-orange-500 bg-orange-50" : "border-border/80",
-          collapsedPanels.length === 0 && "w-11 justify-center",
-        )}
-      >
-        {collapsedPanels.length === 0 ? (
-          <Minimize2 className={cn("h-4 w-4", active ? "text-orange-600" : "text-muted-foreground")} />
-        ) : (
-          collapsedPanels.map((panelId) => {
-            const panel = panelConfigs[panelId]
-            return (
-              <button
-                key={panelId}
-                type="button"
-                className="inline-flex h-8 max-w-36 cursor-grab touch-none select-none items-center gap-2 rounded-md border border-border bg-background px-2 text-xs font-semibold text-foreground shadow-xs transition hover:bg-muted active:cursor-grabbing"
-                title={`Show ${panel.title}`}
-                aria-label={`Show ${panel.title}`}
-                data-panel-toggle={panel.title}
-                onClick={(event) => {
-                  if (onShouldSuppressRestoreClick()) {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    return
-                  }
-                  onRestorePanel(panelId)
-                }}
-                onPointerDown={(event) => onPanelPointerDragStart(panelId, "dock", event)}
-              >
-                <Maximize2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate">{panel.title}</span>
-              </button>
-            )
-          })
-        )}
+    <aside
+      data-panel-divider="true"
+      data-panel-dock="true"
+      className={cn(
+        "relative z-40 flex h-full shrink-0 border-l border-border/80 bg-background/95 shadow-[-8px_0_18px_rgba(15,23,42,0.08)] backdrop-blur transition-[width,border-color,background-color] duration-150 ease-out",
+        expanded ? "w-56" : "w-12",
+        active && "border-orange-500 bg-orange-50",
+      )}
+    >
+      <div className={cn("flex h-full min-w-0 flex-col", expanded ? "w-full p-2" : "w-full items-center p-1.5")}>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-7 w-7 cursor-pointer items-center justify-center self-start rounded-md bg-transparent text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+            !expanded && "self-center",
+          )}
+          aria-label={expanded ? "Collapse panel dock" : "Expand panel dock"}
+          aria-expanded={expanded}
+          onClick={() => onExpandedChange(!expanded)}
+        >
+          {expanded ? (
+            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronLeft className="h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+        </button>
+
+        <div
+          className={cn(
+            "mt-2 flex min-h-0 flex-1 overflow-y-auto",
+            expanded ? "flex-col gap-2" : "flex-col items-center gap-1.5",
+          )}
+        >
+          {collapsedPanels.length === 0 ? (
+            <div
+              className={cn(
+                "flex items-center justify-center rounded-md border border-dashed text-muted-foreground transition",
+                expanded ? "min-h-20 w-full px-2" : "h-9 w-9",
+                active ? "border-orange-500 bg-orange-100 text-orange-700" : "border-border/80 bg-muted/30",
+              )}
+              aria-label={dragState ? "Panel dock drop target" : "No collapsed panels"}
+            >
+              <Minimize2 className="h-4 w-4 shrink-0" />
+              {expanded && <span className="ml-2 truncate text-xs font-semibold">Empty</span>}
+            </div>
+          ) : (
+            collapsedPanels.map((panelId) => {
+              const panel = panelConfigs[panelId]
+              const PanelIcon = panel.icon
+              return (
+                <button
+                  key={panelId}
+                  type="button"
+                  className={cn(
+                    "inline-flex cursor-grab touch-none select-none items-center rounded-md border border-border bg-background text-xs font-semibold text-foreground shadow-xs transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:cursor-grabbing",
+                    expanded ? "h-10 w-full justify-start gap-2 px-2" : "h-9 w-9 justify-center",
+                  )}
+                  title={`Show ${panel.title}`}
+                  aria-label={`Show ${panel.title}`}
+                  data-panel-toggle={panel.title}
+                  onClick={(event) => {
+                    if (onShouldSuppressRestoreClick()) {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      return
+                    }
+                    onRestorePanel(panelId)
+                  }}
+                  onPointerDown={(event) => onPanelPointerDragStart(panelId, "dock", event)}
+                >
+                  <PanelIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  {expanded && <span className="truncate">{panel.title}</span>}
+                </button>
+              )
+            })
+          )}
+        </div>
       </div>
-    </div>
+    </aside>
   )
 }
 
@@ -1331,6 +1494,29 @@ function PanelSlotPreview({ side }: { side: PanelSlotSide | null }) {
   )
 }
 
+function GroupSlotPreview({ side }: { side: DropSide | null }) {
+  if (!side) {
+    return null
+  }
+
+  const isVerticalIndicator = side === "left" || side === "right"
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute z-30 flex items-center justify-center bg-orange-500/20 shadow-lg shadow-orange-500/10 ring-1 ring-inset ring-orange-500/40",
+        side === "left" && "inset-y-2 left-0 w-11",
+        side === "right" && "inset-y-2 right-0 w-11",
+        side === "top" && "inset-x-2 top-0 h-11",
+        side === "bottom" && "inset-x-2 bottom-0 h-11",
+      )}
+      data-panel-group-slot-drop={side}
+      aria-hidden="true"
+    >
+      <span className={cn("rounded-full bg-orange-500 shadow-sm", isVerticalIndicator ? "h-20 w-1.5" : "h-1.5 w-20")} />
+    </div>
+  )
+}
+
 function EdgeDropPreview({ activeDrop }: { activeDrop: ActivePanelDrop | null }) {
   if (activeDrop?.type !== "edge") {
     return null
@@ -1343,7 +1529,7 @@ function EdgeDropPreview({ activeDrop }: { activeDrop: ActivePanelDrop | null })
         "pointer-events-none absolute z-30 flex items-center justify-center bg-orange-500/20 shadow-lg shadow-orange-500/10 ring-1 ring-inset ring-orange-500/40 transition-[background-color,width,height] duration-150 ease-out",
         activeDrop.side === "left" && "inset-y-2 left-2 w-11",
         activeDrop.side === "right" && "inset-y-2 right-2 w-11",
-        activeDrop.side === "top" && "inset-x-2 top-14 h-11",
+        activeDrop.side === "top" && "inset-x-2 top-2 h-11",
         activeDrop.side === "bottom" && "inset-x-2 bottom-2 h-11",
       )}
       data-panel-edge-drop={activeDrop.side}
@@ -1356,7 +1542,6 @@ function EdgeDropPreview({ activeDrop }: { activeDrop: ActivePanelDrop | null })
 
 function getWorkspaceEdgePreviewStyle(
   activeDrop: ActivePanelDrop | null,
-  hasTopDockOffset: boolean,
 ): CSSProperties | undefined {
   if (activeDrop?.type !== "edge") {
     return undefined
@@ -1371,11 +1556,7 @@ function getWorkspaceEdgePreviewStyle(
   }
 
   if (activeDrop.side === "top") {
-    return {
-      paddingTop: hasTopDockOffset
-        ? PANEL_DRAG_TOP_PADDING_PX + PANEL_EDGE_GAP_PREVIEW_PX
-        : PANEL_EDGE_GAP_PREVIEW_PX,
-    }
+    return { paddingTop: PANEL_EDGE_GAP_PREVIEW_PX }
   }
 
   return { paddingBottom: PANEL_EDGE_GAP_PREVIEW_PX }
@@ -1384,17 +1565,26 @@ function getWorkspaceEdgePreviewStyle(
 function EmptyWorkspace({
   collapsedPanels,
   panelConfigs,
+  dropActive,
   onRestorePanel,
 }: {
   collapsedPanels: PanelId[]
   panelConfigs: PanelConfigs
+  dropActive: boolean
   onRestorePanel: (panelId: PanelId) => void
 }) {
   return (
-    <div className="flex h-full min-h-[280px] items-center justify-center rounded-md border border-dashed border-border bg-background/70 p-4">
-      <div className="flex max-w-full flex-wrap items-center justify-center gap-2">
+    <div
+      data-panel-empty-workspace="true"
+      className={cn(
+        "relative flex h-full min-h-[280px] items-center justify-center rounded-md border border-dashed bg-background/70 p-4 transition-[background-color,border-color]",
+        dropActive ? "border-orange-500 bg-orange-500/10" : "border-border",
+      )}
+    >
+      <div className="relative z-10 flex max-w-full flex-wrap items-center justify-center gap-2">
         {collapsedPanels.map((panelId) => {
           const panel = panelConfigs[panelId]
+          const PanelIcon = panel.icon
           return (
             <button
               key={panelId}
@@ -1404,18 +1594,42 @@ function EmptyWorkspace({
               aria-label={`Show ${panel.title}`}
               title={`Show ${panel.title}`}
             >
-              <Maximize2 className="h-4 w-4 text-muted-foreground" />
+              <PanelIcon className="h-4 w-4 text-muted-foreground" />
               {panel.title}
             </button>
           )
         })}
       </div>
+      {dropActive && (
+        <div className="pointer-events-none absolute inset-1 rounded-md border-2 border-dashed border-orange-500 bg-orange-500/10" />
+      )}
     </div>
   )
 }
 
 function getPathKey(path: SplitPath): string {
   return path.length === 0 ? "root" : path.join(".")
+}
+
+function parseSplitPathKey(pathKey: string | undefined): SplitPath | null {
+  if (!pathKey) {
+    return null
+  }
+
+  if (pathKey === "root") {
+    return []
+  }
+
+  const segments = pathKey.split(".")
+  if (segments.every((segment): segment is SplitPath[number] => segment === "first" || segment === "second")) {
+    return segments
+  }
+
+  return null
+}
+
+function getSplitContainerElement(path: SplitPath): HTMLDivElement | null {
+  return document.querySelector<HTMLDivElement>(`[data-panel-split-path="${getPathKey(path)}"]`)
 }
 
 function getResolvedDropKey(target: ResolvedPointDrop): string {
@@ -1435,8 +1649,16 @@ function getResolvedDropKey(target: ResolvedPointDrop): string {
     return `panel-slot:${target.target.targetId}:${target.target.side}`
   }
 
+  if (target.type === "group-slot") {
+    return `group-slot:${target.target.pathKey}:${target.target.side}`
+  }
+
   if (target.type === "edge") {
     return `edge:${target.side}`
+  }
+
+  if (target.type === "workspace") {
+    return "workspace"
   }
 
   return [
@@ -1484,6 +1706,26 @@ function captureDragTargetGeometry(): DragTargetGeometry {
         {
           target,
           rect: toMeasuredRect(gap.getBoundingClientRect()),
+        },
+      ]
+    }),
+    groups: Array.from(document.querySelectorAll<HTMLElement>("[data-panel-split-path]")).flatMap((group) => {
+      const pathKey = group.dataset.panelSplitPath
+      const path = parseSplitPathKey(pathKey)
+      if (!pathKey || !path) {
+        return []
+      }
+
+      const panelIds = Array.from(group.querySelectorAll<HTMLElement>("[data-tool-panel]")).flatMap((panel) => {
+        const panelId = panel.dataset.toolPanel
+        return isPanelId(panelId) ? [panelId] : []
+      })
+      return [
+        {
+          pathKey,
+          path,
+          rect: toMeasuredRect(group.getBoundingClientRect()),
+          panelIds,
         },
       ]
     }),
@@ -1563,6 +1805,28 @@ function resolvePointDropTarget(
     return { type: "dock" }
   }
 
+  if (element.closest("[data-panel-empty-workspace='true']")) {
+    return { type: "workspace" }
+  }
+
+  const edgeTarget = getWorkspaceEdgeDropTarget(point, draggedPanelId, geometry)
+  if (edgeTarget) {
+    return edgeTarget
+  }
+
+  const groupSlotTarget = getSplitGroupSlotTargetFromPoint(point, draggedPanelId, geometry)
+  if (groupSlotTarget) {
+    return groupSlotTarget.path.length === 0
+      ? {
+          type: "edge",
+          side: groupSlotTarget.side,
+        }
+      : {
+          type: "group-slot",
+          target: groupSlotTarget,
+        }
+  }
+
   const panelSlotTarget = getPanelSlotTargetFromPoint(point, draggedPanelId, geometry)
   if (panelSlotTarget) {
     const equivalentGapTarget = getEquivalentVerticalGapTarget(panelSlotTarget, geometry)
@@ -1577,11 +1841,6 @@ function resolvePointDropTarget(
       type: "panel-slot",
       target: panelSlotTarget,
     }
-  }
-
-  const edgeTarget = getWorkspaceEdgeDropTarget(point, draggedPanelId, geometry)
-  if (edgeTarget) {
-    return edgeTarget
   }
 
   const gapTarget = getNearestGapTarget(point, draggedPanelId, geometry)
@@ -1614,6 +1873,57 @@ function resolvePointDropTarget(
     type: "swap",
     targetId,
   }
+}
+
+function getSplitGroupSlotTargetFromPoint(
+  point: DragPoint,
+  draggedPanelId: PanelId,
+  geometry: DragTargetGeometry | null,
+): SplitGroupSlotTarget | null {
+  const groups = geometry?.groups ?? captureDragTargetGeometry().groups
+  let nearest:
+    | {
+        score: number
+        target: SplitGroupSlotTarget
+      }
+    | null = null
+
+  for (const group of groups) {
+    if (group.path.length === 0 || group.panelIds.every((panelId) => panelId === draggedPanelId)) {
+      continue
+    }
+
+    const rect = group.rect
+    if (rect.width <= 0 || rect.height <= 0) {
+      continue
+    }
+
+    for (const side of DROP_SIDES) {
+      const distance = getDistanceToRectSide(point, side, rect)
+      if (distance > PANEL_GROUP_SLOT_EDGE_ZONE_PX) {
+        continue
+      }
+
+      if (!isWithinRectSideCrossAxis(point, side, rect, PANEL_GROUP_SLOT_CROSS_AXIS_MARGIN_PX)) {
+        continue
+      }
+
+      const depthBias = group.path.length * 6
+      const score = distance - depthBias
+      if (!nearest || score < nearest.score) {
+        nearest = {
+          score,
+          target: {
+            pathKey: group.pathKey,
+            path: group.path,
+            side,
+          },
+        }
+      }
+    }
+  }
+
+  return nearest?.target ?? null
 }
 
 function getPanelSlotTargetFromPoint(
@@ -1749,6 +2059,35 @@ function getDistanceToWorkspaceEdge(
   }
 
   return Math.abs(point.clientY - rect.bottom)
+}
+
+function getDistanceToRectSide(point: DragPoint, side: DropSide, rect: MeasuredRect): number {
+  if (side === "left") {
+    return Math.abs(point.clientX - rect.left)
+  }
+
+  if (side === "right") {
+    return Math.abs(point.clientX - rect.right)
+  }
+
+  if (side === "top") {
+    return Math.abs(point.clientY - rect.top)
+  }
+
+  return Math.abs(point.clientY - rect.bottom)
+}
+
+function isWithinRectSideCrossAxis(
+  point: DragPoint,
+  side: DropSide,
+  rect: MeasuredRect,
+  margin: number,
+): boolean {
+  if (side === "left" || side === "right") {
+    return point.clientY >= rect.top - margin && point.clientY <= rect.bottom + margin
+  }
+
+  return point.clientX >= rect.left - margin && point.clientX <= rect.right + margin
 }
 
 function getNearestGapTarget(

@@ -4,14 +4,20 @@ import {
   collapsePanelInWorkspace,
   containsPanel,
   createDefaultPanelWorkspaceState,
+  createSplitResizeSession,
+  getPanelLayoutMinSize,
   getPanelIds,
   getSplitRatioAtPath,
   movePanelInWorkspace,
+  movePanelToLayoutPathSide,
   movePanelToWorkspaceEdge,
   normalizePanelWorkspaceState,
+  resizeSplitLayoutFromSession,
+  resizeSplitSession,
   restorePanelInWorkspace,
   swapPanelsInWorkspace,
   updateSplitRatio,
+  type PanelLayoutNode,
   type PanelWorkspaceState,
 } from "./panel-workspace"
 
@@ -146,6 +152,32 @@ describe("panel workspace layout helpers", () => {
     expect(moved.collapsed).toEqual([])
   })
 
+  it("moves a panel beside a vertical split group instead of into the split", () => {
+    const moved = movePanelToLayoutPathSide(createDefaultPanelWorkspaceState(), "panel3", ["second"], "left")
+
+    expect(getPanelIds(moved.layout)).toEqual(["panel1", "panel3", "panel2"])
+    expect(moved.collapsed).toEqual([])
+    expect(moved.layout?.type).toBe("split")
+    if (moved.layout?.type === "split" && moved.layout.second.type === "split") {
+      expect(moved.layout.second.direction).toBe("row")
+      expect(moved.layout.second.first).toEqual({ type: "panel", id: "panel3" })
+      expect(moved.layout.second.second).toEqual({ type: "panel", id: "panel2" })
+    }
+  })
+
+  it("moves a docked panel beside a split group", () => {
+    const collapsed = collapsePanelInWorkspace(createDefaultPanelWorkspaceState(), "panel1")
+    const moved = movePanelToLayoutPathSide(collapsed, "panel1", [], "left")
+
+    expect(getPanelIds(moved.layout)).toEqual(["panel1", "panel2", "panel3"])
+    expect(moved.collapsed).toEqual([])
+    expect(moved.layout?.type).toBe("split")
+    if (moved.layout?.type === "split") {
+      expect(moved.layout.direction).toBe("row")
+      expect(moved.layout.second.type).toBe("split")
+    }
+  })
+
   it("swaps two visible panels without changing the layout shape", () => {
     const swapped = swapPanelsInWorkspace(createDefaultPanelWorkspaceState(), "panel1", "panel3")
 
@@ -191,4 +223,96 @@ describe("panel workspace layout helpers", () => {
     expect(getPanelIds(normalized?.layout ?? null).sort()).toEqual(["panel1", "panel3"])
     expect(getSplitRatioAtPath(normalized?.layout ?? null, [])).toBeGreaterThanOrEqual(0.05)
   })
+
+  it("resizes only adjacent items in a same-direction strip before pushing", () => {
+    const layout = createThreeColumnLayout()
+    const session = createSplitResizeSession(layout, [], "row", 924, 100, 12)
+
+    expect(session?.itemSizes).toEqual([300, 300, 300])
+
+    const resized = resizeSplitLayoutFromSession(layout, session!, 50)
+    const resizedSession = createSplitResizeSession(resized, [], "row", 924, 100, 12)
+
+    expect(resizedSession?.itemSizes.map(Math.round)).toEqual([350, 250, 300])
+  })
+
+  it("pushes the next panel only after the adjacent item reaches its minimum", () => {
+    const layout = createThreeColumnLayout()
+    const session = createSplitResizeSession(layout, [], "row", 924, 100, 12)
+    const resized = resizeSplitLayoutFromSession(layout, session!, 250)
+    const resizedSession = createSplitResizeSession(resized, [], "row", 924, 100, 12)
+
+    expect(resizedSession?.itemSizes.map(Math.round)).toEqual([550, 100, 250])
+  })
+
+  it("does not pull a pushed panel back when retracting the same divider", () => {
+    const layout = createThreeColumnLayout()
+    const session = createSplitResizeSession(layout, [], "row", 924, 100, 12)
+    const pushed = resizeSplitSession(session!, 250)
+    const retracted = resizeSplitSession(pushed.session, -50)
+
+    expect(pushed.session.itemSizes.map(Math.round)).toEqual([550, 100, 250])
+    expect(retracted.session.itemSizes.map(Math.round)).toEqual([500, 150, 250])
+    expect(retracted.appliedDelta).toBe(-50)
+  })
+
+  it("clamps divider movement when every pushed panel is at minimum", () => {
+    const layout = createThreeColumnLayout()
+    const session = createSplitResizeSession(layout, [], "row", 924, 100, 12)
+    const resized = resizeSplitLayoutFromSession(layout, session!, 500)
+    const resizedSession = createSplitResizeSession(resized, [], "row", 924, 100, 12)
+
+    expect(resizedSession?.itemSizes.map(Math.round)).toEqual([700, 100, 100])
+  })
+
+  it("resizes the root boundary next to a nested same-direction group without changing the far panel", () => {
+    const layout = createLeftNestedThreeColumnLayout()
+    const session = createSplitResizeSession(layout, [], "row", 924, 100, 12)
+
+    expect(session?.itemSizes).toEqual([300, 300, 300])
+
+    const resized = resizeSplitLayoutFromSession(layout, session!, 50)
+    const resizedSession = createSplitResizeSession(resized, [], "row", 924, 100, 12)
+
+    expect(resizedSession?.itemSizes.map(Math.round)).toEqual([300, 350, 250])
+  })
+
+  it("calculates subtree minimum size along the resize axis", () => {
+    const layout = createDefaultPanelWorkspaceState().layout
+
+    expect(getPanelLayoutMinSize(layout, "row", 280, 12)).toBe(572)
+    expect(getPanelLayoutMinSize(layout, "column", 210, 12)).toBe(432)
+  })
 })
+
+function createThreeColumnLayout(): PanelLayoutNode {
+  return {
+    type: "split",
+    direction: "row",
+    ratio: 300 / 912,
+    first: { type: "panel", id: "panel1" },
+    second: {
+      type: "split",
+      direction: "row",
+      ratio: 0.5,
+      first: { type: "panel", id: "panel2" },
+      second: { type: "panel", id: "panel3" },
+    },
+  }
+}
+
+function createLeftNestedThreeColumnLayout(): PanelLayoutNode {
+  return {
+    type: "split",
+    direction: "row",
+    ratio: 612 / 912,
+    first: {
+      type: "split",
+      direction: "row",
+      ratio: 0.5,
+      first: { type: "panel", id: "panel1" },
+      second: { type: "panel", id: "panel2" },
+    },
+    second: { type: "panel", id: "panel3" },
+  }
+}

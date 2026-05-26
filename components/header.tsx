@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Settings, Copy, Trash2, Pencil, Info, Palette } from "lucide-react"
+import { Settings, Copy, Pencil, Info, Palette } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,15 +34,13 @@ import type { ContrastStandard } from "@/lib/contrast-utils"
 import type { ColorSwatch } from "@/types/palette"
 import { createSwatch } from "@/lib/color-utils"
 import { cn } from "@/lib/utils"
+import { CARD_CONTROL_RADII } from "@/lib/design-tokens"
 
 type HeaderProps = {
   onClearCache?: () => void
   paletteName?: string
   paletteColors?: ColorSwatch[]
   onUpdatePaletteName?: (name: string) => void
-  onDuplicatePalette?: () => void
-  onDeletePalette?: () => void
-  canDeletePalette?: boolean
   onImportPalette?: (palette: { name: string; colors: ColorSwatch[] }) => void
   collapseGroupsDuringGroupDrag?: boolean
   onCollapseGroupsDuringDragChange?: (value: boolean) => void
@@ -51,14 +49,14 @@ type HeaderProps = {
   paletteManagerDropdownContent?: ReactNode
 }
 
+const HEADER_ICON_TRIGGER_CLASSNAME =
+  "h-8 w-8 border border-border bg-background text-muted-foreground shadow-xs transition-[background-color,border-color,color,border-radius,box-shadow] duration-150 hover:border-border hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:border-foreground/30 data-[state=open]:bg-muted data-[state=open]:text-foreground data-[state=open]:shadow-inner"
+
 export function Header({
   onClearCache,
   paletteName,
   paletteColors,
   onUpdatePaletteName,
-  onDuplicatePalette,
-  onDeletePalette,
-  canDeletePalette = true,
   onImportPalette,
   collapseGroupsDuringGroupDrag = false,
   onCollapseGroupsDuringDragChange,
@@ -71,8 +69,9 @@ export function Header({
   const [showClearDialog, setShowClearDialog] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(paletteName || "")
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showImportExportDialog, setShowImportExportDialog] = useState(false)
+  const [isPaletteMenuOpen, setIsPaletteMenuOpen] = useState(false)
+  const [isSettingsMenuOpen, setIsSettingsMenuOpen] = useState(false)
   const [transferMode, setTransferMode] = useState<"export" | "import">("export")
   const [importText, setImportText] = useState("")
   const [importError, setImportError] = useState<string | null>(null)
@@ -146,11 +145,6 @@ export function Header({
   const handleSaveName = () => {
     onUpdatePaletteName?.(editedName)
     setIsEditingName(false)
-  }
-
-  const handleDelete = () => {
-    setShowDeleteDialog(false)
-    onDeletePalette?.()
   }
 
   const handleImport = () => {
@@ -277,85 +271,76 @@ export function Header({
                     </Button>
                   </>
                 )}
-                {paletteManagerDropdownContent && (
-                  <DropdownMenu modal={false}>
+                <div className="flex items-center gap-1.5">
+                  {paletteManagerDropdownContent && (
+                    <DropdownMenu modal={false} open={isPaletteMenuOpen} onOpenChange={setIsPaletteMenuOpen}>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          className={HEADER_ICON_TRIGGER_CLASSNAME}
+                          aria-label="Open palette manager"
+                          style={{
+                            borderRadius: isPaletteMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                          }}
+                        >
+                          <Palette className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" sideOffset={10} className="w-[min(92vw,960px)] p-0">
+                        <div data-palette-manager-dropdown className="max-h-[75vh] overflow-auto bg-muted">
+                          {paletteManagerDropdownContent}
+                        </div>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                  <DropdownMenu open={isSettingsMenuOpen} onOpenChange={setIsSettingsMenuOpen}>
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="outline"
-                        size="icon"
-                        className="h-8 w-8 cursor-pointer rounded-md border bg-background"
-                        aria-label="Open palette manager"
+                        size="icon-sm"
+                        className={HEADER_ICON_TRIGGER_CLASSNAME}
+                        aria-label="Open settings"
+                        style={{
+                          borderRadius: isSettingsMenuOpen ? CARD_CONTROL_RADII.elevated : CARD_CONTROL_RADII.pill,
+                        }}
                       >
-                        <Palette className="h-4 w-4" />
+                        <Settings className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" sideOffset={10} className="w-[min(92vw,960px)] p-0">
-                      <div data-palette-manager-dropdown className="max-h-[75vh] overflow-auto bg-muted">
-                        {paletteManagerDropdownContent}
-                      </div>
+                    <DropdownMenuContent align="start" className="min-w-[220px]">
+                      <DropdownMenuItem
+                        onSelect={(event) => event.preventDefault()}
+                        className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
+                      >
+                        <div className="flex w-full items-center justify-between gap-3">
+                          <span className="text-sm font-medium text-foreground">Collapse groups while dragging</span>
+                          <Switch
+                            checked={collapseGroupsDuringGroupDrag}
+                            onCheckedChange={(checked) => onCollapseGroupsDuringDragChange?.(checked)}
+                            aria-label="Collapse groups while dragging"
+                          />
+                        </div>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator className="bg-border/60" />
+                      <DropdownMenuItem
+                        onSelect={openImportExportDialog}
+                        className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
+                      >
+                        Import/Export
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => setShowClearDialog(true)}
+                        className="cursor-pointer text-red-600 focus:bg-accent/30 focus:text-red-600"
+                      >
+                        Clear Cache
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onDuplicatePalette}
-                  className="cursor-pointer font-semibold bg-background rounded-md border h-8"
-                >
-                  <Copy className="mr-2 h-3.5 w-3.5" />
-                  Duplicate
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowDeleteDialog(true)}
-                  disabled={!canDeletePalette}
-                  title={canDeletePalette ? undefined : "You must keep at least one palette"}
-                  className="cursor-pointer rounded-md border font-semibold h-8 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Trash2 className="mr-2 h-3.5 w-3.5" />
-                  Delete
-                </Button>
+                </div>
               </div>
             )}
         </div>
-        <div className="flex items-center gap-4">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="cursor-pointer">
-                <Settings className="h-5 w-5" />
-              </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[220px]">
-                <DropdownMenuItem
-                  onSelect={(event) => event.preventDefault()}
-                  className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
-                >
-                  <div className="flex w-full items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-foreground">Collapse groups while dragging</span>
-                    <Switch
-                      checked={collapseGroupsDuringGroupDrag}
-                      onCheckedChange={(checked) => onCollapseGroupsDuringDragChange?.(checked)}
-                      aria-label="Collapse groups while dragging"
-                    />
-                  </div>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator className="bg-border/60" />
-                <DropdownMenuItem
-                  onSelect={openImportExportDialog}
-                  className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
-                >
-                  Import/Export
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setShowClearDialog(true)}
-                  className="cursor-pointer text-red-600 focus:bg-accent/30 focus:text-red-600"
-                >
-                  Clear Cache
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
         </div>
       </header>
 
@@ -488,25 +473,6 @@ export function Header({
               </div>
             )}
           </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Palette</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete &ldquo;{paletteName}&rdquo;? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
-              Cancel
-            </Button>
-            <Button className="bg-black hover:bg-black/90 text-white" onClick={handleDelete}>
-              Delete
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 

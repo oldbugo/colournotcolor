@@ -210,26 +210,39 @@ const commitEditingColor = useCallback(
     setLastInteractedColor(starterColors[0].hex)
   }
 
-  const duplicatePalette = () => {
-    const clonedColors = activePalette.colors.map((swatch) =>
+  const duplicatePalette = (paletteId: string = activePaletteId) => {
+    const sourcePalette = palettes.find((palette) => palette.id === paletteId)
+    if (!sourcePalette) {
+      return
+    }
+
+    const clonedColors = sourcePalette.colors.map((swatch) =>
       createSwatch({ hex: swatch.hex, name: swatch.name, group: swatch.group }),
     )
     const newPalette: ColorPalette = {
       id: Date.now().toString(),
-      name: `${activePalette.name} (Copy)`,
+      name: `${sourcePalette.name} (Copy)`,
       colors: clonedColors,
     }
     setPalettes((prev) => [...prev, newPalette])
     setActivePaletteId(newPalette.id)
   }
 
-  const deletePalette = () => {
+  const deletePalette = (paletteId: string = activePaletteId) => {
     if (palettes.length <= 1) {
       return
     }
-    const remainingPalettes = palettes.filter((p) => p.id !== activePaletteId)
+    const remainingPalettes = palettes.filter((p) => p.id !== paletteId)
+    if (remainingPalettes.length === palettes.length || remainingPalettes.length === 0) {
+      return
+    }
+
     setPalettes(remainingPalettes)
-    setActivePaletteId(remainingPalettes[0].id)
+    if (paletteId === activePaletteId) {
+      setActivePaletteId(remainingPalettes[0].id)
+      commitEditingColor(null)
+      lastStickyEditingColorRef.current = null
+    }
   }
 
   const reorderPalettes = (fromIndex: number, toIndex: number) => {
@@ -343,9 +356,6 @@ const commitEditingColor = useCallback(
         paletteName={activePalette.name}
         paletteColors={activePalette.colors}
         onUpdatePaletteName={(name) => updatePalette(activePalette.id, { name })}
-        onDuplicatePalette={duplicatePalette}
-        onDeletePalette={deletePalette}
-        canDeletePalette={palettes.length > 1}
         onImportPalette={handleImportPalette}
         collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
         onCollapseGroupsDuringDragChange={setCollapseGroupsDuringGroupDrag}
@@ -358,6 +368,9 @@ const commitEditingColor = useCallback(
             onSelectPalette={setActivePaletteId}
             onAddPalette={addPalette}
             onReorderPalettes={reorderPalettes}
+            onDuplicatePalette={duplicatePalette}
+            onDeletePalette={deletePalette}
+            canDeletePalette={palettes.length > 1}
           />
         }
       />
