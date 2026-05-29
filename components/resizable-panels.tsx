@@ -34,6 +34,8 @@ import {
   getSplitResizeGroupPath,
   isPanelId,
   movePanelInWorkspace,
+  movePanelToAdjacentPairSide,
+  movePanelToSplitGap,
   movePanelToLayoutPathSide,
   movePanelToWorkspaceEdge,
   removePanelFromLayout,
@@ -113,6 +115,10 @@ type ActivePanelDrop =
       target: SplitGroupSlotTarget
     }
   | {
+      type: "pair-slot"
+      target: AdjacentPairSlotTarget
+    }
+  | {
       type: "edge"
       side: WorkspaceEdgeSide
     }
@@ -130,6 +136,13 @@ type SplitGroupSlotTarget = {
   pathKey: string
   path: SplitPath
   side: DropSide
+}
+
+type AdjacentPairSlotTarget = {
+  beforeId: PanelId
+  afterId: PanelId
+  side: DropSide
+  rect: MeasuredRect
 }
 
 type SplitGapTarget = {
@@ -186,14 +199,21 @@ const PANEL_PREVIEW_ANIMATION_MS = 125
 const PANEL_PREVIEW_EASING = "cubic-bezier(0.2, 0.9, 0.2, 1)"
 const PANEL_DRAG_PREVIEW_OFFSET_X = 14
 const PANEL_DRAG_PREVIEW_OFFSET_Y = 16
+const PANEL_SIMPLE_WORKSPACE_FADE_MS = 110
 const PANEL_GAP_CROSS_AXIS_MARGIN_PX = 32
 const PANEL_GAP_AXIS_ZONE_PX = 96
 const PANEL_GAP_CENTER_BIAS_PX = 8
+const PANEL_PHYSICAL_GAP_AXIS_MARGIN_PX = 44
+const PANEL_PHYSICAL_GAP_CROSS_AXIS_MARGIN_PX = 16
+const PANEL_PHYSICAL_GAP_END_GUARD_PX = 56
+const PANEL_GAP_ENDPOINT_AXIS_MARGIN_PX = 44
+const PANEL_GAP_ENDPOINT_ZONE_PX = 168
 const PANEL_SLOT_EDGE_ZONE_PX = 144
 const PANEL_GROUP_SLOT_EDGE_ZONE_PX = 104
 const PANEL_GROUP_SLOT_CROSS_AXIS_MARGIN_PX = 44
 const PANEL_EDGE_DROP_ZONE_PX = 96
 const PANEL_EDGE_GAP_PREVIEW_PX = 44
+const PANEL_PAIR_SLOT_PREVIEW_END_INSET_PX = 44
 const PANEL_DROP_TARGET_DWELL_MS = 110
 const PANEL_DROP_TARGET_SWITCH_COOLDOWN_MS = 90
 const PANEL_DOCK_TARGET_DWELL_MS = 60
@@ -408,12 +428,13 @@ export function ResizablePanels({
       setIsDockActive(false)
 
       if (
-        target?.type === "gap" ||
-        target?.type === "swap" ||
-        target?.type === "panel-slot" ||
-        target?.type === "group-slot" ||
-        target?.type === "edge" ||
-        target?.type === "workspace"
+      target?.type === "gap" ||
+      target?.type === "swap" ||
+      target?.type === "panel-slot" ||
+      target?.type === "group-slot" ||
+      target?.type === "pair-slot" ||
+      target?.type === "edge" ||
+      target?.type === "workspace"
       ) {
         activeDropRef.current = target
         setActiveDrop((current) => (getResolvedDropKey(current) === getResolvedDropKey(target) ? current : target))
@@ -555,6 +576,17 @@ export function ResizablePanels({
             : movePanelToLayoutPathSide(current, panelId, groupSlotTarget.path, groupSlotTarget.side)
         }
 
+        const pairSlotTarget = committedActiveDrop?.type === "pair-slot" ? committedActiveDrop.target : null
+        if (pairSlotTarget) {
+          return movePanelToAdjacentPairSide(
+            current,
+            panelId,
+            pairSlotTarget.beforeId,
+            pairSlotTarget.afterId,
+            pairSlotTarget.side,
+          )
+        }
+
         const panelSlotTarget =
           committedActiveDrop?.type === "panel-slot"
             ? committedActiveDrop.target
@@ -566,10 +598,13 @@ export function ResizablePanels({
 
         const gapTarget = committedActiveDrop?.type === "gap" ? committedActiveDrop.target : options.fallbackGapTarget
         if (gapTarget) {
-          if (!gapTarget.beforeId || panelId === gapTarget.beforeId || panelId === gapTarget.afterId) {
-            return current
-          }
-          return movePanelInWorkspace(current, panelId, gapTarget.beforeId, getAfterFirstDropSide(gapTarget.direction))
+          return movePanelToSplitGap(
+            current,
+            panelId,
+            gapTarget.beforeId,
+            gapTarget.afterId,
+            gapTarget.direction,
+          )
         }
 
         const swapTargetId = committedActiveDrop?.type === "swap" ? committedActiveDrop.targetId : options.fallbackSwapTargetId
@@ -877,6 +912,8 @@ export function ResizablePanels({
   const workspaceAreaStyle = getWorkspaceEdgePreviewStyle(activeDrop)
   const shouldShowDock = workspace.collapsed.length > 0 || dragState !== null
   const dockExpanded = workspace.collapsed.length > 0 && isDockExpanded
+  const isPanelDragActive = dragState !== null
+  const isPanelContentSuppressed = isPanelDragActive || resizingPathKey !== null
 
   return (
     <div
@@ -894,7 +931,8 @@ export function ResizablePanels({
               path={[]}
               panelConfigs={panelConfigs}
               draggedPanelId={dragState?.panelId ?? null}
-              isPanelDragActive={dragState !== null}
+              isPanelDragActive={isPanelDragActive}
+              isPanelContentSuppressed={isPanelContentSuppressed}
               activeDrop={activeDrop}
               resizingPathKey={resizingPathKey}
               onCollapsePanel={collapsePanel}
@@ -912,6 +950,7 @@ export function ResizablePanels({
           )}
         </div>
         <EdgeDropPreview activeDrop={activeDrop} />
+        <PairSlotPreview activeDrop={activeDrop} />
       </div>
       {shouldShowDock && (
         <CollapsedPanelDock
@@ -937,6 +976,7 @@ function PanelLayoutView({
   panelConfigs,
   draggedPanelId,
   isPanelDragActive,
+  isPanelContentSuppressed,
   activeDrop,
   resizingPathKey,
   onCollapsePanel,
@@ -949,6 +989,7 @@ function PanelLayoutView({
   panelConfigs: PanelConfigs
   draggedPanelId: PanelId | null
   isPanelDragActive: boolean
+  isPanelContentSuppressed: boolean
   activeDrop: ActivePanelDrop | null
   resizingPathKey: string | null
   onCollapsePanel: (panelId: PanelId) => void
@@ -967,12 +1008,17 @@ function PanelLayoutView({
       activeDrop?.type === "panel-slot" && activeDrop.target.targetId === node.id
         ? activeDrop.target.side
         : null
+    const pairSlotSide =
+      activeDrop?.type === "pair-slot" &&
+      (activeDrop.target.beforeId === node.id || activeDrop.target.afterId === node.id)
+        ? activeDrop.target.side
+        : null
     return (
-      <PanelSlotFrame side={panelSlotSide}>
+      <PanelSlotFrame side={panelSlotSide} paddingSide={panelSlotSide ?? pairSlotSide}>
         <ToolPanel
           panelId={node.id}
           title={panel.title}
-          isPanelDragActive={isPanelDragActive}
+          isPanelContentSuppressed={isPanelContentSuppressed}
           isDraggedPanel={draggedPanelId === node.id}
           isSwapTarget={activeDrop?.type === "swap" && activeDrop.targetId === node.id}
           onCollapse={onCollapsePanel}
@@ -991,6 +1037,7 @@ function PanelLayoutView({
       panelConfigs={panelConfigs}
       draggedPanelId={draggedPanelId}
       isPanelDragActive={isPanelDragActive}
+      isPanelContentSuppressed={isPanelContentSuppressed}
       activeDrop={activeDrop}
       resizingPathKey={resizingPathKey}
       onCollapsePanel={onCollapsePanel}
@@ -1007,6 +1054,7 @@ function SplitNode({
   panelConfigs,
   draggedPanelId,
   isPanelDragActive,
+  isPanelContentSuppressed,
   activeDrop,
   resizingPathKey,
   onCollapsePanel,
@@ -1019,6 +1067,7 @@ function SplitNode({
   panelConfigs: PanelConfigs
   draggedPanelId: PanelId | null
   isPanelDragActive: boolean
+  isPanelContentSuppressed: boolean
   activeDrop: ActivePanelDrop | null
   resizingPathKey: string | null
   onCollapsePanel: (panelId: PanelId) => void
@@ -1077,7 +1126,7 @@ function SplitNode({
       <div
         className="min-h-0 min-w-0"
         style={{
-          flex: `0 0 calc(${node.ratio * 100}% - ${SPLITTER_SIZE_PX / 2}px)`,
+          flex: `0 0 calc(${node.ratio * 100}% - ${SPLITTER_SIZE_PX * node.ratio}px)`,
           minWidth: isRow ? firstMinSize : undefined,
           minHeight: isRow ? undefined : firstMinSize,
         }}
@@ -1088,6 +1137,7 @@ function SplitNode({
           panelConfigs={panelConfigs}
           draggedPanelId={draggedPanelId}
           isPanelDragActive={isPanelDragActive}
+          isPanelContentSuppressed={isPanelContentSuppressed}
           activeDrop={activeDrop}
           resizingPathKey={resizingPathKey}
           onCollapsePanel={onCollapsePanel}
@@ -1125,6 +1175,7 @@ function SplitNode({
           panelConfigs={panelConfigs}
           draggedPanelId={draggedPanelId}
           isPanelDragActive={isPanelDragActive}
+          isPanelContentSuppressed={isPanelContentSuppressed}
           activeDrop={activeDrop}
           resizingPathKey={resizingPathKey}
           onCollapsePanel={onCollapsePanel}
@@ -1141,7 +1192,7 @@ function SplitNode({
 function ToolPanel({
   panelId,
   title,
-  isPanelDragActive,
+  isPanelContentSuppressed,
   isDraggedPanel,
   isSwapTarget,
   onCollapse,
@@ -1150,7 +1201,7 @@ function ToolPanel({
 }: {
   panelId: PanelId
   title: string
-  isPanelDragActive: boolean
+  isPanelContentSuppressed: boolean
   isDraggedPanel: boolean
   isSwapTarget: boolean
   onCollapse: (panelId: PanelId) => void
@@ -1172,28 +1223,93 @@ function ToolPanel({
         onCollapse={onCollapse}
         onPointerDragStart={onPointerDragStart}
       />
-      {isPanelDragActive ? (
-        <PanelDragPlaceholder title={title} active={isDraggedPanel} />
-      ) : (
-        <div className="min-h-0 flex-1 overflow-auto">{children}</div>
-      )}
+      <PanelContentTransition suppressed={isPanelContentSuppressed} title={title} active={isDraggedPanel}>
+        {children}
+      </PanelContentTransition>
       <SwapPreview active={isSwapTarget} />
     </section>
   )
 }
 
-function PanelSlotFrame({ side, children }: { side: PanelSlotSide | null; children: ReactNode }) {
+function PanelSlotFrame({
+  side,
+  paddingSide,
+  children,
+}: {
+  side: PanelSlotSide | null
+  paddingSide: DropSide | null
+  children: ReactNode
+}) {
   return (
     <div
       className={cn(
         "relative h-full min-h-0 min-w-0 transition-[padding] duration-150 ease-out",
-        side === "top" && "pt-11",
-        side === "bottom" && "pb-11",
+        paddingSide === "left" && "pl-11",
+        paddingSide === "right" && "pr-11",
+        paddingSide === "top" && "pt-11",
+        paddingSide === "bottom" && "pb-11",
       )}
-      data-panel-slot-frame={side ?? undefined}
+      data-panel-slot-frame={paddingSide ?? undefined}
     >
       {children}
       <PanelSlotPreview side={side} />
+    </div>
+  )
+}
+
+function PanelContentTransition({
+  suppressed,
+  title,
+  active,
+  children,
+}: {
+  suppressed: boolean
+  title: string
+  active: boolean
+  children: ReactNode
+}) {
+  const [keepContentMounted, setKeepContentMounted] = useState(!suppressed)
+
+  useEffect(() => {
+    const delay = suppressed ? PANEL_SIMPLE_WORKSPACE_FADE_MS : 0
+    const timeout = window.setTimeout(() => {
+      setKeepContentMounted(!suppressed)
+    }, delay)
+
+    return () => window.clearTimeout(timeout)
+  }, [suppressed])
+
+  const transitionStyle: CSSProperties = {
+    transitionDuration: `${PANEL_SIMPLE_WORKSPACE_FADE_MS}ms`,
+    transitionTimingFunction: PANEL_PREVIEW_EASING,
+    willChange: "opacity, transform",
+  }
+
+  return (
+    <div className="relative min-h-0 flex-1 overflow-hidden">
+      {(!suppressed || keepContentMounted) && (
+        <div
+          className={cn(
+            "absolute inset-0 min-h-0 overflow-auto transition-[opacity,transform]",
+            suppressed ? "pointer-events-none scale-[0.992] opacity-0" : "scale-100 opacity-100",
+          )}
+          aria-hidden={suppressed}
+          style={transitionStyle}
+        >
+          {children}
+        </div>
+      )}
+      {suppressed && (
+        <div
+          className="animate-in fade-in-0 zoom-in-95 absolute inset-0 duration-150"
+          style={{
+            animationDuration: `${PANEL_SIMPLE_WORKSPACE_FADE_MS}ms`,
+            animationTimingFunction: PANEL_PREVIEW_EASING,
+          }}
+        >
+          <PanelDragPlaceholder title={title} active={active} />
+        </div>
+      )}
     </div>
   )
 }
@@ -1202,7 +1318,7 @@ function PanelDragPlaceholder({ title, active }: { title: string; active: boolea
   return (
     <div
       className={cn(
-        "relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/35 p-4",
+        "relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden bg-muted/35 p-4",
         active && "bg-muted/25",
       )}
       aria-hidden="true"
@@ -1385,9 +1501,9 @@ function CollapsedPanelDock({
       data-panel-divider="true"
       data-panel-dock="true"
       className={cn(
-        "relative z-40 flex h-full shrink-0 border-l border-border/80 bg-background/95 shadow-[-8px_0_18px_rgba(15,23,42,0.08)] backdrop-blur transition-[width,border-color,background-color] duration-150 ease-out",
-        expanded ? "w-56" : "w-12",
-        active && "border-orange-500 bg-orange-50",
+        "relative z-40 flex h-full shrink-0 border-l border-border/80 bg-background/95 shadow-[-8px_0_18px_rgba(15,23,42,0.08)] backdrop-blur transition-[width,border-color,background-color,box-shadow] duration-150 ease-out",
+        expanded ? (active ? "w-60" : "w-56") : active ? "w-14" : "w-12",
+        active && "border-orange-500 bg-orange-50 shadow-[-10px_0_24px_rgba(249,115,22,0.16)]",
       )}
     >
       <div className={cn("flex h-full min-w-0 flex-col", expanded ? "w-full p-2" : "w-full items-center p-1.5")}>
@@ -1527,15 +1643,68 @@ function EdgeDropPreview({ activeDrop }: { activeDrop: ActivePanelDrop | null })
     <div
       className={cn(
         "pointer-events-none absolute z-30 flex items-center justify-center bg-orange-500/20 shadow-lg shadow-orange-500/10 ring-1 ring-inset ring-orange-500/40 transition-[background-color,width,height] duration-150 ease-out",
-        activeDrop.side === "left" && "inset-y-2 left-2 w-11",
-        activeDrop.side === "right" && "inset-y-2 right-2 w-11",
-        activeDrop.side === "top" && "inset-x-2 top-2 h-11",
-        activeDrop.side === "bottom" && "inset-x-2 bottom-2 h-11",
+        activeDrop.side === "left" && "inset-y-2 left-0 w-11",
+        activeDrop.side === "right" && "inset-y-2 right-0 w-11",
+        activeDrop.side === "top" && "inset-x-2 top-0 h-11",
+        activeDrop.side === "bottom" && "inset-x-2 bottom-0 h-11",
       )}
       data-panel-edge-drop={activeDrop.side}
       aria-hidden="true"
     >
       <span className={cn("rounded-full bg-orange-500 shadow-sm", isVerticalEdge ? "h-20 w-1.5" : "h-1.5 w-20")} />
+    </div>
+  )
+}
+
+function PairSlotPreview({ activeDrop }: { activeDrop: ActivePanelDrop | null }) {
+  if (activeDrop?.type !== "pair-slot") {
+    return null
+  }
+
+  const { rect, side } = activeDrop.target
+  const isVerticalIndicator = side === "left" || side === "right"
+  const endAxisSize = isVerticalIndicator ? rect.height : rect.width
+  const endInset = Math.min(
+    PANEL_PAIR_SLOT_PREVIEW_END_INSET_PX,
+    Math.max(0, (endAxisSize - PANEL_EDGE_GAP_PREVIEW_PX) / 2),
+  )
+  const style: CSSProperties =
+    side === "left"
+      ? {
+          left: rect.left,
+          top: rect.top + endInset,
+          width: PANEL_EDGE_GAP_PREVIEW_PX,
+          height: Math.max(0, rect.height - endInset * 2),
+        }
+      : side === "right"
+        ? {
+            left: rect.right - PANEL_EDGE_GAP_PREVIEW_PX,
+            top: rect.top + endInset,
+            width: PANEL_EDGE_GAP_PREVIEW_PX,
+            height: Math.max(0, rect.height - endInset * 2),
+          }
+        : side === "top"
+          ? {
+              left: rect.left + endInset,
+              top: rect.top,
+              width: Math.max(0, rect.width - endInset * 2),
+              height: PANEL_EDGE_GAP_PREVIEW_PX,
+            }
+          : {
+              left: rect.left + endInset,
+              top: rect.bottom - PANEL_EDGE_GAP_PREVIEW_PX,
+              width: Math.max(0, rect.width - endInset * 2),
+              height: PANEL_EDGE_GAP_PREVIEW_PX,
+            }
+
+  return (
+    <div
+      className="pointer-events-none fixed z-30 flex items-center justify-center bg-orange-500/20 shadow-lg shadow-orange-500/10 ring-1 ring-inset ring-orange-500/40 transition-[background-color,width,height] duration-150 ease-out"
+      data-panel-pair-slot-drop={side}
+      aria-hidden="true"
+      style={style}
+    >
+      <span className={cn("rounded-full bg-orange-500 shadow-sm", isVerticalIndicator ? "h-20 w-1.5" : "h-1.5 w-20")} />
     </div>
   )
 }
@@ -1653,6 +1822,10 @@ function getResolvedDropKey(target: ResolvedPointDrop): string {
     return `group-slot:${target.target.pathKey}:${target.target.side}`
   }
 
+  if (target.type === "pair-slot") {
+    return `pair-slot:${target.target.beforeId}:${target.target.afterId}:${target.target.side}`
+  }
+
   if (target.type === "edge") {
     return `edge:${target.side}`
   }
@@ -1668,10 +1841,6 @@ function getResolvedDropKey(target: ResolvedPointDrop): string {
     target.target.beforeId ?? "none",
     target.target.afterId ?? "none",
   ].join(":")
-}
-
-function getAfterFirstDropSide(direction: SplitDirection): DropSide {
-  return direction === "row" ? "right" : "bottom"
 }
 
 function captureDragTargetGeometry(): DragTargetGeometry {
@@ -1776,8 +1945,9 @@ function getWorkspaceEdgeTargets(workspaceRect: MeasuredRect | null): DragTarget
       side: "top",
       rect: {
         ...workspaceRect,
+        top: 0,
         bottom: workspaceRect.top + edgeHeight,
-        height: edgeHeight,
+        height: workspaceRect.top + edgeHeight,
       },
     },
     {
@@ -1814,8 +1984,29 @@ function resolvePointDropTarget(
     return edgeTarget
   }
 
+  const gapEndpointTarget = getGapEndpointDropTargetFromPoint(point, draggedPanelId, geometry)
+  if (gapEndpointTarget) {
+    return gapEndpointTarget
+  }
+
+  const physicalGapTarget = getPhysicalGapTargetFromPoint(point, draggedPanelId, geometry)
+  if (physicalGapTarget) {
+    return {
+      type: "gap",
+      target: physicalGapTarget,
+    }
+  }
+
   const groupSlotTarget = getSplitGroupSlotTargetFromPoint(point, draggedPanelId, geometry)
   if (groupSlotTarget) {
+    const equivalentGapTarget = getEquivalentGroupGapTarget(groupSlotTarget, geometry)
+    if (equivalentGapTarget) {
+      return {
+        type: "gap",
+        target: equivalentGapTarget,
+      }
+    }
+
     return groupSlotTarget.path.length === 0
       ? {
           type: "edge",
@@ -2005,6 +2196,45 @@ function getEquivalentVerticalGapTarget(
   return null
 }
 
+function getEquivalentGroupGapTarget(
+  groupSlotTarget: SplitGroupSlotTarget,
+  geometry: DragTargetGeometry | null,
+): SplitGapTarget | null {
+  const groups = geometry?.groups ?? captureDragTargetGeometry().groups
+  const group = groups.find((candidate) => candidate.pathKey === groupSlotTarget.pathKey)
+  if (!group) {
+    return null
+  }
+
+  const gapDirection: SplitDirection =
+    groupSlotTarget.side === "left" || groupSlotTarget.side === "right" ? "row" : "column"
+  const boundaryPanelId =
+    groupSlotTarget.side === "left" || groupSlotTarget.side === "top"
+      ? group.panelIds[0]
+      : group.panelIds.at(-1)
+  if (!boundaryPanelId) {
+    return null
+  }
+
+  const gaps = geometry?.gaps ?? captureDragTargetGeometry().gaps
+  for (const gap of gaps) {
+    const { target } = gap
+    if (target.direction !== gapDirection) {
+      continue
+    }
+
+    if ((groupSlotTarget.side === "left" || groupSlotTarget.side === "top") && target.afterId === boundaryPanelId) {
+      return target
+    }
+
+    if ((groupSlotTarget.side === "right" || groupSlotTarget.side === "bottom") && target.beforeId === boundaryPanelId) {
+      return target
+    }
+  }
+
+  return null
+}
+
 function getWorkspaceEdgeDropTarget(
   point: DragPoint,
   _draggedPanelId: PanelId,
@@ -2088,6 +2318,212 @@ function isWithinRectSideCrossAxis(
   }
 
   return point.clientX >= rect.left - margin && point.clientX <= rect.right + margin
+}
+
+function getGapEndpointDropTargetFromPoint(
+  point: DragPoint,
+  draggedPanelId: PanelId,
+  geometry: DragTargetGeometry | null,
+): ActivePanelDrop | null {
+  const currentGeometry = geometry ?? captureDragTargetGeometry()
+  let nearest:
+    | {
+        distance: number
+        target: ActivePanelDrop
+      }
+    | null = null
+
+  for (const gap of currentGeometry.gaps) {
+    const { target, rect } = gap
+    if (
+      !target.beforeId ||
+      !target.afterId ||
+      target.beforeId === draggedPanelId ||
+      target.afterId === draggedPanelId ||
+      currentGeometry.panels.length <= 2
+    ) {
+      continue
+    }
+
+    const pairRect = getPanelPairRect(currentGeometry, target.beforeId, target.afterId)
+    if (!pairRect) {
+      continue
+    }
+
+    const isRowGap = target.direction === "row"
+    const axisPosition = isRowGap ? point.clientX : point.clientY
+    const crossAxisPosition = isRowGap ? point.clientY : point.clientX
+    const axisStart = isRowGap ? rect.left : rect.top
+    const axisEnd = isRowGap ? rect.right : rect.bottom
+    const crossAxisStart = isRowGap ? pairRect.top : pairRect.left
+    const crossAxisEnd = isRowGap ? pairRect.bottom : pairRect.right
+
+    if (
+      axisPosition < axisStart - PANEL_GAP_ENDPOINT_AXIS_MARGIN_PX ||
+      axisPosition > axisEnd + PANEL_GAP_ENDPOINT_AXIS_MARGIN_PX
+    ) {
+      continue
+    }
+
+    const startDistance = crossAxisPosition - crossAxisStart
+    const endDistance = crossAxisEnd - crossAxisPosition
+    const endpointCandidates = [
+      {
+        distance: Math.abs(startDistance),
+        inZone: startDistance >= 0 && startDistance <= PANEL_GAP_ENDPOINT_ZONE_PX,
+        side: isRowGap ? "top" : "left",
+      },
+      {
+        distance: Math.abs(endDistance),
+        inZone: endDistance >= 0 && endDistance <= PANEL_GAP_ENDPOINT_ZONE_PX,
+        side: isRowGap ? "bottom" : "right",
+      },
+    ] satisfies Array<{ distance: number; inZone: boolean; side: DropSide }>
+
+    for (const candidate of endpointCandidates) {
+      if (!candidate.inZone) {
+        continue
+      }
+
+      const exactGroup = findExactPanelGroup(currentGeometry, [target.beforeId, target.afterId])
+      const dropTarget: ActivePanelDrop = exactGroup
+        ? {
+            type: "group-slot",
+            target: {
+              pathKey: exactGroup.pathKey,
+              path: exactGroup.path,
+              side: candidate.side,
+            },
+          }
+        : {
+            type: "pair-slot",
+            target: {
+              beforeId: target.beforeId,
+              afterId: target.afterId,
+              side: candidate.side,
+              rect: pairRect,
+            },
+          }
+
+      if (!nearest || candidate.distance < nearest.distance) {
+        nearest = {
+          distance: candidate.distance,
+          target: dropTarget,
+        }
+      }
+    }
+  }
+
+  return nearest?.target ?? null
+}
+
+function getPanelPairRect(
+  geometry: DragTargetGeometry,
+  beforeId: PanelId,
+  afterId: PanelId,
+): MeasuredRect | null {
+  const beforePanel = geometry.panels.find((panel) => panel.panelId === beforeId)
+  const afterPanel = geometry.panels.find((panel) => panel.panelId === afterId)
+  if (!beforePanel || !afterPanel) {
+    return null
+  }
+
+  return getUnionRect([beforePanel.rect, afterPanel.rect])
+}
+
+function getUnionRect(rects: MeasuredRect[]): MeasuredRect {
+  const left = Math.min(...rects.map((rect) => rect.left))
+  const right = Math.max(...rects.map((rect) => rect.right))
+  const top = Math.min(...rects.map((rect) => rect.top))
+  const bottom = Math.max(...rects.map((rect) => rect.bottom))
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+  }
+}
+
+function findExactPanelGroup(
+  geometry: DragTargetGeometry,
+  panelIds: PanelId[],
+): DragTargetGeometry["groups"][number] | null {
+  const expected = new Set(panelIds)
+  return (
+    geometry.groups.find(
+      (group) =>
+        group.panelIds.length === expected.size &&
+        group.panelIds.every((panelId) => expected.has(panelId)),
+    ) ?? null
+  )
+}
+
+function getPhysicalGapTargetFromPoint(
+  point: DragPoint,
+  draggedPanelId: PanelId,
+  geometry: DragTargetGeometry | null,
+): SplitGapTarget | null {
+  const gaps = geometry?.gaps ?? captureDragTargetGeometry().gaps
+  let nearest:
+    | {
+        distance: number
+        target: SplitGapTarget
+      }
+    | null = null
+
+  for (const gap of gaps) {
+    const { target, rect } = gap
+    const isRow = target.direction === "row"
+    const axisPosition = isRow ? point.clientX : point.clientY
+    const crossAxisPosition = isRow ? point.clientY : point.clientX
+    const axisStart = isRow ? rect.left : rect.top
+    const axisEnd = isRow ? rect.right : rect.bottom
+    const crossAxisStart = isRow ? rect.top : rect.left
+    const crossAxisEnd = isRow ? rect.bottom : rect.right
+    const crossAxisSize = Math.max(0, crossAxisEnd - crossAxisStart)
+    const endGuard = Math.min(PANEL_PHYSICAL_GAP_END_GUARD_PX, crossAxisSize / 3)
+
+    if (
+      axisPosition < axisStart - PANEL_PHYSICAL_GAP_AXIS_MARGIN_PX ||
+      axisPosition > axisEnd + PANEL_PHYSICAL_GAP_AXIS_MARGIN_PX
+    ) {
+      continue
+    }
+
+    if (
+      crossAxisPosition < crossAxisStart - PANEL_PHYSICAL_GAP_CROSS_AXIS_MARGIN_PX ||
+      crossAxisPosition > crossAxisEnd + PANEL_PHYSICAL_GAP_CROSS_AXIS_MARGIN_PX
+    ) {
+      continue
+    }
+
+    if (crossAxisPosition < crossAxisStart + endGuard || crossAxisPosition > crossAxisEnd - endGuard) {
+      continue
+    }
+
+    const nearestPanelCenterDistance = getNearestAdjacentPanelCenterDistance(
+      point,
+      target,
+      draggedPanelId,
+      geometry,
+    )
+    if (!nearestPanelCenterDistance || nearestPanelCenterDistance <= 0) {
+      continue
+    }
+
+    const axisCenter = axisStart + (axisEnd - axisStart) / 2
+    const distance = Math.abs(axisPosition - axisCenter)
+    if (!nearest || distance < nearest.distance) {
+      nearest = {
+        distance,
+        target,
+      }
+    }
+  }
+
+  return nearest?.target ?? null
 }
 
 function getNearestGapTarget(

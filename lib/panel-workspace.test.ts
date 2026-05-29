@@ -9,6 +9,8 @@ import {
   getPanelIds,
   getSplitRatioAtPath,
   movePanelInWorkspace,
+  movePanelToAdjacentPairSide,
+  movePanelToSplitGap,
   movePanelToLayoutPathSide,
   movePanelToWorkspaceEdge,
   normalizePanelWorkspaceState,
@@ -93,6 +95,42 @@ describe("panel workspace layout helpers", () => {
       expect(moved.layout.first.direction).toBe("column")
       expect(moved.layout.first.first).toEqual({ type: "panel", id: "panel2" })
       expect(moved.layout.first.second).toEqual({ type: "panel", id: "panel1" })
+    }
+  })
+
+  it("moves a panel out of a perpendicular stack when dropped on the adjacent split gap", () => {
+    const moved = movePanelToSplitGap(createDefaultPanelWorkspaceState(), "panel2", "panel1", "panel2", "row")
+
+    expect(getPanelIds(moved.layout)).toEqual(["panel1", "panel2", "panel3"])
+    expect(moved.collapsed).toEqual([])
+    expect(moved.layout?.type).toBe("split")
+    if (moved.layout?.type === "split") {
+      expect(moved.layout.direction).toBe("row")
+      expect(moved.layout.first.type).toBe("split")
+      expect(moved.layout.second).toEqual({ type: "panel", id: "panel3" })
+      if (moved.layout.first.type === "split") {
+        expect(moved.layout.first.direction).toBe("row")
+        expect(moved.layout.first.first).toEqual({ type: "panel", id: "panel1" })
+        expect(moved.layout.first.second).toEqual({ type: "panel", id: "panel2" })
+      }
+    }
+  })
+
+  it("moves a panel perpendicular to a pair around a split gap", () => {
+    const moved = movePanelToAdjacentPairSide(createDefaultPanelWorkspaceState(), "panel3", "panel1", "panel2", "top")
+
+    expect(getPanelIds(moved.layout)).toEqual(["panel3", "panel1", "panel2"])
+    expect(moved.collapsed).toEqual([])
+    expect(moved.layout?.type).toBe("split")
+    if (moved.layout?.type === "split") {
+      expect(moved.layout.direction).toBe("column")
+      expect(moved.layout.first).toEqual({ type: "panel", id: "panel3" })
+      expect(moved.layout.second.type).toBe("split")
+      if (moved.layout.second.type === "split") {
+        expect(moved.layout.second.direction).toBe("row")
+        expect(moved.layout.second.first).toEqual({ type: "panel", id: "panel1" })
+        expect(moved.layout.second.second).toEqual({ type: "panel", id: "panel2" })
+      }
     }
   })
 

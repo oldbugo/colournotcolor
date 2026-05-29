@@ -185,7 +185,12 @@ export function PaletteListManager({
   return (
     <div ref={sidebarRef} className="flex h-full flex-col bg-secondary">
       <div className="relative flex-1 space-y-3 overflow-auto px-6 py-4">
-        <div className="relative z-50 -mb-8 h-8" onDragOver={handleTopZoneDragOver} onDragLeave={handleDragLeave} onDrop={handleTopZoneDrop}>
+        <div
+          className={cn("relative z-50 -mb-8 h-8", draggedIndex === null && "pointer-events-none")}
+          onDragOver={handleTopZoneDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleTopZoneDrop}
+        >
           {dragOverIndex === 0 && draggedIndex !== null && draggedIndex !== 0 && (
             <div className="absolute bottom-[36px] left-0 right-0 h-0.5 rounded-full bg-blue-500" />
           )}
@@ -206,34 +211,36 @@ export function PaletteListManager({
               )}
 
               <div
+                role="button"
+                tabIndex={0}
+                draggable={isCustomPalette}
+                aria-label={`Select ${palette.name}`}
+                onClick={() => onSelectPalette(palette.id)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") {
+                    return
+                  }
+
+                  event.preventDefault()
+                  onSelectPalette(palette.id)
+                }}
+                onDragStart={(event) => {
+                  if (isCustomPalette) {
+                    handleDragStart(event, index)
+                  }
+                }}
+                onDragEnd={handleDragEnd}
+                onDragOver={(event) => handleDragOver(event, index)}
+                onDragLeave={handleDragLeave}
+                onDrop={(event) => handleDrop(event, index)}
                 className={cn(
-                  "relative flex w-full flex-1 flex-col items-start gap-2 overflow-hidden rounded-lg border border-border bg-card p-3 py-3 text-left transition-all hover:bg-accent",
+                  "relative flex w-full flex-1 flex-col items-start gap-2 overflow-hidden rounded-lg border border-border bg-card p-3 py-3 text-left transition-all hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                   activePaletteId === palette.id && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
                   isDragging && "scale-95 opacity-50",
-                  !isCustomPalette && "cursor-pointer",
+                  isCustomPalette ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
                 )}
               >
-                <button
-                  type="button"
-                  draggable={isCustomPalette}
-                  onClick={() => onSelectPalette(palette.id)}
-                  onDragStart={(event) => {
-                    if (isCustomPalette) {
-                      handleDragStart(event, index)
-                    }
-                  }}
-                  onDragEnd={handleDragEnd}
-                  onDragOver={(event) => handleDragOver(event, index)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={(event) => handleDrop(event, index)}
-                  className={cn(
-                    "absolute inset-0 z-10 cursor-pointer border-0 bg-transparent active:cursor-grabbing",
-                    isCustomPalette && "cursor-grab",
-                  )}
-                  aria-label={`Select ${palette.name}`}
-                />
-
-                <div className="relative z-20 flex w-full items-start justify-between gap-3">
+                <div className="flex w-full items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex w-full flex-col gap-3">{renderColorRow(palette.colors)}</div>
                     <span className="block truncate text-xs text-foreground">{palette.name}</span>
@@ -243,6 +250,7 @@ export function PaletteListManager({
                     {onDuplicatePalette && (
                       <button
                         type="button"
+                        data-palette-row-action="true"
                         className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-border bg-background text-muted-foreground shadow-xs transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                         aria-label={`Duplicate ${palette.name}`}
                         title={`Duplicate ${palette.name}`}
@@ -258,6 +266,7 @@ export function PaletteListManager({
                     {onDeletePalette && (
                       <button
                         type="button"
+                        data-palette-row-action="true"
                         className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-border bg-background text-muted-foreground shadow-xs transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-40"
                         aria-label={`Delete ${palette.name}`}
                         title={canDeletePalette ? `Delete ${palette.name}` : "You must keep at least one palette"}

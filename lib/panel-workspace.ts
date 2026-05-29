@@ -193,6 +193,52 @@ export function movePanelInWorkspace(
   }
 }
 
+export function movePanelToSplitGap(
+  state: PanelWorkspaceState,
+  panelId: PanelId,
+  beforeId: PanelId | null,
+  afterId: PanelId | null,
+  direction: SplitDirection,
+): PanelWorkspaceState {
+  const afterBeforeSide: DropSide = direction === "row" ? "right" : "bottom"
+  const beforeAfterSide: DropSide = direction === "row" ? "left" : "top"
+
+  if (beforeId && beforeId !== panelId) {
+    return movePanelInWorkspace(state, panelId, beforeId, afterBeforeSide)
+  }
+
+  if (afterId && afterId !== panelId) {
+    return movePanelInWorkspace(state, panelId, afterId, beforeAfterSide)
+  }
+
+  return state
+}
+
+export function movePanelToAdjacentPairSide(
+  state: PanelWorkspaceState,
+  panelId: PanelId,
+  beforeId: PanelId,
+  afterId: PanelId,
+  side: DropSide,
+): PanelWorkspaceState {
+  if (panelId === beforeId || panelId === afterId || beforeId === afterId) {
+    return state
+  }
+
+  const layoutWithoutPanel = containsPanel(state.layout, panelId)
+    ? removePanelFromLayout(state.layout, panelId)
+    : state.layout
+  const pairPath = findSmallestNodePathContainingPanels(layoutWithoutPanel, [beforeId, afterId])
+  if (!pairPath) {
+    return state
+  }
+
+  return {
+    layout: insertPanelNearPath(layoutWithoutPanel, panelId, pairPath, side),
+    collapsed: state.collapsed.filter((id) => id !== panelId),
+  }
+}
+
 export function movePanelToWorkspaceEdge(
   state: PanelWorkspaceState,
   panelId: PanelId,

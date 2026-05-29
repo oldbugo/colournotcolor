@@ -837,6 +837,11 @@ export function PaletteManager({
     : isChromaSafe
       ? "Chroma safe"
       : "Outside safe range"
+  const hslPlaneHue = saturation === 0 ? preservedHue : hue
+  const texturePlaneMode = colorMode === "hsluv" ? activePlaneMode : "h"
+  const textureGeometry = colorMode === "hsluv" ? pickerGeometry : null
+  const textureLightness = colorMode === "hsluv" ? lightness : 0
+  const textureIsExtremeLightness = colorMode === "hsluv" && isExtremeLightness
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -873,21 +878,20 @@ export function PaletteManager({
         return
       }
 
-      if (isExtremeLightness) {
+      if (textureIsExtremeLightness) {
         context.clearRect(0, 0, canvas.width, canvas.height)
         return
       }
 
       context.clearRect(0, 0, canvas.width, canvas.height)
       if (colorMode === "hsl") {
-        const gradientHue = saturation === 0 ? preservedHue : hue
-        drawHslPlaneTexture(context, pixelWidth, pixelHeight, gradientHue)
-      } else {
+        drawHslPlaneTexture(context, pixelWidth, pixelHeight, hslPlaneHue)
+      } else if (textureGeometry) {
         const textureCanvas = generatePlaneTexture(
           colorMode,
-          activePlaneMode,
-          { h: 0, s: 0, l: lightness },
-          pickerGeometry,
+          texturePlaneMode,
+          { h: 0, s: 0, l: textureLightness },
+          textureGeometry,
           pixelWidth,
           pixelHeight,
         )
@@ -903,7 +907,15 @@ export function PaletteManager({
       cancelled = true
       window.cancelAnimationFrame(frameId)
     }
-  }, [activePlaneMode, colorMode, hue, isExtremeLightness, lightness, pickerGeometry, preservedHue, sidebarWidth, saturation])
+  }, [
+    colorMode,
+    hslPlaneHue,
+    sidebarWidth,
+    textureGeometry,
+    textureIsExtremeLightness,
+    textureLightness,
+    texturePlaneMode,
+  ])
 
   useEffect(() => {
     return () => {

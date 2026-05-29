@@ -1421,7 +1421,7 @@ const colorEntries = useMemo<ColorEntry[]>(
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <div className="flex w-full flex-wrap items-start gap-2 justify-start md:w-auto md:ml-auto md:justify-end md:items-stretch">
+        <div className="flex w-full flex-wrap items-start gap-2 pr-3 justify-start md:w-auto md:ml-auto md:justify-end md:items-stretch">
           <Button
             type="button"
             variant="outline"
