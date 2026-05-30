@@ -53,7 +53,6 @@ type ColorManagerProps = {
   onColorEdit?: (index: number) => void
   activeEditingIndex?: number | null
   lastInteractedColor?: string
-  collapseGroupsDuringGroupDrag: boolean
 }
 
 const GROUP_VIEWPORT_MARGIN = 16
@@ -130,7 +129,6 @@ export function ColorManager({
   onColorEdit,
   activeEditingIndex,
   lastInteractedColor = "#808080",
-  collapseGroupsDuringGroupDrag,
 }: ColorManagerProps) {
   void _label
   const getSwatchAt = (index: number): ColorSwatch | undefined => swatches[index]
@@ -219,7 +217,6 @@ export function ColorManager({
   const [pendingNewGroupSwatchId, setPendingNewGroupSwatchId] = useState<string | null>(null)
   const [isCardSizeMenuOpen, setIsCardSizeMenuOpen] = useState(false)
   const dragViewportPointerRef = useRef<{ x: number; y: number } | null>(null)
-  const pendingGroupSnapTimerRef = useRef<number | null>(null)
   const pendingGroupSnapRef = useRef<{ groupName: string; options?: { force?: boolean; align?: Align } } | null>(null)
   const cardSnapHandleRef = useRef<CancelHandle | null>(null)
   const cardSnapDelayTimeoutRef = useRef<number | null>(null)
@@ -229,10 +226,6 @@ const GROUP_SNAP_HOLD_MS = 160
 
   useEffect(() => {
     return () => {
-      if (typeof window !== "undefined" && pendingGroupSnapTimerRef.current !== null) {
-        window.clearTimeout(pendingGroupSnapTimerRef.current)
-        pendingGroupSnapTimerRef.current = null
-      }
       if (typeof window !== "undefined" && cardSnapDelayTimeoutRef.current !== null) {
         window.clearTimeout(cardSnapDelayTimeoutRef.current)
         cardSnapDelayTimeoutRef.current = null
@@ -276,7 +269,6 @@ const GROUP_SNAP_HOLD_MS = 160
   }, [])
 
   const { queueGroupScrollAnchor, releaseGroupScrollAnchor } = useGroupScrollAnchor({
-    enabled: collapseGroupsDuringGroupDrag,
     getScrollParent: ensureScrollParent,
     findGroupSectionElement,
   })
@@ -400,10 +392,6 @@ const GROUP_SNAP_HOLD_MS = 160
   }, [scheduleCardViewportSnap])
 
   const flushPendingGroupSnap = useCallback(() => {
-    if (typeof window !== "undefined" && pendingGroupSnapTimerRef.current !== null) {
-      window.clearTimeout(pendingGroupSnapTimerRef.current)
-      pendingGroupSnapTimerRef.current = null
-    }
     if (!pendingGroupSnapRef.current) {
       runPendingCardSnap()
       return
@@ -421,22 +409,9 @@ const GROUP_SNAP_HOLD_MS = 160
         return
       }
       pendingGroupSnapRef.current = { groupName, options }
-      if (collapseGroupsDuringGroupDrag) {
-        return
-      }
-      if (typeof window === "undefined") {
-        flushPendingGroupSnap()
-        return
-      }
-      if (pendingGroupSnapTimerRef.current !== null) {
-        window.clearTimeout(pendingGroupSnapTimerRef.current)
-      }
-      pendingGroupSnapTimerRef.current = window.setTimeout(() => {
-        pendingGroupSnapTimerRef.current = null
-        flushPendingGroupSnap()
-      }, GROUP_SNAP_HOLD_MS)
+      return
     },
-    [collapseGroupsDuringGroupDrag, flushPendingGroupSnap],
+    [],
   )
 
   const updateDragPointerFromEvent = useCallback((event: { clientX: number; clientY: number }) => {
@@ -592,7 +567,6 @@ const GROUP_SNAP_HOLD_MS = 160
     swatches,
     groupedColors,
     cardColumnCount,
-    collapseGroupsDuringGroupDrag,
     isAnyCardDragging,
     onBatchUpdateColors,
     onColorEdit,
@@ -992,7 +966,7 @@ const GROUP_SNAP_HOLD_MS = 160
   const newGroupDropZoneActive = isBetweenZonesActive || isDragOverNewGroup
   const deleteDropZoneActive = isBetweenZonesActive || isDragOverTrash
   const isDropZoneExpanded = newGroupDropZoneActive || deleteDropZoneActive
-  const shouldCollapseGroups = collapseGroupsDuringGroupDrag && areGroupsCollapsedForDrag
+  const shouldCollapseGroups = areGroupsCollapsedForDrag
 
   return (
     <div

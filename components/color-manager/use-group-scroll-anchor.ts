@@ -8,12 +8,6 @@ type GroupScrollAnchorState = {
 }
 
 type UseGroupScrollAnchorOptions = {
-  /**
-   * When false, queueGroupScrollAnchor becomes a no-op unless the call passes
-   * `force: true`. Used by ColorManager to wire the anchor behind the
-   * "collapse groups during group drag" preference.
-   */
-  enabled: boolean
   /** Resolve the scroll parent currently in play. */
   getScrollParent: () => HTMLElement | null
   /** Resolve a group's section element by its name. */
@@ -28,10 +22,9 @@ type UseGroupScrollAnchorOptions = {
 type UseGroupScrollAnchorResult = {
   /**
    * Capture the group's current viewport position and start anchoring it.
-   * The anchor is auto-released after `lockMs`. Set `force: true` to anchor
-   * even when `enabled` is false.
+   * The anchor is auto-released after `lockMs`.
    */
-  queueGroupScrollAnchor: (groupName: string | null, force?: boolean) => void
+  queueGroupScrollAnchor: (groupName: string | null) => void
   /**
    * Release the current anchor immediately, or after `delay` ms.
    */
@@ -45,7 +38,6 @@ type UseGroupScrollAnchorResult = {
  * and corrects the scroll parent's scrollTop by the delta.
  */
 export function useGroupScrollAnchor({
-  enabled,
   getScrollParent,
   findGroupSectionElement,
   lockMs = 260,
@@ -54,16 +46,14 @@ export function useGroupScrollAnchor({
   const releaseTimeoutRef = useRef<number | null>(null)
   const [version, setVersion] = useState(0)
 
-  // Read the latest options through refs so the callbacks stay stable while
-  // still seeing up-to-date values for `enabled` and the resolvers.
-  const enabledRef = useRef(enabled)
+  // Read the latest resolvers through refs so the callbacks stay stable while
+  // still seeing up-to-date values.
   const getScrollParentRef = useRef(getScrollParent)
   const findGroupSectionElementRef = useRef(findGroupSectionElement)
   useEffect(() => {
-    enabledRef.current = enabled
     getScrollParentRef.current = getScrollParent
     findGroupSectionElementRef.current = findGroupSectionElement
-  }, [enabled, getScrollParent, findGroupSectionElement])
+  }, [getScrollParent, findGroupSectionElement])
 
   const releaseGroupScrollAnchor = useCallback((delay = 0) => {
     // Nothing to release. Avoid scheduling a timer that might clear a future anchor.
@@ -93,11 +83,8 @@ export function useGroupScrollAnchor({
   }, [])
 
   const queueGroupScrollAnchor = useCallback(
-    (groupName: string | null, force = false) => {
+    (groupName: string | null) => {
       if (!groupName) {
-        return
-      }
-      if (!enabledRef.current && !force) {
         return
       }
 

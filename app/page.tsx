@@ -50,7 +50,6 @@ export default function Home() {
   const [editingColor, setEditingColor] = useState<EditingColor>(null)
   const lastStickyEditingColorRef = useRef<EditingColor>(null)
   const [lastInteractedColor, setLastInteractedColor] = useState<string>("#808080")
-  const [collapseGroupsDuringGroupDrag, setCollapseGroupsDuringGroupDrag] = useState(true)
   const [contrastStandard, setContrastStandard] = useState<ContrastStandard>("wcag2")
 
 const hasHydratedRef = useRef(false)
@@ -357,22 +356,22 @@ const commitEditingColor = useCallback(
         paletteColors={activePalette.colors}
         onUpdatePaletteName={(name) => updatePalette(activePalette.id, { name })}
         onImportPalette={handleImportPalette}
-        collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
-        onCollapseGroupsDuringDragChange={setCollapseGroupsDuringGroupDrag}
         contrastStandard={contrastStandard}
         onContrastStandardChange={setContrastStandard}
-        paletteManagerDropdownContent={
+        paletteManagerDropdownContent={({ close }) => (
           <PaletteListManager
             palettes={palettes}
             activePaletteId={activePaletteId}
             onSelectPalette={setActivePaletteId}
             onAddPalette={addPalette}
             onReorderPalettes={reorderPalettes}
+            onImportPalette={handleImportPalette}
             onDuplicatePalette={duplicatePalette}
             onDeletePalette={deletePalette}
             canDeletePalette={palettes.length > 1}
+            onRequestClose={close}
           />
-        }
+        )}
       />
       <ResizablePanels
         panel1Title="Colour Picker"
@@ -401,7 +400,6 @@ const commitEditingColor = useCallback(
             editingColor={effectiveEditingColor}
             onColorUpdate={handleColorUpdate}
             lastInteractedColor={lastInteractedColor}
-            collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
             onMiddlePanChange={handleMiddlePanChange}
           />
         }
@@ -415,7 +413,6 @@ const commitEditingColor = useCallback(
             editingColor={effectiveEditingColor}
             onColorUpdate={handleColorUpdate}
             lastInteractedColor={lastInteractedColor}
-            collapseGroupsDuringGroupDrag={collapseGroupsDuringGroupDrag}
             onMiddlePanChange={handleMiddlePanChange}
             showOnlyGrid={true}
           />

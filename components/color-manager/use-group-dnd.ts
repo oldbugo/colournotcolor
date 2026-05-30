@@ -32,8 +32,6 @@ type UseGroupDndOptions = {
   groupedColors: Map<string, ColorWithName[]>
   /** Re-mark the section rect cache dirty when card column count changes. */
   cardColumnCount: number
-  /** When true, the in-flight group drag collapses other groups so the dragged section is easier to anchor. */
-  collapseGroupsDuringGroupDrag: boolean
   /** Whether a card-level drag is currently in progress. Used to install a global dragover listener that keeps the pointer ref fresh. */
   isAnyCardDragging: boolean
 
@@ -44,7 +42,7 @@ type UseGroupDndOptions = {
   findGroupSectionElement: (groupName: string | null) => HTMLElement | null
 
   /** Group-anchor handles (provided by useGroupScrollAnchor). */
-  queueGroupScrollAnchor: (groupName: string | null, force?: boolean) => void
+  queueGroupScrollAnchor: (groupName: string | null) => void
   /** Post-expansion snap (provided by ColorManager's snap orchestrator). */
   requestGroupSnapPostExpansion: (
     groupName: string | null,
@@ -94,7 +92,6 @@ export function useGroupDnd({
   swatches,
   groupedColors,
   cardColumnCount,
-  collapseGroupsDuringGroupDrag,
   isAnyCardDragging,
   onBatchUpdateColors,
   onColorEdit,
@@ -132,7 +129,6 @@ export function useGroupDnd({
   const onColorEditRef = useRef(onColorEdit)
   const swatchesRef = useRef(swatches)
   const groupedColorsRef = useRef(groupedColors)
-  const collapseGroupsRef = useRef(collapseGroupsDuringGroupDrag)
   useEffect(() => {
     findGroupSectionElementRef.current = findGroupSectionElement
     queueGroupScrollAnchorRef.current = queueGroupScrollAnchor
@@ -143,23 +139,12 @@ export function useGroupDnd({
     onColorEditRef.current = onColorEdit
     swatchesRef.current = swatches
     groupedColorsRef.current = groupedColors
-    collapseGroupsRef.current = collapseGroupsDuringGroupDrag
   })
 
   // Mirror draggedGroup → ref (used by group-scroll-anchor consumer too).
   useEffect(() => {
     draggedGroupRef.current = draggedGroup
   }, [draggedGroup])
-
-  // If the user disables collapse-during-drag mid-drag, unwind both flags.
-  useEffect(() => {
-    if (!collapseGroupsDuringGroupDrag) {
-      schedulePostEffect(() => {
-        setAreGroupsCollapsedForDrag(false)
-        setSuppressGroupExpansionAnimation(false)
-      })
-    }
-  }, [collapseGroupsDuringGroupDrag])
 
   // When `areGroupsCollapsedForDrag` flips true → false, briefly suppress the
   // expansion animation so the layout doesn't visibly resnap.
@@ -300,7 +285,7 @@ export function useGroupDnd({
   }, [])
 
   const resetGroupDragState = useCallback(() => {
-    if (collapseGroupsRef.current && areGroupsCollapsedForDrag) {
+    if (areGroupsCollapsedForDrag) {
       queueGroupScrollAnchorRef.current(draggedGroupRef.current)
     }
     setDraggedGroup(null)
@@ -601,10 +586,8 @@ export function useGroupDnd({
       setDraggedGroup(groupName)
       setGroupDragMode(null)
       setGroupInsertPosition(null)
-      if (collapseGroupsRef.current) {
-        queueGroupScrollAnchorRef.current(groupName)
-        setAreGroupsCollapsedForDrag(true)
-      }
+      queueGroupScrollAnchorRef.current(groupName)
+      setAreGroupsCollapsedForDrag(true)
       e.dataTransfer.effectAllowed = "move"
     },
     [applyGroupDragImage, measureGroupSectionRects],
@@ -717,7 +700,7 @@ export function useGroupDnd({
       })
 
       onBatchUpdateColorsRef.current(newSwatches)
-      queueGroupScrollAnchorRef.current(draggedGroup, true)
+      queueGroupScrollAnchorRef.current(draggedGroup)
       requestGroupSnapPostExpansionRef.current(draggedGroup, { force: true, align: "top" })
       resetGroupDragState()
     },

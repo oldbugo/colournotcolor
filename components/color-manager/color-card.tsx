@@ -160,7 +160,7 @@ export function ColorCard({
 
       <div
         className={`group relative flex w-full flex-col items-stretch gap-1.5 overflow-visible rounded-xl bg-white p-2.5 pb-3 transition ${
-          highlightActiveEditing ? "border-2 border-dashed border-slate-500" : "border border-transparent"
+          highlightActiveEditing ? "border-2 border-dashed border-interaction-dashed-outline" : "border border-transparent"
         } ${isDragging ? "opacity-70 animate-wiggle" : "opacity-100"}`}
         draggable
         role="group"

@@ -7,7 +7,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -29,7 +28,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
-import { Switch } from "@/components/ui/switch"
 import type { ContrastStandard } from "@/lib/contrast-utils"
 import type { ColorSwatch } from "@/types/palette"
 import { createSwatch } from "@/lib/color-utils"
@@ -42,15 +40,13 @@ type HeaderProps = {
   paletteColors?: ColorSwatch[]
   onUpdatePaletteName?: (name: string) => void
   onImportPalette?: (palette: { name: string; colors: ColorSwatch[] }) => void
-  collapseGroupsDuringGroupDrag?: boolean
-  onCollapseGroupsDuringDragChange?: (value: boolean) => void
   contrastStandard: ContrastStandard
   onContrastStandardChange: (standard: ContrastStandard) => void
-  paletteManagerDropdownContent?: ReactNode
+  paletteManagerDropdownContent?: ReactNode | ((controls: { close: () => void }) => ReactNode)
 }
 
 const HEADER_ICON_TRIGGER_CLASSNAME =
-  "h-8 w-8 border border-border bg-background text-muted-foreground shadow-xs transition-[background-color,border-color,color,border-radius,box-shadow] duration-150 hover:border-border hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:border-foreground/30 data-[state=open]:bg-muted data-[state=open]:text-foreground data-[state=open]:shadow-inner"
+  "size-10 border border-border bg-muted/20 text-foreground shadow-xs transition-all duration-150 hover:border-primary/40 hover:bg-muted/20 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 data-[state=open]:border-primary/60 data-[state=open]:bg-primary/5 data-[state=open]:text-primary data-[state=open]:shadow-sm"
 
 export function Header({
   onClearCache,
@@ -58,8 +54,6 @@ export function Header({
   paletteColors,
   onUpdatePaletteName,
   onImportPalette,
-  collapseGroupsDuringGroupDrag = false,
-  onCollapseGroupsDuringDragChange,
   contrastStandard: _contrastStandard,
   onContrastStandardChange: _onContrastStandardChange,
   paletteManagerDropdownContent,
@@ -232,6 +226,11 @@ export function Header({
   }, [toast])
 
   const shouldShowPaletteSection = !!paletteName
+  const closePaletteMenu = useCallback(() => setIsPaletteMenuOpen(false), [])
+  const resolvedPaletteManagerDropdownContent =
+    typeof paletteManagerDropdownContent === "function"
+      ? paletteManagerDropdownContent({ close: closePaletteMenu })
+      : paletteManagerDropdownContent
 
   return (
     <>
@@ -272,12 +271,12 @@ export function Header({
                   </>
                 )}
                 <div className="flex items-center gap-1.5">
-                  {paletteManagerDropdownContent && (
+                  {resolvedPaletteManagerDropdownContent && (
                     <DropdownMenu modal={false} open={isPaletteMenuOpen} onOpenChange={setIsPaletteMenuOpen}>
                       <DropdownMenuTrigger asChild>
                         <Button
                           variant="outline"
-                          size="icon-sm"
+                          size="icon-lg"
                           className={HEADER_ICON_TRIGGER_CLASSNAME}
                           aria-label="Open palette manager"
                           style={{
@@ -289,7 +288,7 @@ export function Header({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" sideOffset={10} className="w-[min(92vw,960px)] p-0">
                         <div data-palette-manager-dropdown className="max-h-[75vh] overflow-auto bg-muted">
-                          {paletteManagerDropdownContent}
+                          {resolvedPaletteManagerDropdownContent}
                         </div>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -298,7 +297,7 @@ export function Header({
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="outline"
-                        size="icon-sm"
+                        size="icon-lg"
                         className={HEADER_ICON_TRIGGER_CLASSNAME}
                         aria-label="Open settings"
                         style={{
@@ -309,20 +308,6 @@ export function Header({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" className="min-w-[220px]">
-                      <DropdownMenuItem
-                        onSelect={(event) => event.preventDefault()}
-                        className="cursor-pointer focus:bg-accent/30 focus:text-foreground"
-                      >
-                        <div className="flex w-full items-center justify-between gap-3">
-                          <span className="text-sm font-medium text-foreground">Collapse groups while dragging</span>
-                          <Switch
-                            checked={collapseGroupsDuringGroupDrag}
-                            onCheckedChange={(checked) => onCollapseGroupsDuringDragChange?.(checked)}
-                            aria-label="Collapse groups while dragging"
-                          />
-                        </div>
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator className="bg-border/60" />
                       <DropdownMenuItem
                         onSelect={openImportExportDialog}
                         className="cursor-pointer focus:bg-accent/30 focus:text-foreground"

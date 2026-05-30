@@ -76,7 +76,7 @@ export const SwatchTile = ({
 
 export const FocusIndicator = ({ inset = BORDER_GAP }: { inset?: number }) => (
   <div
-    className="absolute border-2 border-dashed border-gray-400 rounded-lg pointer-events-none z-20"
+    className="absolute border-2 border-dashed border-interaction-dashed-outline rounded-lg pointer-events-none z-20"
     style={{ inset: `-${inset}px` }}
   />
 )
